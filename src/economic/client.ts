@@ -42,6 +42,8 @@ export class EconomicClient {
         process.env.ECONOMIC_BASE_URL_OPENAPI ??
         'https://apis.e-conomic.com',
     );
+    assertSafeBaseUrl(this.restBaseUrl, 'ECONOMIC_BASE_URL_REST');
+    assertSafeBaseUrl(this.openApiBaseUrl, 'ECONOMIC_BASE_URL_OPENAPI');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? Number(process.env.ECONOMIC_TIMEOUT_MS ?? 30_000);
   }
@@ -160,4 +162,29 @@ function appendQuery(urlValue: string, query?: Record<string, QueryValue>): stri
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
+}
+
+function assertSafeBaseUrl(baseUrl: string, envName: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error(`${envName} is not a valid URL: ${baseUrl}`);
+  }
+
+  if (parsed.protocol === 'https:') {
+    return;
+  }
+
+  if (parsed.protocol === 'http:' && isLocalHost(parsed.hostname)) {
+    return;
+  }
+
+  throw new Error(
+    `Refusing to send e-conomic credentials over ${parsed.protocol}//. Use https:// (loopback http:// is allowed for local mocks).`,
+  );
+}
+
+function isLocalHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 }

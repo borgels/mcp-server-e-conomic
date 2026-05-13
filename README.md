@@ -237,12 +237,17 @@ Write flow:
 3. Call `economic_commit_prepared_operation` with the full prepared operation,
    matching `confirmOperationHash`, and an `idempotencyKey`.
 
-## Audit
+## Security And Audit
 
 If `ECONOMIC_AUDIT_LOG` is set, every mutating attempt writes a JSONL record with
 timestamp, request id, tool, service, method/path, operation hash, policy
 decision, idempotency-key hash, status, and redacted errors. Secrets are never
 logged intentionally.
+
+Credentials are read only from the MCP server environment and are never accepted
+as tool arguments. Report suspected vulnerabilities privately to
+<security@borgels.com>. Do not include API tokens, accounting data, or other
+secrets in public GitHub issues.
 
 ## Optional HTTP Server
 
@@ -253,7 +258,12 @@ available:
 PORT=3000 ECONOMIC_APP_SECRET_TOKEN="demo" ECONOMIC_AGREEMENT_GRANT_TOKEN="demo" npm run dev:http
 ```
 
-The MCP endpoint is `POST http://localhost:3000/mcp`.
+By default the HTTP server binds to `127.0.0.1`, limits request bodies to 10 MiB,
+allows browser CORS only from loopback origins, and does not require an HTTP
+Bearer token. You can override this with `MCP_HTTP_HOST`, `MCP_MAX_BODY_BYTES`,
+`MCP_ALLOWED_ORIGINS`, `MCP_ALLOW_ANY_ORIGIN=true`, and `MCP_HTTP_TOKEN`.
+
+The MCP endpoint is `POST http://127.0.0.1:3000/mcp`.
 
 ## Verification
 
@@ -277,3 +287,7 @@ ECONOMIC_APP_SECRET_TOKEN="demo" ECONOMIC_AGREEMENT_GRANT_TOKEN="demo" npm run s
 - OpenAPI docs: <https://apis.e-conomic.com/>
 - Developer hub: <https://developer.visma.com/api/e-conomic>
 - Authentication: <https://www.e-conomic.com/developer/authentication>
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

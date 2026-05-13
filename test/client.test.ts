@@ -63,6 +63,31 @@ describe('EconomicClient', () => {
     await expect(client.rest('/customers')).rejects.toBeInstanceOf(EconomicHttpError);
     expect(redactSecrets('X-AppSecretToken: app-secret')).toContain('[REDACTED]');
   });
+
+  it('refuses non-https base URLs to protect e-conomic credentials', () => {
+    expect(
+      () =>
+        new EconomicClient({
+          appSecretToken: 'app-secret',
+          agreementGrantToken: 'grant-token',
+          restBaseUrl: 'http://restapi.e-conomic.com',
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+        }),
+    ).toThrow(/https/);
+  });
+
+  it('allows http:// for loopback mocks', () => {
+    expect(
+      () =>
+        new EconomicClient({
+          appSecretToken: 'app-secret',
+          agreementGrantToken: 'grant-token',
+          restBaseUrl: 'http://localhost:8080',
+          openApiBaseUrl: 'http://127.0.0.1:8081',
+          fetchImpl: vi.fn() as unknown as typeof fetch,
+        }),
+    ).not.toThrow();
+  });
 });
 
 function jsonResponse(payload: unknown): Response {

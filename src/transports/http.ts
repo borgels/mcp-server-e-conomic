@@ -1,28 +1,40 @@
-import { createServer as createNodeServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createNodeServer } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer as createMcpServer } from '../server.js';
+import {
+  assertAllowedOrigin,
+  assertAuthorized,
+  corsHeaders,
+  getHttpConfig,
+  HttpRequestError,
+  readJsonBody,
+  sendJson,
+} from './http-helpers.js';
 
-const port = Number(process.env.PORT ?? 3000);
+const config = getHttpConfig();
 
 const httpServer = createNodeServer(async (req, res) => {
   try {
     if (req.url !== '/mcp') {
-      sendJson(res, 404, { error: 'Not found' });
+      sendJson(res, 404, { error: 'Not found' }, req);
       return;
     }
 
+    assertAllowedOrigin(req);
+
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, corsHeaders());
+      res.writeHead(204, corsHeaders(req));
       res.end();
       return;
     }
 
     if (req.method !== 'POST') {
-      sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'POST' });
+      sendJson(res, 405, { error: 'Method not allowed' }, req, { Allow: 'POST' });
       return;
     }
 
-    const body = await readJsonBody(req);
+    assertAuthorized(req, config);
+    const body = await readJsonBody(req, config.maxBodyBytes);
     const mcpServer = createMcpServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -38,6 +50,11 @@ const httpServer = createNodeServer(async (req, res) => {
   } catch (error) {
     console.error(error);
     if (!res.headersSent) {
+      if (error instanceof HttpRequestError) {
+        sendJson(res, error.status, { error: error.message }, req);
+        return;
+      }
+
       sendJson(res, 500, {
         jsonrpc: '2.0',
         error: {
@@ -45,44 +62,11 @@ const httpServer = createNodeServer(async (req, res) => {
           message: 'Internal server error',
         },
         id: null,
-      });
+      }, req);
     }
   }
 });
 
-httpServer.listen(port, () => {
-  console.error(`e-conomic MCP HTTP server listening on http://localhost:${port}/mcp`);
+httpServer.listen(config.port, config.host, () => {
+  console.error(`e-conomic MCP HTTP server listening on http://${config.host}:${config.port}/mcp`);
 });
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  const text = Buffer.concat(chunks).toString('utf8');
-  return text ? (JSON.parse(text) as unknown) : undefined;
-}
-
-function sendJson(
-  res: ServerResponse,
-  status: number,
-  payload: unknown,
-  extraHeaders: Record<string, string> = {},
-): void {
-  res.writeHead(status, {
-    ...corsHeaders(),
-    'Content-Type': 'application/json',
-    ...extraHeaders,
-  });
-  res.end(JSON.stringify(payload));
-}
-
-function corsHeaders(): Record<string, string> {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, mcp-session-id',
-  };
-}
