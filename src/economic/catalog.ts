@@ -442,7 +442,7 @@ function toolCapability(
     kind: 'tool',
     description,
     risk,
-    source: 'mcp-server-e-conomic',
+    source: 'mcp-server-economic',
     keywords,
   };
 }
