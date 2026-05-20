@@ -1,4 +1,4 @@
-# mcp-server-e-conomic
+# mcp-server-economic
 
 TypeScript MCP server for Visma e-conomic APIs. It is intentionally boring good:
 typed, documented, read-first, policy-aware, credential-sane, and audit-friendly.
@@ -120,7 +120,7 @@ Use the stdio server for local MCP clients:
   "mcpServers": {
     "e-conomic": {
       "command": "node",
-      "args": ["/absolute/path/to/mcp-server-e-conomic/dist/stdio.js"],
+      "args": ["/absolute/path/to/mcp-server-economic/dist/stdio.js"],
       "env": {
         "ECONOMIC_APP_SECRET_TOKEN": "your-app-secret-token",
         "ECONOMIC_AGREEMENT_GRANT_TOKEN": "your-agreement-grant-token"
@@ -137,7 +137,7 @@ During development:
   "mcpServers": {
     "e-conomic": {
       "command": "npm",
-      "args": ["run", "dev", "--prefix", "/absolute/path/to/mcp-server-e-conomic"],
+      "args": ["run", "dev", "--prefix", "/absolute/path/to/mcp-server-economic"],
       "env": {
         "ECONOMIC_APP_SECRET_TOKEN": "demo",
         "ECONOMIC_AGREEMENT_GRANT_TOKEN": "demo"
