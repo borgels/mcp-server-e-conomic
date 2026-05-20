@@ -76,6 +76,56 @@ describe('EconomicClient', () => {
     ).toThrow(/https/);
   });
 
+  it('sends raw binary bodies via restRawBody without JSON-encoding', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ ok: true }));
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret',
+      agreementGrantToken: 'grant-token',
+      restBaseUrl: 'https://example.test',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    const payload = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+    await client.restRawBody('/journals/1/vouchers/2026-7/attachment/file', {
+      method: 'PUT',
+      body: payload,
+      contentType: 'application/pdf',
+      idempotencyKey: 'idem-attach-1',
+    });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'https://example.test/journals/1/vouchers/2026-7/attachment/file',
+    );
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(init.method).toBe('PUT');
+    expect(init.headers).toMatchObject({
+      'Content-Type': 'application/pdf',
+      'Idempotency-Key': 'idem-attach-1',
+    });
+    expect(init.body).toBe(payload);
+  });
+
+  it('rejects requests that combine JSON body and rawBody', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ ok: true }));
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret',
+      agreementGrantToken: 'grant-token',
+      restBaseUrl: 'https://example.test',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.request({
+        path: '/anything',
+        method: 'PUT',
+        body: { a: 1 },
+        rawBody: new Uint8Array([1, 2, 3]),
+        rawContentType: 'application/pdf',
+      }),
+    ).rejects.toThrow(/body.*rawBody/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('allows http:// for loopback mocks', () => {
     expect(
       () =>

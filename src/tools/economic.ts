@@ -399,6 +399,98 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
   );
 
   server.registerTool(
+    'economic_attach_voucher_file',
+    {
+      title: 'Attach Voucher File',
+      description:
+        'Upload a binary attachment (typically a PDF) to an existing voucher in a daybook journal. The voucher must already exist.',
+      inputSchema: {
+        journalNumber: z.union([z.string().trim().min(1), z.number().int()]),
+        accountingYear: z.string().trim().min(1),
+        voucherNumber: z.union([z.string().trim().min(1), z.number().int()]),
+        fileBase64: z.string().trim().min(1),
+        contentType: z.string().trim().min(1).default('application/pdf'),
+        idempotencyKey: z.string().trim().min(8),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async input => {
+      const pathTemplate =
+        '/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment/file';
+      const path = pathTemplate
+        .replace('{journalNumber}', encodeURIComponent(String(input.journalNumber)))
+        .replace('{accountingYear}', encodeURIComponent(input.accountingYear))
+        .replace('{voucherNumber}', encodeURIComponent(String(input.voucherNumber)));
+
+      const decision = checkPolicy({
+        capability: 'economic_attach_voucher_file',
+        serviceId: 'rest',
+        method: 'PUT',
+        path,
+      });
+
+      await writeAuditEvent({
+        tool: 'economic_attach_voucher_file',
+        action: 'policy_check',
+        serviceId: 'rest',
+        method: 'PUT',
+        path,
+        idempotencyKey: input.idempotencyKey,
+        allowed: decision.allowed,
+        reason: decision.reason,
+      });
+
+      if (!decision.allowed) {
+        throw new Error(`Attach blocked by policy: ${decision.reason}`);
+      }
+
+      const bytes = decodeBase64(input.fileBase64);
+
+      try {
+        const result = await client.restRawBody(path, {
+          method: 'PUT',
+          body: bytes,
+          contentType: input.contentType,
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        await writeAuditEvent({
+          tool: 'economic_attach_voucher_file',
+          action: 'commit',
+          serviceId: 'rest',
+          method: 'PUT',
+          path,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'ok',
+        });
+
+        return jsonToolResult(result ?? { ok: true, path });
+      } catch (error) {
+        await writeAuditEvent({
+          tool: 'economic_attach_voucher_file',
+          action: 'commit',
+          serviceId: 'rest',
+          method: 'PUT',
+          path,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'error',
+          error: formatUnknownError(error),
+        });
+        throw error;
+      }
+    },
+  );
+
+  server.registerTool(
     'economic_call_endpoint',
     {
       title: 'Call Validated e-conomic Endpoint',
@@ -545,6 +637,11 @@ function assertEconomicUrl(urlValue: string): void {
   if (!['restapi.e-conomic.com', 'apis.e-conomic.com'].includes(url.hostname)) {
     throw new Error('selfUrl must point to restapi.e-conomic.com or apis.e-conomic.com.');
   }
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const cleaned = value.replace(/\s+/g, '');
+  return new Uint8Array(Buffer.from(cleaned, 'base64'));
 }
 
 function jsonToolResult(data: unknown) {

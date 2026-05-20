@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3
+
+- Added `economic_attach_voucher_file` tool that uploads a binary attachment
+  (typically a PDF) to an existing voucher in a daybook journal via
+  `PUT /journals/{n}/vouchers/{ay}-{vn}/attachment/file`. Runs through the
+  same policy and audit pipeline as other mutating tools and requires an
+  idempotency key.
+- Extended `EconomicClient` with `restRawBody()` and a `rawBody`/`rawContentType`
+  pair on `request()` so non-JSON request bodies are first-class. `request()`
+  now refuses to send a payload that sets both `body` and `rawBody`.
+
 ## 0.1.2
 
 - Added Apache-2.0 `LICENSE` file and package metadata.
