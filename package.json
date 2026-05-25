@@ -4,6 +4,13 @@
   "description": "Policy-aware MCP server for Visma e-conomic APIs.",
   "type": "module",
   "main": "./dist/stdio.js",
+  "exports": {
+    ".": "./dist/stdio.js",
+    "./gateway": {
+      "types": "./dist/gateway.d.ts",
+      "default": "./dist/gateway.js"
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -15,12 +22,13 @@
     "mcp-server-e-conomic": "./dist/stdio.js"
   },
   "scripts": {
-    "build": "tsup src/transports/stdio.ts src/transports/http.ts --format esm --dts --clean --sourcemap",
+    "build": "tsup src/transports/stdio.ts src/transports/http.ts src/gateway.ts --format esm --dts --clean --sourcemap",
     "dev": "tsx src/transports/stdio.ts",
     "dev:http": "tsx src/transports/http.ts",
     "auth:grant": "tsx src/auth/capture-grant-token.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "prepare": "npm run build",
     "prepack": "npm run typecheck && npm test && npm run build",
     "smoke:live": "tsx test/live-smoke.ts"
   },
