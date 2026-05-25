@@ -3,9 +3,9 @@
   "version": "0.1.3",
   "description": "Policy-aware MCP server for Visma e-conomic APIs.",
   "type": "module",
-  "main": "./dist/stdio.js",
+  "main": "./dist/transports/stdio.js",
   "exports": {
-    ".": "./dist/stdio.js",
+    ".": "./dist/transports/stdio.js",
     "./gateway": {
       "types": "./dist/gateway.d.ts",
       "default": "./dist/gateway.js"
@@ -19,7 +19,7 @@
     ".env.example"
   ],
   "bin": {
-    "mcp-server-e-conomic": "./dist/stdio.js"
+    "mcp-server-e-conomic": "./dist/transports/stdio.js"
   },
   "scripts": {
     "build": "tsup src/transports/stdio.ts src/transports/http.ts src/gateway.ts --format esm --dts --clean --sourcemap",
