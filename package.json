@@ -34,7 +34,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Borgels/mcp-server-e-conomic.git"
+    "url": "git+https://github.com/borgels/mcp-server-e-conomic.git"
   },
   "keywords": [
     "mcp",
@@ -49,9 +49,9 @@
     "node": ">=20.11"
   },
   "bugs": {
-    "url": "https://github.com/Borgels/mcp-server-e-conomic/issues"
+    "url": "https://github.com/borgels/mcp-server-e-conomic/issues"
   },
-  "homepage": "https://github.com/Borgels/mcp-server-e-conomic#readme",
+  "homepage": "https://github.com/borgels/mcp-server-e-conomic#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
