@@ -265,6 +265,54 @@ Bearer token. You can override this with `MCP_HTTP_HOST`, `MCP_MAX_BODY_BYTES`,
 
 The MCP endpoint is `POST http://127.0.0.1:3000/mcp`.
 
+## Borgels Gateway Contract
+
+`mcp-server-e-conomic/gateway` is the supported package export for Borgels
+control-plane runtimes that need to wrap e-conomic without copying connector
+logic.
+
+The gateway exports:
+
+- `economicGatewayTools`: stable unprefixed tool definitions with name, title,
+  description, risk level, default enablement, and JSON input schema.
+- `createEconomicGateway(options)`: a factory that accepts e-conomic credentials,
+  optional base URLs, timeout, optional `fetchImpl`, and optional contract mode.
+
+First-wedge gateway tools:
+
+- `check_connection`
+- `company_context`
+- `search_entities`
+- `get_entity`
+- `customer_overview`
+- `supplier_overview`
+- `product_overview`
+- `report_data`
+
+All gateway tools are read-only. Write preparation and commit tools remain
+available only on the full MCP server surface and still require explicit write
+policy.
+
+The gateway reads credentials from the server environment or factory options,
+never from tool arguments. Upstream HTTP failures use the same formatted,
+redacted error path as the full MCP server.
+
+For review automation without live e-conomic credentials, set
+`contractMode: true` when creating the gateway:
+
+```ts
+import { createEconomicGateway } from 'mcp-server-e-conomic/gateway';
+
+const gateway = createEconomicGateway({ contractMode: true });
+const result = await gateway.callTool('customer_overview', { number: 1001 });
+```
+
+Contract mode is deterministic, performs no network calls, and returns fixture
+customers, products, accounts, company context, and pagination metadata. It is
+intended for Borgels review/demo tests only; production connectors should use
+real e-conomic credentials or e-conomic's documented `demo` tokens for live
+GET-only smoke tests.
+
 ## Verification
 
 Run checks without real credentials:
