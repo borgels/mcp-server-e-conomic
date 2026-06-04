@@ -1,5 +1,9 @@
 import { EconomicClient, type EconomicClientOptions, type QueryValue } from './economic/client.js';
 import { callEndpoint } from './economic/endpoints.js';
+import {
+  economicGatewayContractEntity,
+  economicGatewayContractFixture,
+} from './economic/gateway-fixtures.js';
 
 export type GatewayRiskLevel = 'read' | 'write' | 'destructive';
 export type GatewayJsonValue = string | number | boolean | null | GatewayJsonValue[] | { [key: string]: GatewayJsonValue };
@@ -20,7 +24,9 @@ export interface GatewayToolResult {
   isError?: boolean;
 }
 
-export interface EconomicGatewayOptions extends EconomicClientOptions {}
+export interface EconomicGatewayOptions extends EconomicClientOptions {
+  contractMode?: boolean;
+}
 
 const emptyInput = {
   type: 'object',
@@ -127,6 +133,10 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
   return {
     tools: economicGatewayTools,
     async callTool(toolName: string, input: GatewayJsonObject = {}): Promise<GatewayToolResult> {
+      if (options.contractMode) {
+        return contractToolResult(toolName, input);
+      }
+
       switch (toolName) {
         case 'check_connection':
         case 'company_context':
@@ -170,6 +180,28 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
       }
     },
   };
+}
+
+function contractToolResult(toolName: string, input: GatewayJsonObject): GatewayToolResult {
+  if (toolName === 'get_entity') {
+    const selfUrl = stringValue(input.selfUrl);
+    if (!selfUrl && (!stringValue(input.serviceId) || stringOrNumberValue(input.number) === undefined)) {
+      return errorResult('Provide either selfUrl or serviceId, resource, and number.');
+    }
+
+    return fixtureResult(economicGatewayContractEntity(input));
+  }
+
+  const fixture = economicGatewayContractFixture(toolName, input);
+  if (!fixture) {
+    return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
+  }
+
+  return fixtureResult(fixture);
+}
+
+function fixtureResult(fixture: { text: string; structuredContent: unknown }): GatewayToolResult {
+  return jsonResult(fixture.text, fixture.structuredContent);
 }
 
 async function getEntity(client: EconomicClient, input: GatewayJsonObject): Promise<GatewayToolResult> {
