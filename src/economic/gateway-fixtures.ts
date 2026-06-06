@@ -89,6 +89,9 @@ export function economicGatewayContractFixture(
     case 'report_data':
       return collectionFixture('Fetched e-conomic contract report data.', input, accounts);
 
+    case 'create_draft_invoice':
+      return draftInvoiceFixture(input);
+
     default:
       return undefined;
   }
@@ -109,6 +112,40 @@ export function economicGatewayContractEntity(input: GatewayJsonObject): Gateway
       resource: resource ?? null,
       number: number ?? null,
       entity: entityFor(serviceId, number),
+    },
+  };
+}
+
+function draftInvoiceFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const customerNumber = typeof input.customerNumber === 'number' ? input.customerNumber : 0;
+  const rawLines = Array.isArray(input.lines) ? input.lines : [];
+  let netAmount = 0;
+  const lines = rawLines.map((source, index) => {
+    const line = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+    const quantity = typeof line.quantity === 'number' ? line.quantity : 0;
+    const unitNetPrice = typeof line.unitNetPrice === 'number' ? line.unitNetPrice : 0;
+    netAmount += quantity * unitNetPrice;
+    return {
+      lineNumber: index + 1,
+      product: { productNumber: typeof line.productNumber === 'string' || typeof line.productNumber === 'number' ? line.productNumber : null },
+      description: typeof line.description === 'string' ? line.description : null,
+      quantity,
+      unitNetPrice,
+    } satisfies GatewayJsonObject;
+  });
+  const draftInvoiceNumber = 90000 + customerNumber;
+
+  return {
+    text: 'Created e-conomic contract draft invoice.',
+    structuredContent: {
+      mode: 'contract',
+      draftInvoiceNumber,
+      customer: { customerNumber },
+      currency: typeof input.currency === 'string' ? input.currency : 'DKK',
+      netAmount,
+      grossAmount: Math.round(netAmount * 1.25 * 100) / 100,
+      lines,
+      self: `https://restapi.e-conomic.com/invoices/drafts/${draftInvoiceNumber}`,
     },
   };
 }

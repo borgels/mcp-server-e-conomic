@@ -376,6 +376,7 @@ function buildEndpointOperations(): EndpointOperation[] {
   }
 
   operations.push(
+    customEndpoint('rest', 'POST', '/invoices/drafts', 'Create a draft (unbooked) sales invoice.', 'draft'),
     customEndpoint('journals', 'POST', '/journals/{number}/book', 'Book a journal.', 'dangerous'),
     customEndpoint('journals', 'POST', '/entries/draft/{journalNumber}/book', 'Book draft entries.', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),

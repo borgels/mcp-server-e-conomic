@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Added a `create_draft_invoice` gateway tool (risk `write`, disabled by default)
+  that creates a draft (unbooked, unsent) sales invoice via
+  `POST /invoices/drafts`. Currency, payment terms, VAT zone, recipient name, and
+  layout default from the customer when not supplied; each line requires a product
+  reference (an e-conomic validation requirement). Supports an idempotency key.
+  Draft creation does not book or send anything. Covered by contract-mode and
+  live-path gateway tests and exercised against a live demo agreement.
+
 ## 0.1.3
 
 - Added `economic_attach_voucher_file` tool that uploads a binary attachment
