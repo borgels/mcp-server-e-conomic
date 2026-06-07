@@ -34,6 +34,47 @@ const emptyInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+const createDraftInvoiceInput = {
+  type: 'object',
+  required: ['customerNumber', 'lines'],
+  properties: {
+    customerNumber: { type: 'number', description: 'e-conomic customer number the draft is for.' },
+    lines: {
+      type: 'array',
+      minItems: 1,
+      description: 'Invoice lines. e-conomic requires a product reference on each line.',
+      items: {
+        type: 'object',
+        required: ['productNumber', 'quantity'],
+        properties: {
+          productNumber: { type: ['string', 'number'], description: 'e-conomic product number.' },
+          description: { type: 'string', description: 'Line text. Defaults to the product name.' },
+          quantity: { type: 'number' },
+          unitNetPrice: { type: 'number', description: 'Net unit price. Defaults to the product sales price when omitted.' },
+        },
+        additionalProperties: false,
+      },
+    },
+    date: { type: 'string', description: 'Invoice date (ISO 8601 date). Defaults to today.' },
+    currency: { type: 'string', description: 'Currency code. Defaults to the customer currency.' },
+    paymentTermsNumber: { type: 'number', description: 'Defaults to the customer payment terms.' },
+    layoutNumber: { type: 'number', description: 'Defaults to the first available layout.' },
+    recipientName: { type: 'string', description: 'Defaults to the customer name.' },
+    vatZoneNumber: { type: 'number', description: 'Defaults to the customer VAT zone.' },
+    reference: { type: 'string', description: 'Optional free-text reference stored on the draft.' },
+    notes: {
+      type: 'object',
+      properties: {
+        heading: { type: 'string' },
+        textLine1: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+    idempotencyKey: { type: 'string', description: 'Optional idempotency key forwarded to e-conomic.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const readEndpointInput = {
   type: 'object',
   properties: {
@@ -125,6 +166,15 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
     enabledByDefault: true,
     inputSchema: readEndpointInput,
   },
+  {
+    name: 'create_draft_invoice',
+    title: 'Create e-conomic draft invoice',
+    description:
+      'Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer.',
+    riskLevel: 'write',
+    enabledByDefault: false,
+    inputSchema: createDraftInvoiceInput,
+  },
 ];
 
 export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
@@ -174,6 +224,9 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
             serviceId: 'accounts',
             resource: 'Accounts',
           });
+
+        case 'create_draft_invoice':
+          return createDraftInvoice(client, input);
 
         default:
           return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
@@ -248,6 +301,130 @@ async function readEndpointResult(
     pathParams: number === undefined ? undefined : { number },
     query: queryValue(input.query),
   }));
+}
+
+interface DraftCustomer {
+  name?: string;
+  currency?: string;
+  paymentTerms?: { paymentTermsNumber?: number };
+  vatZone?: { vatZoneNumber?: number };
+}
+
+async function createDraftInvoice(client: EconomicClient, input: GatewayJsonObject): Promise<GatewayToolResult> {
+  const customerNumber = numberValue(input.customerNumber);
+  if (customerNumber === undefined) {
+    return errorResult('create_draft_invoice requires a numeric customerNumber.');
+  }
+
+  const rawLines = Array.isArray(input.lines) ? input.lines : [];
+  if (rawLines.length === 0) {
+    return errorResult('create_draft_invoice requires at least one line.');
+  }
+
+  const lines: GatewayJsonObject[] = [];
+  for (let index = 0; index < rawLines.length; index += 1) {
+    const source = rawLines[index];
+    const line = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+    const productNumber = stringOrNumberValue(line.productNumber);
+    const quantity = numberValue(line.quantity);
+    if (productNumber === undefined) {
+      return errorResult(`Line ${index + 1} requires a productNumber; e-conomic requires a product reference on each line.`);
+    }
+    if (quantity === undefined) {
+      return errorResult(`Line ${index + 1} requires a numeric quantity.`);
+    }
+
+    const built: GatewayJsonObject = { lineNumber: index + 1, product: { productNumber }, quantity };
+    const description = stringValue(line.description);
+    if (description) {
+      built.description = description;
+    }
+    const unitNetPrice = numberValue(line.unitNetPrice);
+    if (unitNetPrice !== undefined) {
+      built.unitNetPrice = unitNetPrice;
+    }
+    lines.push(built);
+  }
+
+  let customer: DraftCustomer = {};
+  try {
+    customer = (await client.rest(`/customers/${customerNumber}`)) as DraftCustomer;
+  } catch {
+    return errorResult(`Customer ${customerNumber} could not be read from e-conomic.`);
+  }
+
+  const currency = stringValue(input.currency) ?? customer.currency;
+  const paymentTermsNumber = numberValue(input.paymentTermsNumber) ?? customer.paymentTerms?.paymentTermsNumber;
+  const vatZoneNumber = numberValue(input.vatZoneNumber) ?? customer.vatZone?.vatZoneNumber;
+  const recipientName = stringValue(input.recipientName) ?? customer.name;
+  const layoutNumber = numberValue(input.layoutNumber) ?? (await firstLayoutNumber(client));
+  const date = stringValue(input.date) ?? new Date().toISOString().slice(0, 10);
+
+  if (!currency || paymentTermsNumber === undefined || vatZoneNumber === undefined || !recipientName || layoutNumber === undefined) {
+    return errorResult(
+      'Could not resolve required draft fields (currency, payment terms, VAT zone, recipient, layout) from the customer; provide them explicitly.',
+    );
+  }
+
+  const body: GatewayJsonObject = {
+    date,
+    currency,
+    paymentTerms: { paymentTermsNumber },
+    customer: { customerNumber },
+    recipient: { name: recipientName, vatZone: { vatZoneNumber } },
+    layout: { layoutNumber },
+    lines,
+  };
+
+  const notes = notesObject(input.notes);
+  if (notes) {
+    body.notes = notes;
+  }
+  const reference = stringValue(input.reference);
+  if (reference) {
+    body.references = { other: reference };
+  }
+
+  const created = await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'POST',
+    pathTemplate: '/invoices/drafts',
+    body,
+    idempotencyKey: stringValue(input.idempotencyKey),
+  });
+
+  return jsonResult('Created e-conomic draft invoice.', created);
+}
+
+async function firstLayoutNumber(client: EconomicClient): Promise<number | undefined> {
+  const layouts = (await client.rest('/layouts')) as { collection?: Array<{ layoutNumber?: number }> };
+  return layouts.collection?.[0]?.layoutNumber;
+}
+
+function notesObject(value: GatewayJsonValue | undefined): GatewayJsonObject | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const notes: GatewayJsonObject = {};
+  const heading = stringValue(value.heading);
+  if (heading) {
+    notes.heading = heading;
+  }
+  const textLine1 = stringValue(value.textLine1);
+  if (textLine1) {
+    notes.textLine1 = textLine1;
+  }
+  return Object.keys(notes).length > 0 ? notes : undefined;
+}
+
+function numberValue(value: GatewayJsonValue | undefined): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+  return undefined;
 }
 
 function queryValue(value: GatewayJsonValue | undefined): Record<string, QueryValue> | undefined {
