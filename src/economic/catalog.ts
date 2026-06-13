@@ -45,6 +45,15 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
       'customer-groups',
       'entries',
       'invoices',
+      // Booked/open invoice collections used for read projections (revenue,
+      // open and overdue receivables). e-conomic exposes these as REST
+      // sub-collections of /invoices with query paging (skippages/pagesize).
+      'invoices/booked',
+      'invoices/drafts',
+      'invoices/unpaid',
+      'invoices/overdue',
+      'invoices/paid',
+      'invoices/sent',
       'journals',
       'orders',
       'products',

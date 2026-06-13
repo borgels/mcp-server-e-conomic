@@ -12,6 +12,7 @@ describe('e-conomic gateway export', () => {
       ['supplier_overview', 'read', true],
       ['product_overview', 'read', true],
       ['report_data', 'read', true],
+      ['invoice_overview', 'read', true],
       ['create_draft_invoice', 'write', false],
     ]);
     // The only write tool must never be enabled by default.
@@ -62,6 +63,32 @@ describe('e-conomic gateway export', () => {
         deterministic: true,
       },
     });
+  });
+
+  it('lists booked invoices in contract mode', async () => {
+    const gateway = createEconomicGateway({ contractMode: true });
+    const result = await gateway.callTool('invoice_overview', {});
+    expect(result.isError).toBeUndefined();
+    const sc = result.structuredContent as { mode: string; collection: Array<Record<string, unknown>> };
+    expect(sc.mode).toBe('contract');
+    expect(sc.collection[0]).toMatchObject({ bookedInvoiceNumber: 70001, remainder: 10000 });
+  });
+
+  it('reads booked invoices live via the REST invoices/booked collection', async () => {
+    const requests: Request[] = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      fetchImpl: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json({ collection: [{ bookedInvoiceNumber: 70001 }] });
+      },
+    });
+
+    const result = await gateway.callTool('invoice_overview', { query: { pagesize: 5 } });
+    expect(result.isError).toBeUndefined();
+    expect(requests[0]?.url).toContain('/invoices/booked');
+    expect(requests[0]?.url).toContain('pagesize=5');
   });
 
   it('creates a deterministic draft invoice in contract mode', async () => {
