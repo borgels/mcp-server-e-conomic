@@ -282,6 +282,34 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
     defaultCreatePath: '/products',
     defaultUpdatePath: '/products/{number}',
   });
+  registerPrepareTool(server, 'economic_prepare_product_group_change', {
+    capability: 'economic_prepare_product_group_change',
+    title: 'Prepare Product Group Change',
+    defaultServiceId: 'products',
+    defaultCreatePath: '/productgroups',
+    defaultUpdatePath: '/productgroups/{number}',
+  });
+  registerPrepareTool(server, 'economic_prepare_project_change', {
+    capability: 'economic_prepare_project_change',
+    title: 'Prepare Project Change',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/Projects',
+    defaultUpdatePath: '/Projects/{number}',
+  });
+  registerPrepareTool(server, 'economic_prepare_project_group_change', {
+    capability: 'economic_prepare_project_group_change',
+    title: 'Prepare Project Group Change',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/ProjectGroups',
+    defaultUpdatePath: '/ProjectGroups/{number}',
+  });
+  registerPrepareTool(server, 'economic_prepare_employee_change', {
+    capability: 'economic_prepare_employee_change',
+    title: 'Prepare Employee Change',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/Employees',
+    defaultUpdatePath: '/Employees/{number}',
+  });
   registerPrepareTool(server, 'economic_prepare_sales_document', {
     capability: 'economic_prepare_sales_document',
     title: 'Prepare Sales Document',
@@ -525,6 +553,121 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       return jsonToolResult(await callEndpoint(client, endpointInput));
     },
   );
+
+  server.registerTool(
+    'economic_attach_sales_invoice_file',
+    {
+      title: 'Attach Sales Invoice File',
+      description:
+        'Upload a supporting document (typically a PDF) to an existing draft sales invoice so it can travel with the invoice. The draft must already exist. The file is sent as multipart/form-data via POST, as the e-conomic draft invoice attachment endpoint requires.',
+      inputSchema: {
+        draftInvoiceNumber: z.union([z.string().trim().min(1), z.number().int()]),
+        fileBase64: z.string().trim().min(1),
+        fileName: z.string().trim().min(1).default('attachment.pdf'),
+        idempotencyKey: z.string().trim().min(8),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async input => {
+      const path = `/invoices/drafts/${encodeURIComponent(String(input.draftInvoiceNumber))}/attachment/file`;
+
+      const decision = checkPolicy({
+        capability: 'economic_attach_sales_invoice_file',
+        serviceId: 'rest',
+        method: 'POST',
+        path,
+      });
+
+      await writeAuditEvent({
+        tool: 'economic_attach_sales_invoice_file',
+        action: 'policy_check',
+        serviceId: 'rest',
+        method: 'POST',
+        path,
+        idempotencyKey: input.idempotencyKey,
+        allowed: decision.allowed,
+        reason: decision.reason,
+      });
+
+      if (!decision.allowed) {
+        throw new Error(`Attach blocked by policy: ${decision.reason}`);
+      }
+
+      const form = buildMultipartFormData('file', sanitizeFileName(input.fileName), decodeBase64(input.fileBase64));
+
+      try {
+        const result = await client.restRawBody(path, {
+          method: 'POST',
+          body: form.bytes,
+          contentType: `multipart/form-data; boundary=${form.boundary}`,
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        await writeAuditEvent({
+          tool: 'economic_attach_sales_invoice_file',
+          action: 'commit',
+          serviceId: 'rest',
+          method: 'POST',
+          path,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'ok',
+        });
+
+        return jsonToolResult(result ?? { ok: true, path });
+      } catch (error) {
+        await writeAuditEvent({
+          tool: 'economic_attach_sales_invoice_file',
+          action: 'commit',
+          serviceId: 'rest',
+          method: 'POST',
+          path,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'error',
+          error: formatUnknownError(error),
+        });
+        throw error;
+      }
+    },
+  );
+}
+
+function sanitizeFileName(name: string): string {
+  return name.replace(/[\r\n"\\]/g, '_');
+}
+
+function buildMultipartFormData(
+  fieldName: string,
+  fileName: string,
+  fileBytes: Uint8Array,
+): { bytes: Uint8Array; boundary: string } {
+  const boundary = `----economicMcp${Math.abs(hashString(`${fileName}:${fileBytes.length}`)).toString(36)}`;
+  const encoder = new TextEncoder();
+  const head = encoder.encode(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\nContent-Type: application/pdf\r\n\r\n`,
+  );
+  const tail = encoder.encode(`\r\n--${boundary}--\r\n`);
+  const bytes = new Uint8Array(head.length + fileBytes.length + tail.length);
+  bytes.set(head, 0);
+  bytes.set(fileBytes, head.length);
+  bytes.set(tail, head.length + fileBytes.length);
+  return { bytes, boundary };
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return hash;
 }
 
 function registerReadTool(
