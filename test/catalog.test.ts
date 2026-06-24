@@ -59,6 +59,22 @@ describe('e-conomic catalog', () => {
     expect(productGroup.serviceId).toBe('products');
   });
 
+  it('allowlists project add-on read-only and time-entry resources', () => {
+    // Cost types and project statuses are read in the API (UI-managed).
+    expect(findEndpoint('projects', 'GET', '/CostTypes').risk).toBe('read');
+    expect(findEndpoint('projects', 'GET', '/ProjectStatuses').risk).toBe('read');
+    // Activity groups and time entries are creatable via the API.
+    expect(findEndpoint('projects', 'POST', '/ActivityGroups').method).toBe('POST');
+    expect(findEndpoint('projects', 'POST', '/TimeEntries').method).toBe('POST');
+  });
+
+  it('allowlists collection-level PUT (e-conomic upsert pattern)', () => {
+    // Projects upsert via PUT on the collection, not the item path.
+    const upsert = findEndpoint('projects', 'PUT', '/Projects');
+    expect(upsert.risk).toBe('commit');
+    expect(materializePath(upsert, {})).toBe('/Projects');
+  });
+
   it('summarizes schemas by service', () => {
     expect(getSchemaSummary('accounts')).toMatchObject({
       serviceId: 'accounts',
