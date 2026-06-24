@@ -289,26 +289,45 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
     defaultCreatePath: '/productgroups',
     defaultUpdatePath: '/productgroups/{number}',
   });
+  // The Projects add-on API upserts via the collection: create is POST /X and
+  // update is PUT /X (full object incl. its number + objectVersion). Item-level
+  // PUT/PATCH (/X/{number}) return HTTP 405; delete is DELETE /X/{number}.
+  // Project status, cost types and activities are read-only here (UI-managed).
   registerPrepareTool(server, 'economic_prepare_project_change', {
     capability: 'economic_prepare_project_change',
     title: 'Prepare Project Change',
     defaultServiceId: 'projects',
     defaultCreatePath: '/Projects',
-    defaultUpdatePath: '/Projects/{number}',
+    defaultUpdatePath: '/Projects',
+    defaultDeletePath: '/Projects/{number}',
+    methods: ['POST', 'PUT', 'DELETE'],
   });
   registerPrepareTool(server, 'economic_prepare_project_group_change', {
     capability: 'economic_prepare_project_group_change',
     title: 'Prepare Project Group Change',
     defaultServiceId: 'projects',
     defaultCreatePath: '/ProjectGroups',
-    defaultUpdatePath: '/ProjectGroups/{number}',
+    defaultUpdatePath: '/ProjectGroups',
+    defaultDeletePath: '/ProjectGroups/{number}',
+    methods: ['POST', 'PUT', 'DELETE'],
   });
   registerPrepareTool(server, 'economic_prepare_employee_change', {
     capability: 'economic_prepare_employee_change',
     title: 'Prepare Employee Change',
     defaultServiceId: 'projects',
     defaultCreatePath: '/Employees',
-    defaultUpdatePath: '/Employees/{number}',
+    defaultUpdatePath: '/Employees',
+    defaultDeletePath: '/Employees/{number}',
+    methods: ['POST', 'PUT', 'DELETE'],
+  });
+  // Project time registrations: the API supports create and delete (no update).
+  registerPrepareTool(server, 'economic_prepare_time_entry', {
+    capability: 'economic_prepare_time_entry',
+    title: 'Prepare Project Time Entry',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/TimeEntries',
+    defaultDeletePath: '/TimeEntries/{number}',
+    methods: ['POST', 'DELETE'],
   });
   registerPrepareTool(server, 'economic_prepare_sales_document', {
     capability: 'economic_prepare_sales_document',
@@ -730,9 +749,19 @@ function registerPrepareTool(
     title: string;
     defaultServiceId: string;
     defaultCreatePath: string;
-    defaultUpdatePath: string;
+    // Update path for PUT/PATCH. Several e-conomic OpenAPI services (notably the
+    // Projects add-on) do not support item-level PUT (`/x/{number}` returns 405)
+    // and instead upsert via the collection (`PUT /x` with the key in the body).
+    // For those, set defaultUpdatePath to the collection path (same as create).
+    defaultUpdatePath?: string;
+    // Delete path (item-level). Defaults to defaultUpdatePath when omitted.
+    defaultDeletePath?: string;
+    // Restrict the offered methods (e.g. ['POST', 'DELETE'] for time entries,
+    // which the API creates and deletes but cannot update).
+    methods?: HttpMethod[];
   },
 ): void {
+  const methods = options.methods ?? ['POST', 'PUT', 'PATCH', 'DELETE'];
   server.registerTool(
     name,
     {
@@ -741,7 +770,7 @@ function registerPrepareTool(
         'Prepare a policy-checkable dry-run write operation. This does not call e-conomic until economic_commit_prepared_operation is used.',
       inputSchema: {
         serviceId: serviceIdSchema.default(options.defaultServiceId),
-        method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']).default('POST'),
+        method: z.enum(methods as [HttpMethod, ...HttpMethod[]]).default('POST'),
         pathTemplate: z.string().trim().min(1).optional(),
         pathParams: pathParamsSchema,
         query: querySchema,
@@ -758,7 +787,16 @@ function registerPrepareTool(
     async input => {
       const pathTemplate =
         input.pathTemplate ??
-        (input.method === 'POST' ? options.defaultCreatePath : options.defaultUpdatePath);
+        (input.method === 'POST'
+          ? options.defaultCreatePath
+          : input.method === 'DELETE'
+            ? (options.defaultDeletePath ?? options.defaultUpdatePath)
+            : options.defaultUpdatePath);
+      if (!pathTemplate) {
+        throw new Error(
+          `${name}: no default path template for method ${input.method}; pass an explicit pathTemplate.`,
+        );
+      }
       return jsonToolResult(
         prepareOperation({
           capability: options.capability,

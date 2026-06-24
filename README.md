@@ -192,6 +192,7 @@ Write preparation and commit:
 - `economic_prepare_project_change`
 - `economic_prepare_project_group_change`
 - `economic_prepare_employee_change`
+- `economic_prepare_time_entry`
 - `economic_commit_prepared_operation`
 - `economic_attach_voucher_file`
 - `economic_attach_sales_invoice_file`
@@ -199,6 +200,13 @@ Write preparation and commit:
 The project tools target the e-conomic Projects (Projektregnskab) add-on. Projects
 collect per-job revenue and cost, project groups route project registrations to
 accounts, and employees provide the responsible person required on a project.
+`economic_prepare_time_entry` registers hours against a project/activity/employee.
+The Projects add-on upserts via the collection: create with `POST /X`, update with
+`PUT /X` (the full object including its number and `objectVersion`), delete with
+`DELETE /X/{number}`. Item-level `PUT /X/{number}` and `PATCH` return HTTP 405, and
+a `PUT` is a full replace (omitted fields are cleared). Project status, cost types
+and activities are read-only via the API and managed in the e-conomic UI; time
+entries support create and delete only.
 
 Long-tail coverage:
 

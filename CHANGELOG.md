@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.1.4
+
+- Added Projects (Projektregnskab) add-on tools: `economic_prepare_project_change`,
+  `economic_prepare_project_group_change`, `economic_prepare_employee_change`, and
+  `economic_prepare_time_entry`. These model the e-conomic upsert pattern — create
+  via `POST /X`, update via `PUT /X` (the full object including its number and
+  `objectVersion`; a full replace), delete via `DELETE /X/{number}`. Item-level
+  `PUT /X/{number}` and `PATCH` are unsupported by the API (HTTP 405).
+- Allowlisted collection-level `PUT /{resource}` for OpenAPI services to reflect
+  e-conomic's create-or-update-via-collection behavior, alongside the existing
+  item-level operations.
+- Added read coverage for project master data managed in the e-conomic UI:
+  `CostTypes`, `ProjectStatuses`, `ActivityGroups` (plus `TimeEntries` and
+  `Activities`) on the `projects` service.
+- Added `economic_attach_sales_invoice_file` to upload a PDF/file attachment to a
+  draft sales invoice via multipart `POST /invoices/drafts/{n}/attachment/file`.
+- Added `POST /accounts` and `PUT /accounts/{number}` plus extra REST read
+  resources (currencies, departments, employees, layouts, payment-terms, units,
+  departmental-distributions); fixed the REST single-item GET path to `/{number}`.
 - Added a `create_draft_invoice` gateway tool (risk `write`, disabled by default)
   that creates a draft (unbooked, unsent) sales invoice via
   `POST /invoices/drafts`. Currency, payment terms, VAT zone, recipient name, and
