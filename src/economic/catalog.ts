@@ -41,9 +41,18 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     resources: [
       'accounts',
       'accounting-years',
+      'currencies',
       'customers',
       'customer-groups',
+      'departments',
+      'departmental-distributions',
+      'employees',
       'entries',
+      // Master data needed to build and reference sales documents (invoice
+      // layout, payment terms, and product units).
+      'layouts',
+      'payment-terms',
+      'units',
       'invoices',
       // Booked/open invoice collections used for read projections (revenue,
       // open and overdue receivables). e-conomic exposes these as REST
@@ -95,7 +104,7 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     surface: 'openapi',
     servicePath: 'projectsapi/v1.1.0',
     version: '1.1.0',
-    resources: ['Projects', 'ProjectGroups', 'Employees', 'TimeEntries', 'Activities'],
+    resources: ['Projects', 'ProjectGroups', 'Employees', 'EmployeeGroups', 'TimeEntries', 'Activities'],
   },
   {
     id: 'journals',
@@ -305,11 +314,11 @@ function buildEndpointOperations(): EndpointOperation[] {
           risk: 'read',
         });
         operations.push({
-          id: endpointId(service.id, 'GET', `/${resource}/{id}`),
+          id: endpointId(service.id, 'GET', `/${resource}/{number}`),
           serviceId: service.id,
           surface: service.surface,
           method: 'GET',
-          pathTemplate: `/${resource}/{id}`,
+          pathTemplate: `/${resource}/{number}`,
           summary: `Fetch one REST ${resource} resource.`,
           risk: 'read',
         });
@@ -386,6 +395,8 @@ function buildEndpointOperations(): EndpointOperation[] {
 
   operations.push(
     customEndpoint('rest', 'POST', '/invoices/drafts', 'Create a draft (unbooked) sales invoice.', 'draft'),
+    customEndpoint('rest', 'POST', '/accounts', 'Create a general ledger account.', 'commit'),
+    customEndpoint('rest', 'PUT', '/accounts/{number}', 'Update a general ledger account.', 'commit'),
     customEndpoint('journals', 'POST', '/journals/{number}/book', 'Book a journal.', 'dangerous'),
     customEndpoint('journals', 'POST', '/entries/draft/{journalNumber}/book', 'Book draft entries.', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),

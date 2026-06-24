@@ -185,10 +185,20 @@ Write preparation and commit:
 
 - `economic_prepare_customer_change`
 - `economic_prepare_product_change`
+- `economic_prepare_product_group_change`
 - `economic_prepare_sales_document`
 - `economic_prepare_journal_entry`
 - `economic_prepare_payment_registration`
+- `economic_prepare_project_change`
+- `economic_prepare_project_group_change`
+- `economic_prepare_employee_change`
 - `economic_commit_prepared_operation`
+- `economic_attach_voucher_file`
+- `economic_attach_sales_invoice_file`
+
+The project tools target the e-conomic Projects (Projektregnskab) add-on. Projects
+collect per-job revenue and cost, project groups route project registrations to
+accounts, and employees provide the responsible person required on a project.
 
 Long-tail coverage:
 

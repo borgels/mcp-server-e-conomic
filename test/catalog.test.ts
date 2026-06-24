@@ -45,6 +45,20 @@ describe('e-conomic catalog', () => {
     expect(materializePath(endpoint, { number: 42 })).toBe('/Customers/42');
   });
 
+  it('allowlists project add-on write endpoints', () => {
+    const project = findEndpoint('projects', 'POST', '/Projects');
+    expect(project.risk).toBe('commit');
+
+    const projectGroup = findEndpoint('projects', 'POST', '/ProjectGroups');
+    expect(projectGroup.serviceId).toBe('projects');
+
+    const employee = findEndpoint('projects', 'POST', '/Employees');
+    expect(employee.method).toBe('POST');
+
+    const productGroup = findEndpoint('products', 'POST', '/productgroups');
+    expect(productGroup.serviceId).toBe('products');
+  });
+
   it('summarizes schemas by service', () => {
     expect(getSchemaSummary('accounts')).toMatchObject({
       serviceId: 'accounts',
