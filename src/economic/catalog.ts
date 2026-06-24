@@ -41,10 +41,28 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     resources: [
       'accounts',
       'accounting-years',
+      'currencies',
       'customers',
       'customer-groups',
+      'departments',
+      'departmental-distributions',
+      'employees',
       'entries',
+      // Master data needed to build and reference sales documents (invoice
+      // layout, payment terms, and product units).
+      'layouts',
+      'payment-terms',
+      'units',
       'invoices',
+      // Booked/open invoice collections used for read projections (revenue,
+      // open and overdue receivables). e-conomic exposes these as REST
+      // sub-collections of /invoices with query paging (skippages/pagesize).
+      'invoices/booked',
+      'invoices/drafts',
+      'invoices/unpaid',
+      'invoices/overdue',
+      'invoices/paid',
+      'invoices/sent',
       'journals',
       'orders',
       'products',
@@ -86,7 +104,7 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     surface: 'openapi',
     servicePath: 'projectsapi/v1.1.0',
     version: '1.1.0',
-    resources: ['Projects', 'ProjectGroups', 'Employees', 'TimeEntries', 'Activities'],
+    resources: ['Projects', 'ProjectGroups', 'CostTypes', 'ProjectStatuses', 'Employees', 'EmployeeGroups', 'TimeEntries', 'Activities', 'ActivityGroups'],
   },
   {
     id: 'journals',
@@ -190,6 +208,11 @@ export const CURATED_CAPABILITIES: Capability[] = [
   toolCapability('economic_prepare_sales_document', 'Prepare sales document', 'Create a dry-run operation for draft invoices, orders, or quotes.', 'draft', ['invoice', 'order', 'quote', 'write']),
   toolCapability('economic_prepare_journal_entry', 'Prepare journal entry', 'Create a dry-run operation for journal draft entries.', 'draft', ['journal', 'entry', 'write']),
   toolCapability('economic_prepare_payment_registration', 'Prepare payment registration', 'Create a dry-run operation for payment registration.', 'draft', ['payment', 'write']),
+  toolCapability('economic_prepare_product_group_change', 'Prepare product group change', 'Create a dry-run operation for product group master data.', 'draft', ['product', 'group', 'write']),
+  toolCapability('economic_prepare_project_change', 'Prepare project change', 'Create or update a project in the Projects add-on (collection upsert via PUT /Projects).', 'draft', ['project', 'write']),
+  toolCapability('economic_prepare_project_group_change', 'Prepare project group change', 'Create or update a project group in the Projects add-on (collection upsert).', 'draft', ['project', 'group', 'write']),
+  toolCapability('economic_prepare_employee_change', 'Prepare employee change', 'Create or update an employee in the Projects add-on (collection upsert).', 'draft', ['employee', 'write']),
+  toolCapability('economic_prepare_time_entry', 'Prepare project time entry', 'Create or delete a project time registration (TimeEntries); requires project, activity and employee.', 'draft', ['project', 'time', 'hours', 'write']),
   toolCapability('economic_commit_prepared_operation', 'Commit prepared operation', 'Execute a prepared write operation only when write policy permits it.', 'commit', ['commit', 'audit']),
   toolCapability('economic_call_endpoint', 'Call validated endpoint', 'Call an allowlisted REST/OpenAPI endpoint with schema and policy checks.', 'read', ['endpoint', 'escape-hatch']),
 ];
@@ -296,11 +319,11 @@ function buildEndpointOperations(): EndpointOperation[] {
           risk: 'read',
         });
         operations.push({
-          id: endpointId(service.id, 'GET', `/${resource}/{id}`),
+          id: endpointId(service.id, 'GET', `/${resource}/{number}`),
           serviceId: service.id,
           surface: service.surface,
           method: 'GET',
-          pathTemplate: `/${resource}/{id}`,
+          pathTemplate: `/${resource}/{number}`,
           summary: `Fetch one REST ${resource} resource.`,
           risk: 'read',
         });
@@ -354,6 +377,19 @@ function buildEndpointOperations(): EndpointOperation[] {
           risk: 'commit',
         },
         {
+          // e-conomic OpenAPI services upsert via the collection: PUT /{resource}
+          // with the full object (including its key) creates or updates. Several
+          // services (e.g. the Projects add-on) only support this collection PUT
+          // and reject item-level PUT with HTTP 405.
+          id: endpointId(service.id, 'PUT', `/${resource}`),
+          serviceId: service.id,
+          surface: service.surface,
+          method: 'PUT',
+          pathTemplate: `/${resource}`,
+          summary: `Create or update ${resource} (collection upsert).`,
+          risk: 'commit',
+        },
+        {
           id: endpointId(service.id, 'PUT', `/${resource}/{number}`),
           serviceId: service.id,
           surface: service.surface,
@@ -377,6 +413,8 @@ function buildEndpointOperations(): EndpointOperation[] {
 
   operations.push(
     customEndpoint('rest', 'POST', '/invoices/drafts', 'Create a draft (unbooked) sales invoice.', 'draft'),
+    customEndpoint('rest', 'POST', '/accounts', 'Create a general ledger account.', 'commit'),
+    customEndpoint('rest', 'PUT', '/accounts/{number}', 'Update a general ledger account.', 'commit'),
     customEndpoint('journals', 'POST', '/journals/{number}/book', 'Book a journal.', 'dangerous'),
     customEndpoint('journals', 'POST', '/entries/draft/{journalNumber}/book', 'Book draft entries.', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),

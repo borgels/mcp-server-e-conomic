@@ -167,6 +167,15 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
     inputSchema: readEndpointInput,
   },
   {
+    name: 'invoice_overview',
+    title: 'Get e-conomic invoice overview',
+    description:
+      'List booked invoices (default) or an invoice collection (booked, unpaid, overdue, paid, sent, drafts) for revenue and receivables reporting. Supports query paging (skippages, pagesize) and filters.',
+    riskLevel: 'read',
+    enabledByDefault: true,
+    inputSchema: readEndpointInput,
+  },
+  {
     name: 'create_draft_invoice',
     title: 'Create e-conomic draft invoice',
     description:
@@ -223,6 +232,12 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           return readEndpointResult(client, input, {
             serviceId: 'accounts',
             resource: 'Accounts',
+          });
+
+        case 'invoice_overview':
+          return readRestList(client, input, {
+            serviceId: 'rest',
+            resource: 'invoices/booked',
           });
 
         case 'create_draft_invoice':
@@ -293,6 +308,28 @@ async function readEndpointResult(
   const number = stringOrNumberValue(input.number);
   const paged = input.paged === false ? false : true;
   const pathTemplate = number !== undefined ? `/${resource}/{number}` : paged ? `/${resource}/paged` : `/${resource}`;
+
+  return jsonResult('Fetched e-conomic data.', await callEndpoint(client, {
+    serviceId,
+    method: 'GET',
+    pathTemplate,
+    pathParams: number === undefined ? undefined : { number },
+    query: queryValue(input.query),
+  }));
+}
+
+// REST sub-collections (e.g. /invoices/booked) page via query params, not a
+// /paged path segment, so this reads the collection path directly with the
+// caller's query (skippages, pagesize, filter), or one item by number.
+async function readRestList(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  defaults: { serviceId: string; resource: string },
+): Promise<GatewayToolResult> {
+  const serviceId = stringValue(input.serviceId) ?? defaults.serviceId;
+  const resource = stringValue(input.resource) ?? defaults.resource;
+  const number = stringOrNumberValue(input.number);
+  const pathTemplate = number !== undefined ? `/${resource}/{number}` : `/${resource}`;
 
   return jsonResult('Fetched e-conomic data.', await callEndpoint(client, {
     serviceId,

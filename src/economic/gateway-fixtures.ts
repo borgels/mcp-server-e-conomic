@@ -60,6 +60,29 @@ const accounts = [
   { accountNumber: 1010, name: 'Omsaetning service', accountType: 'profitAndLoss' },
 ];
 
+const bookedInvoices = [
+  {
+    bookedInvoiceNumber: 70001,
+    date: '2026-05-02',
+    dueDate: '2026-05-10',
+    currency: 'DKK',
+    netAmount: 8000,
+    grossAmount: 10000,
+    remainder: 10000,
+    customer: { customerNumber: 1001 },
+  },
+  {
+    bookedInvoiceNumber: 70002,
+    date: '2026-05-20',
+    dueDate: '2026-06-03',
+    currency: 'DKK',
+    netAmount: 4000,
+    grossAmount: 5000,
+    remainder: 0,
+    customer: { customerNumber: 1002 },
+  },
+];
+
 export function economicGatewayContractFixture(
   toolName: string,
   input: GatewayJsonObject,
@@ -88,6 +111,9 @@ export function economicGatewayContractFixture(
 
     case 'report_data':
       return collectionFixture('Fetched e-conomic contract report data.', input, accounts);
+
+    case 'invoice_overview':
+      return collectionFixture('Fetched e-conomic contract invoices.', input, bookedInvoices);
 
     case 'create_draft_invoice':
       return draftInvoiceFixture(input);

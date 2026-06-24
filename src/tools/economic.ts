@@ -282,6 +282,53 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
     defaultCreatePath: '/products',
     defaultUpdatePath: '/products/{number}',
   });
+  registerPrepareTool(server, 'economic_prepare_product_group_change', {
+    capability: 'economic_prepare_product_group_change',
+    title: 'Prepare Product Group Change',
+    defaultServiceId: 'products',
+    defaultCreatePath: '/productgroups',
+    defaultUpdatePath: '/productgroups/{number}',
+  });
+  // The Projects add-on API upserts via the collection: create is POST /X and
+  // update is PUT /X (full object incl. its number + objectVersion). Item-level
+  // PUT/PATCH (/X/{number}) return HTTP 405; delete is DELETE /X/{number}.
+  // Project status, cost types and activities are read-only here (UI-managed).
+  registerPrepareTool(server, 'economic_prepare_project_change', {
+    capability: 'economic_prepare_project_change',
+    title: 'Prepare Project Change',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/Projects',
+    defaultUpdatePath: '/Projects',
+    defaultDeletePath: '/Projects/{number}',
+    methods: ['POST', 'PUT', 'DELETE'],
+  });
+  registerPrepareTool(server, 'economic_prepare_project_group_change', {
+    capability: 'economic_prepare_project_group_change',
+    title: 'Prepare Project Group Change',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/ProjectGroups',
+    defaultUpdatePath: '/ProjectGroups',
+    defaultDeletePath: '/ProjectGroups/{number}',
+    methods: ['POST', 'PUT', 'DELETE'],
+  });
+  registerPrepareTool(server, 'economic_prepare_employee_change', {
+    capability: 'economic_prepare_employee_change',
+    title: 'Prepare Employee Change',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/Employees',
+    defaultUpdatePath: '/Employees',
+    defaultDeletePath: '/Employees/{number}',
+    methods: ['POST', 'PUT', 'DELETE'],
+  });
+  // Project time registrations: the API supports create and delete (no update).
+  registerPrepareTool(server, 'economic_prepare_time_entry', {
+    capability: 'economic_prepare_time_entry',
+    title: 'Prepare Project Time Entry',
+    defaultServiceId: 'projects',
+    defaultCreatePath: '/TimeEntries',
+    defaultDeletePath: '/TimeEntries/{number}',
+    methods: ['POST', 'DELETE'],
+  });
   registerPrepareTool(server, 'economic_prepare_sales_document', {
     capability: 'economic_prepare_sales_document',
     title: 'Prepare Sales Document',
@@ -525,6 +572,121 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       return jsonToolResult(await callEndpoint(client, endpointInput));
     },
   );
+
+  server.registerTool(
+    'economic_attach_sales_invoice_file',
+    {
+      title: 'Attach Sales Invoice File',
+      description:
+        'Upload a supporting document (typically a PDF) to an existing draft sales invoice so it can travel with the invoice. The draft must already exist. The file is sent as multipart/form-data via POST, as the e-conomic draft invoice attachment endpoint requires.',
+      inputSchema: {
+        draftInvoiceNumber: z.union([z.string().trim().min(1), z.number().int()]),
+        fileBase64: z.string().trim().min(1),
+        fileName: z.string().trim().min(1).default('attachment.pdf'),
+        idempotencyKey: z.string().trim().min(8),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async input => {
+      const path = `/invoices/drafts/${encodeURIComponent(String(input.draftInvoiceNumber))}/attachment/file`;
+
+      const decision = checkPolicy({
+        capability: 'economic_attach_sales_invoice_file',
+        serviceId: 'rest',
+        method: 'POST',
+        path,
+      });
+
+      await writeAuditEvent({
+        tool: 'economic_attach_sales_invoice_file',
+        action: 'policy_check',
+        serviceId: 'rest',
+        method: 'POST',
+        path,
+        idempotencyKey: input.idempotencyKey,
+        allowed: decision.allowed,
+        reason: decision.reason,
+      });
+
+      if (!decision.allowed) {
+        throw new Error(`Attach blocked by policy: ${decision.reason}`);
+      }
+
+      const form = buildMultipartFormData('file', sanitizeFileName(input.fileName), decodeBase64(input.fileBase64));
+
+      try {
+        const result = await client.restRawBody(path, {
+          method: 'POST',
+          body: form.bytes,
+          contentType: `multipart/form-data; boundary=${form.boundary}`,
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        await writeAuditEvent({
+          tool: 'economic_attach_sales_invoice_file',
+          action: 'commit',
+          serviceId: 'rest',
+          method: 'POST',
+          path,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'ok',
+        });
+
+        return jsonToolResult(result ?? { ok: true, path });
+      } catch (error) {
+        await writeAuditEvent({
+          tool: 'economic_attach_sales_invoice_file',
+          action: 'commit',
+          serviceId: 'rest',
+          method: 'POST',
+          path,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'error',
+          error: formatUnknownError(error),
+        });
+        throw error;
+      }
+    },
+  );
+}
+
+function sanitizeFileName(name: string): string {
+  return name.replace(/[\r\n"\\]/g, '_');
+}
+
+function buildMultipartFormData(
+  fieldName: string,
+  fileName: string,
+  fileBytes: Uint8Array,
+): { bytes: Uint8Array; boundary: string } {
+  const boundary = `----economicMcp${Math.abs(hashString(`${fileName}:${fileBytes.length}`)).toString(36)}`;
+  const encoder = new TextEncoder();
+  const head = encoder.encode(
+    `--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"; filename="${fileName}"\r\nContent-Type: application/pdf\r\n\r\n`,
+  );
+  const tail = encoder.encode(`\r\n--${boundary}--\r\n`);
+  const bytes = new Uint8Array(head.length + fileBytes.length + tail.length);
+  bytes.set(head, 0);
+  bytes.set(fileBytes, head.length);
+  bytes.set(tail, head.length + fileBytes.length);
+  return { bytes, boundary };
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return hash;
 }
 
 function registerReadTool(
@@ -587,9 +749,19 @@ function registerPrepareTool(
     title: string;
     defaultServiceId: string;
     defaultCreatePath: string;
-    defaultUpdatePath: string;
+    // Update path for PUT/PATCH. Several e-conomic OpenAPI services (notably the
+    // Projects add-on) do not support item-level PUT (`/x/{number}` returns 405)
+    // and instead upsert via the collection (`PUT /x` with the key in the body).
+    // For those, set defaultUpdatePath to the collection path (same as create).
+    defaultUpdatePath?: string;
+    // Delete path (item-level). Defaults to defaultUpdatePath when omitted.
+    defaultDeletePath?: string;
+    // Restrict the offered methods (e.g. ['POST', 'DELETE'] for time entries,
+    // which the API creates and deletes but cannot update).
+    methods?: HttpMethod[];
   },
 ): void {
+  const methods = options.methods ?? ['POST', 'PUT', 'PATCH', 'DELETE'];
   server.registerTool(
     name,
     {
@@ -598,7 +770,7 @@ function registerPrepareTool(
         'Prepare a policy-checkable dry-run write operation. This does not call e-conomic until economic_commit_prepared_operation is used.',
       inputSchema: {
         serviceId: serviceIdSchema.default(options.defaultServiceId),
-        method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']).default('POST'),
+        method: z.enum(methods as [HttpMethod, ...HttpMethod[]]).default('POST'),
         pathTemplate: z.string().trim().min(1).optional(),
         pathParams: pathParamsSchema,
         query: querySchema,
@@ -615,7 +787,16 @@ function registerPrepareTool(
     async input => {
       const pathTemplate =
         input.pathTemplate ??
-        (input.method === 'POST' ? options.defaultCreatePath : options.defaultUpdatePath);
+        (input.method === 'POST'
+          ? options.defaultCreatePath
+          : input.method === 'DELETE'
+            ? (options.defaultDeletePath ?? options.defaultUpdatePath)
+            : options.defaultUpdatePath);
+      if (!pathTemplate) {
+        throw new Error(
+          `${name}: no default path template for method ${input.method}; pass an explicit pathTemplate.`,
+        );
+      }
       return jsonToolResult(
         prepareOperation({
           capability: options.capability,
