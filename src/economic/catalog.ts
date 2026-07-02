@@ -415,6 +415,13 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('rest', 'POST', '/invoices/drafts', 'Create a draft (unbooked) sales invoice.', 'draft'),
     customEndpoint('rest', 'POST', '/accounts', 'Create a general ledger account.', 'commit'),
     customEndpoint('rest', 'PUT', '/accounts/{number}', 'Update a general ledger account.', 'commit'),
+    // Customer/product master data writes on the classic REST surface: the
+    // documented flow is create via POST and full-object update via item PUT
+    // (read-merge-write).
+    customEndpoint('rest', 'POST', '/customers', 'Create a customer.', 'commit'),
+    customEndpoint('rest', 'PUT', '/customers/{number}', 'Update a customer (full object).', 'commit'),
+    customEndpoint('rest', 'POST', '/products', 'Create a product.', 'commit'),
+    customEndpoint('rest', 'PUT', '/products/{number}', 'Update a product (full object).', 'commit'),
     customEndpoint('journals', 'POST', '/journals/{number}/book', 'Book a journal.', 'dangerous'),
     customEndpoint('journals', 'POST', '/entries/draft/{journalNumber}/book', 'Book draft entries.', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),

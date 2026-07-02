@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 0.2.0
+
+- Added an `enableWrites` gateway option (mirrors the Corpay One gateway): a
+  hosting control plane that applies its own write governance opts in
+  programmatically instead of via the standalone `ECONOMIC_ENABLE_WRITES` env
+  flag. The rest of the write policy (denied paths, max amount) still applies.
+- BREAKING: the `create_draft_invoice` gateway tool now enforces the write
+  policy. Embedders must pass `enableWrites: true` (or set
+  `ECONOMIC_ENABLE_WRITES=true`) for it to execute; previously it ran ungated.
+- Added `upsert_customer` and `upsert_product` gateway tools (risk `write`,
+  disabled by default). Customers create via `POST /customers` and update by
+  `customerNumber` via read-merge-write `PUT /customers/{number}`; products use
+  the `productNumber` key to decide create vs update. Both are policy-gated and
+  covered by live-path, negative-path, and contract-mode tests.
+- Allowlisted the REST customer/product write endpoints (`POST /customers`,
+  `PUT /customers/{number}`, `POST /products`, `PUT /products/{number}`).
+
 ## 0.1.4
 
 - Added Projects (Projektregnskab) add-on tools: `economic_prepare_project_change`,

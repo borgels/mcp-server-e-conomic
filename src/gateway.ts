@@ -1,5 +1,7 @@
 import { EconomicClient, type EconomicClientOptions, type QueryValue } from './economic/client.js';
 import { callEndpoint } from './economic/endpoints.js';
+import { checkPolicy, loadPolicy, type EconomicPolicy } from './economic/policy.js';
+import { EconomicHttpError } from './errors.js';
 import {
   economicGatewayContractEntity,
   economicGatewayContractFixture,
@@ -26,6 +28,14 @@ export interface GatewayToolResult {
 
 export interface EconomicGatewayOptions extends EconomicClientOptions {
   contractMode?: boolean;
+  /**
+   * Allow the write-risk gateway tools to execute. A hosting control plane that
+   * embeds the gateway and applies its own write governance (scopes, approvals,
+   * audit) passes `true` to opt in, instead of relying on the
+   * ECONOMIC_ENABLE_WRITES environment flag used by the standalone server. The
+   * rest of the write policy (denied paths, max amount) still applies on top.
+   */
+  enableWrites?: boolean;
 }
 
 const emptyInput = {
@@ -71,6 +81,50 @@ const createDraftInvoiceInput = {
       additionalProperties: false,
     },
     idempotencyKey: { type: 'string', description: 'Optional idempotency key forwarded to e-conomic.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const upsertCustomerInput = {
+  type: 'object',
+  properties: {
+    customerNumber: {
+      type: 'number',
+      description: 'Existing customer number. When set, that customer is updated (read-merge-write); when omitted, a new customer is created.',
+    },
+    name: { type: 'string', description: 'Customer name. Required when creating.' },
+    currency: { type: 'string', description: 'Currency code, e.g. DKK. Required when creating.' },
+    customerGroupNumber: { type: 'number', description: 'Customer group number. Required when creating.' },
+    paymentTermsNumber: { type: 'number', description: 'Payment terms number. Required when creating.' },
+    vatZoneNumber: { type: 'number', description: 'VAT zone number. Required when creating.' },
+    email: { type: 'string' },
+    address: { type: 'string' },
+    zip: { type: 'string' },
+    city: { type: 'string' },
+    country: { type: 'string' },
+    corporateIdentificationNumber: { type: 'string', description: 'Company registration number (e.g. CVR).' },
+    ean: { type: 'string', description: 'EAN/GLN location number for electronic invoicing.' },
+    telephoneAndFaxNumber: { type: 'string' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const upsertProductInput = {
+  type: 'object',
+  required: ['productNumber'],
+  properties: {
+    productNumber: {
+      type: ['string', 'number'],
+      description: 'Product number (the product key). Updates the product when it exists, creates it otherwise.',
+    },
+    name: { type: 'string', description: 'Product name. Required when creating.' },
+    productGroupNumber: { type: 'number', description: 'Product group number. Required when creating.' },
+    salesPrice: { type: 'number', description: 'Net sales price.' },
+    costPrice: { type: 'number' },
+    recommendedPrice: { type: 'number' },
+    description: { type: 'string' },
+    unitNumber: { type: 'number', description: 'Unit number, see the units resource.' },
+    barred: { type: 'boolean', description: 'Bar the product from being used on new documents.' },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -179,15 +233,39 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
     name: 'create_draft_invoice',
     title: 'Create e-conomic draft invoice',
     description:
-      'Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer.',
+      'Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer. Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
     riskLevel: 'write',
     enabledByDefault: false,
     inputSchema: createDraftInvoiceInput,
+  },
+  {
+    name: 'upsert_customer',
+    title: 'Create or update e-conomic customer',
+    description:
+      'Create a customer, or update an existing one by customerNumber (reads the current customer and merges the provided fields). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    riskLevel: 'write',
+    enabledByDefault: false,
+    inputSchema: upsertCustomerInput,
+  },
+  {
+    name: 'upsert_product',
+    title: 'Create or update e-conomic product',
+    description:
+      'Create a product, or update it when the productNumber already exists (reads the current product and merges the provided fields). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    riskLevel: 'write',
+    enabledByDefault: false,
+    inputSchema: upsertProductInput,
   },
 ];
 
 export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
   const client = new EconomicClient(options);
+  // Writes are permitted when the embedder opts in via `enableWrites` or the
+  // standalone ECONOMIC_ENABLE_WRITES env flag; the rest of the write policy
+  // (allowed methods, denied paths, max amount) still applies on top.
+  const writePolicy: EconomicPolicy = options.enableWrites
+    ? { ...loadPolicy(), writesEnabled: true }
+    : loadPolicy();
 
   return {
     tools: economicGatewayTools,
@@ -241,7 +319,13 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           });
 
         case 'create_draft_invoice':
-          return createDraftInvoice(client, input);
+          return createDraftInvoice(client, input, writePolicy);
+
+        case 'upsert_customer':
+          return upsertCustomer(client, input, writePolicy);
+
+        case 'upsert_product':
+          return upsertProduct(client, input, writePolicy);
 
         default:
           return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
@@ -347,7 +431,11 @@ interface DraftCustomer {
   vatZone?: { vatZoneNumber?: number };
 }
 
-async function createDraftInvoice(client: EconomicClient, input: GatewayJsonObject): Promise<GatewayToolResult> {
+async function createDraftInvoice(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
   const customerNumber = numberValue(input.customerNumber);
   if (customerNumber === undefined) {
     return errorResult('create_draft_invoice requires a numeric customerNumber.');
@@ -422,6 +510,16 @@ async function createDraftInvoice(client: EconomicClient, input: GatewayJsonObje
     body.references = { other: reference };
   }
 
+  const denied = writePolicyDenial(policy, {
+    capability: 'create_draft_invoice',
+    method: 'POST',
+    path: '/invoices/drafts',
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
   const created = await callEndpoint(client, {
     serviceId: 'rest',
     method: 'POST',
@@ -431,6 +529,233 @@ async function createDraftInvoice(client: EconomicClient, input: GatewayJsonObje
   });
 
   return jsonResult('Created e-conomic draft invoice.', created);
+}
+
+// Fields the caller may set on a customer; nested reference objects are built
+// from their *Number inputs so the REST body shape stays correct.
+const CUSTOMER_FLAT_FIELDS = [
+  'name',
+  'currency',
+  'email',
+  'address',
+  'zip',
+  'city',
+  'country',
+  'corporateIdentificationNumber',
+  'ean',
+  'telephoneAndFaxNumber',
+] as const;
+
+async function upsertCustomer(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const customerNumber = numberValue(input.customerNumber);
+  const flat: GatewayJsonObject = {};
+  for (const field of CUSTOMER_FLAT_FIELDS) {
+    const value = stringValue(input[field]);
+    if (value !== undefined) {
+      flat[field] = value;
+    }
+  }
+  const customerGroupNumber = numberValue(input.customerGroupNumber);
+  const paymentTermsNumber = numberValue(input.paymentTermsNumber);
+  const vatZoneNumber = numberValue(input.vatZoneNumber);
+
+  if (customerNumber === undefined) {
+    if (
+      !flat.name
+      || !flat.currency
+      || customerGroupNumber === undefined
+      || paymentTermsNumber === undefined
+      || vatZoneNumber === undefined
+    ) {
+      return errorResult(
+        'Creating a customer requires name, currency, customerGroupNumber, paymentTermsNumber, and vatZoneNumber.',
+      );
+    }
+
+    const body: GatewayJsonObject = {
+      ...flat,
+      customerGroup: { customerGroupNumber },
+      paymentTerms: { paymentTermsNumber },
+      vatZone: { vatZoneNumber },
+    };
+
+    const denied = writePolicyDenial(policy, {
+      capability: 'upsert_customer',
+      method: 'POST',
+      path: '/customers',
+      body,
+    });
+    if (denied) {
+      return denied;
+    }
+
+    return jsonResult('Created e-conomic customer.', await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'POST',
+      pathTemplate: '/customers',
+      body,
+    }));
+  }
+
+  // Update: the REST API replaces the full object on PUT, so read the current
+  // customer and merge only the provided fields into it.
+  let existing: GatewayJsonObject;
+  try {
+    existing = (await client.rest(`/customers/${customerNumber}`)) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Customer ${customerNumber} does not exist; omit customerNumber to create a new customer.`);
+    }
+    throw error;
+  }
+
+  const body: GatewayJsonObject = { ...existing, ...flat };
+  if (customerGroupNumber !== undefined) {
+    body.customerGroup = { customerGroupNumber };
+  }
+  if (paymentTermsNumber !== undefined) {
+    body.paymentTerms = { paymentTermsNumber };
+  }
+  if (vatZoneNumber !== undefined) {
+    body.vatZone = { vatZoneNumber };
+  }
+
+  const denied = writePolicyDenial(policy, {
+    capability: 'upsert_customer',
+    method: 'PUT',
+    path: `/customers/${customerNumber}`,
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
+  return jsonResult('Updated e-conomic customer.', await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'PUT',
+    pathTemplate: '/customers/{number}',
+    pathParams: { number: customerNumber },
+    body,
+  }));
+}
+
+async function upsertProduct(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const productNumber = stringOrNumberValue(input.productNumber);
+  if (productNumber === undefined) {
+    return errorResult('upsert_product requires a productNumber.');
+  }
+
+  const flat: GatewayJsonObject = {};
+  const name = stringValue(input.name);
+  if (name) {
+    flat.name = name;
+  }
+  const description = stringValue(input.description);
+  if (description) {
+    flat.description = description;
+  }
+  for (const field of ['salesPrice', 'costPrice', 'recommendedPrice'] as const) {
+    const value = numberValue(input[field]);
+    if (value !== undefined) {
+      flat[field] = value;
+    }
+  }
+  if (typeof input.barred === 'boolean') {
+    flat.barred = input.barred;
+  }
+  const productGroupNumber = numberValue(input.productGroupNumber);
+  const unitNumber = numberValue(input.unitNumber);
+
+  // The product number is its key, so existence decides create vs update.
+  let existing: GatewayJsonObject | undefined;
+  try {
+    existing = (await client.rest(`/products/${encodeURIComponent(String(productNumber))}`)) as GatewayJsonObject;
+  } catch (error) {
+    if (!(error instanceof EconomicHttpError) || error.status !== 404) {
+      throw error;
+    }
+  }
+
+  if (!existing) {
+    if (!flat.name || productGroupNumber === undefined) {
+      return errorResult('Creating a product requires name and productGroupNumber.');
+    }
+
+    const body: GatewayJsonObject = {
+      ...flat,
+      productNumber: String(productNumber),
+      productGroup: { productGroupNumber },
+    };
+    if (unitNumber !== undefined) {
+      body.unit = { unitNumber };
+    }
+
+    const denied = writePolicyDenial(policy, {
+      capability: 'upsert_product',
+      method: 'POST',
+      path: '/products',
+      body,
+    });
+    if (denied) {
+      return denied;
+    }
+
+    return jsonResult('Created e-conomic product.', await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'POST',
+      pathTemplate: '/products',
+      body,
+    }));
+  }
+
+  const body: GatewayJsonObject = { ...existing, ...flat };
+  if (productGroupNumber !== undefined) {
+    body.productGroup = { productGroupNumber };
+  }
+  if (unitNumber !== undefined) {
+    body.unit = { unitNumber };
+  }
+
+  const denied = writePolicyDenial(policy, {
+    capability: 'upsert_product',
+    method: 'PUT',
+    path: `/products/${productNumber}`,
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
+  return jsonResult('Updated e-conomic product.', await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'PUT',
+    pathTemplate: '/products/{number}',
+    pathParams: { number: productNumber },
+    body,
+  }));
+}
+
+function writePolicyDenial(
+  policy: EconomicPolicy,
+  input: { capability: string; method: 'POST' | 'PUT'; path: string; body?: unknown },
+): GatewayToolResult | undefined {
+  const decision = checkPolicy({
+    capability: input.capability,
+    serviceId: 'rest',
+    method: input.method,
+    path: input.path,
+    body: input.body,
+  }, policy);
+
+  return decision.allowed ? undefined : errorResult(`Write blocked by policy: ${decision.reason}`);
 }
 
 async function firstLayoutNumber(client: EconomicClient): Promise<number | undefined> {
