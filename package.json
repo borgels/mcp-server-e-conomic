@@ -1,6 +1,6 @@
 {
   "name": "mcp-server-e-conomic",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Policy-aware MCP server for Visma e-conomic APIs.",
   "type": "module",
   "main": "./dist/transports/stdio.js",

@@ -294,9 +294,10 @@ The gateway exports:
 - `economicGatewayTools`: stable unprefixed tool definitions with name, title,
   description, risk level, default enablement, and JSON input schema.
 - `createEconomicGateway(options)`: a factory that accepts e-conomic credentials,
-  optional base URLs, timeout, optional `fetchImpl`, and optional contract mode.
+  optional base URLs, timeout, optional `fetchImpl`, optional contract mode, and
+  optional `enableWrites`.
 
-First-wedge gateway tools:
+Read gateway tools:
 
 - `check_connection`
 - `company_context`
@@ -306,10 +307,20 @@ First-wedge gateway tools:
 - `supplier_overview`
 - `product_overview`
 - `report_data`
+- `invoice_overview`
 
-All gateway tools are read-only. Write preparation and commit tools remain
-available only on the full MCP server surface and still require explicit write
-policy.
+Write gateway tools (risk `write`, disabled by default, policy-gated):
+
+- `create_draft_invoice` — draft (unbooked, unsent) sales invoice
+- `upsert_customer` — create, or read-merge-write update by `customerNumber`
+- `upsert_product` — create or update keyed on `productNumber`
+
+Write tools execute only when the embedder passes `enableWrites: true` (for
+control planes that apply their own write governance: scopes, approvals, audit)
+or the standalone `ECONOMIC_ENABLE_WRITES` env flag is set. The rest of the
+write policy (denied paths, max amount) still applies on top. Booking, sending,
+payments, and deletes are not exposed through the gateway; the generic prepare
+and commit tools remain available only on the full MCP server surface.
 
 The gateway reads credentials from the server environment or factory options,
 never from tool arguments. Upstream HTTP failures use the same formatted,

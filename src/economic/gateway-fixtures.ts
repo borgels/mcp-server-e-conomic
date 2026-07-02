@@ -118,6 +118,12 @@ export function economicGatewayContractFixture(
     case 'create_draft_invoice':
       return draftInvoiceFixture(input);
 
+    case 'upsert_customer':
+      return upsertCustomerFixture(input);
+
+    case 'upsert_product':
+      return upsertProductFixture(input);
+
     default:
       return undefined;
   }
@@ -172,6 +178,45 @@ function draftInvoiceFixture(input: GatewayJsonObject): GatewayContractFixture {
       grossAmount: Math.round(netAmount * 1.25 * 100) / 100,
       lines,
       self: `https://restapi.e-conomic.com/invoices/drafts/${draftInvoiceNumber}`,
+    },
+  };
+}
+
+function upsertCustomerFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const customerNumber = typeof input.customerNumber === 'number' ? input.customerNumber : undefined;
+  const action = customerNumber === undefined ? 'created' : 'updated';
+  const resolvedNumber = customerNumber ?? 1003;
+
+  return {
+    text: `${action === 'created' ? 'Created' : 'Updated'} e-conomic contract customer.`,
+    structuredContent: {
+      mode: 'contract',
+      action,
+      customerNumber: resolvedNumber,
+      name: typeof input.name === 'string' ? input.name : 'Demo Servicekunde ApS',
+      currency: typeof input.currency === 'string' ? input.currency : 'DKK',
+      self: `https://restapi.e-conomic.com/customers/${resolvedNumber}`,
+    },
+  };
+}
+
+function upsertProductFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const productNumber =
+    typeof input.productNumber === 'string' || typeof input.productNumber === 'number'
+      ? String(input.productNumber)
+      : 'NEW-PRODUCT';
+  const exists = products.some(product => product.productNumber === productNumber);
+  const action = exists ? 'updated' : 'created';
+
+  return {
+    text: `${action === 'created' ? 'Created' : 'Updated'} e-conomic contract product.`,
+    structuredContent: {
+      mode: 'contract',
+      action,
+      productNumber,
+      name: typeof input.name === 'string' ? input.name : 'Teknikertime',
+      salesPrice: typeof input.salesPrice === 'number' ? input.salesPrice : 875,
+      self: `https://restapi.e-conomic.com/products/${encodeURIComponent(productNumber)}`,
     },
   };
 }
