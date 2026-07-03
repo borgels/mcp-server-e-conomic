@@ -129,6 +129,53 @@ const upsertProductInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+// Projects add-on (projectsapi, OpenAPI). e-conomic upserts a project via the
+// collection: POST /Projects creates, PUT /Projects (full object incl. its
+// number) updates - item-level PUT returns 405. responsibleEmployee references
+// a Projects-add-on employee, not a REST employee. additionalFields is a
+// passthrough for less-common attributes so the tool covers the resource
+// without enumerating every field.
+const upsertProjectInput = {
+  type: 'object',
+  properties: {
+    projectNumber: {
+      type: 'number',
+      description: 'Existing project number. When set, that project is updated (read-merge-write); when omitted, a new project is created.',
+    },
+    name: { type: 'string', description: 'Project name. Required when creating.' },
+    projectGroupNumber: { type: 'number', description: 'Project group number. Required when creating.' },
+    customerNumber: { type: 'number', description: 'Customer number the project is for. Required when creating.' },
+    responsibleEmployeeNumber: { type: 'number', description: 'Responsible Projects employee number. Required when creating.' },
+    description: { type: 'string' },
+    barred: { type: 'boolean', description: 'Bar the project from new registrations.' },
+    additionalFields: {
+      type: 'object',
+      description: 'Optional additional Projects API fields to set on the project (passthrough).',
+      additionalProperties: true,
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const createTimeEntryInput = {
+  type: 'object',
+  required: ['projectNumber', 'activityNumber', 'employeeNumber', 'date', 'hours'],
+  properties: {
+    projectNumber: { type: 'number', description: 'Project number the time is registered on.' },
+    activityNumber: { type: 'number', description: 'Activity number the time is registered against.' },
+    employeeNumber: { type: 'number', description: 'Projects employee number the time belongs to.' },
+    date: { type: 'string', description: 'Registration date (ISO 8601 date).' },
+    hours: { type: 'number', description: 'Number of hours to register.' },
+    description: { type: 'string', description: 'Optional note stored on the registration.' },
+    additionalFields: {
+      type: 'object',
+      description: 'Optional additional TimeEntries API fields (passthrough).',
+      additionalProperties: true,
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const readEndpointInput = {
   type: 'object',
   properties: {
@@ -230,6 +277,24 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
     inputSchema: readEndpointInput,
   },
   {
+    name: 'project_overview',
+    title: 'Get e-conomic project overview',
+    description:
+      'Read the Projects add-on: projects (default), project groups, cost types, activities, employees, or time entries. Set resource to select (Projects, ProjectGroups, CostTypes, Activities, Employees, TimeEntries).',
+    riskLevel: 'read',
+    enabledByDefault: true,
+    inputSchema: readEndpointInput,
+  },
+  {
+    name: 'accounting_entries',
+    title: 'Get e-conomic accounting entries',
+    description:
+      'Read booked accounting entries (default) or, via serviceId/resource, journal draft entries. Used for ledger, supplier-invoice, and reconciliation reads. Supports paging and filters.',
+    riskLevel: 'read',
+    enabledByDefault: true,
+    inputSchema: readEndpointInput,
+  },
+  {
     name: 'create_draft_invoice',
     title: 'Create e-conomic draft invoice',
     description:
@@ -255,6 +320,24 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
     riskLevel: 'write',
     enabledByDefault: false,
     inputSchema: upsertProductInput,
+  },
+  {
+    name: 'upsert_project',
+    title: 'Create or update e-conomic project',
+    description:
+      'Create a project in the Projects add-on, or update an existing one by projectNumber (reads the current project and merges the provided fields; upserts via the collection PUT). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    riskLevel: 'write',
+    enabledByDefault: false,
+    inputSchema: upsertProjectInput,
+  },
+  {
+    name: 'create_time_entry',
+    title: 'Register e-conomic project time',
+    description:
+      'Register a project time entry (hours on a project + activity for an employee, on a date). Create only; deletion is a separate operation. Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    riskLevel: 'write',
+    enabledByDefault: false,
+    inputSchema: createTimeEntryInput,
   },
 ];
 
@@ -318,6 +401,18 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
             resource: 'invoices/booked',
           });
 
+        case 'project_overview':
+          return readEndpointResult(client, input, {
+            serviceId: 'projects',
+            resource: 'Projects',
+          });
+
+        case 'accounting_entries':
+          return readEndpointResult(client, input, {
+            serviceId: 'booked-entries',
+            resource: 'booked-entries',
+          });
+
         case 'create_draft_invoice':
           return createDraftInvoice(client, input, writePolicy);
 
@@ -326,6 +421,12 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
 
         case 'upsert_product':
           return upsertProduct(client, input, writePolicy);
+
+        case 'upsert_project':
+          return upsertProject(client, input, writePolicy);
+
+        case 'create_time_entry':
+          return createTimeEntry(client, input, writePolicy);
 
         default:
           return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
@@ -745,17 +846,173 @@ async function upsertProduct(
 
 function writePolicyDenial(
   policy: EconomicPolicy,
-  input: { capability: string; method: 'POST' | 'PUT'; path: string; body?: unknown },
+  input: { capability: string; method: 'POST' | 'PUT'; path: string; body?: unknown; serviceId?: string },
 ): GatewayToolResult | undefined {
   const decision = checkPolicy({
     capability: input.capability,
-    serviceId: 'rest',
+    serviceId: input.serviceId ?? 'rest',
     method: input.method,
     path: input.path,
     body: input.body,
   }, policy);
 
   return decision.allowed ? undefined : errorResult(`Write blocked by policy: ${decision.reason}`);
+}
+
+// Projects add-on upsert: create is POST /Projects, update is the collection
+// PUT /Projects with the full object (read-merge-write preserves objectVersion
+// and fields the caller did not touch). Item-level PUT returns 405, so both
+// paths go through the collection.
+async function upsertProject(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const projectNumber = numberValue(input.projectNumber);
+  const flat: GatewayJsonObject = {};
+  const name = stringValue(input.name);
+  if (name) {
+    flat.name = name;
+  }
+  const description = stringValue(input.description);
+  if (description) {
+    flat.description = description;
+  }
+  if (typeof input.barred === 'boolean') {
+    flat.barred = input.barred;
+  }
+  const additional = objectValue(input.additionalFields) ?? {};
+  const projectGroupNumber = numberValue(input.projectGroupNumber);
+  const customerNumber = numberValue(input.customerNumber);
+  const responsibleEmployeeNumber = numberValue(input.responsibleEmployeeNumber);
+
+  const applyRefs = (body: GatewayJsonObject): void => {
+    if (projectGroupNumber !== undefined) {
+      body.projectGroup = { projectGroupNumber };
+    }
+    if (customerNumber !== undefined) {
+      body.customer = { customerNumber };
+    }
+    if (responsibleEmployeeNumber !== undefined) {
+      body.responsibleEmployee = { employeeNumber: responsibleEmployeeNumber };
+    }
+  };
+
+  if (projectNumber === undefined) {
+    if (!flat.name || projectGroupNumber === undefined || customerNumber === undefined || responsibleEmployeeNumber === undefined) {
+      return errorResult(
+        'Creating a project requires name, projectGroupNumber, customerNumber, and responsibleEmployeeNumber.',
+      );
+    }
+
+    const body: GatewayJsonObject = { ...additional, ...flat };
+    applyRefs(body);
+
+    const denied = writePolicyDenial(policy, {
+      capability: 'upsert_project',
+      serviceId: 'projects',
+      method: 'POST',
+      path: '/Projects',
+      body,
+    });
+    if (denied) {
+      return denied;
+    }
+
+    return jsonResult('Created e-conomic project.', await callEndpoint(client, {
+      serviceId: 'projects',
+      method: 'POST',
+      pathTemplate: '/Projects',
+      body,
+    }));
+  }
+
+  let existing: GatewayJsonObject;
+  try {
+    existing = (await callEndpoint(client, {
+      serviceId: 'projects',
+      method: 'GET',
+      pathTemplate: '/Projects/{number}',
+      pathParams: { number: projectNumber },
+    })) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Project ${projectNumber} does not exist; omit projectNumber to create a new project.`);
+    }
+    throw error;
+  }
+
+  const body: GatewayJsonObject = { ...existing, ...additional, ...flat, projectNumber };
+  applyRefs(body);
+
+  const denied = writePolicyDenial(policy, {
+    capability: 'upsert_project',
+    serviceId: 'projects',
+    method: 'PUT',
+    path: '/Projects',
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
+  return jsonResult('Updated e-conomic project.', await callEndpoint(client, {
+    serviceId: 'projects',
+    method: 'PUT',
+    pathTemplate: '/Projects',
+    body,
+  }));
+}
+
+// Project time registration: POST /TimeEntries with project + activity +
+// employee + date + hours. The Projects API supports create and delete only
+// (no update), so this tool creates; deleting a registration is a separate op.
+async function createTimeEntry(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const projectNumber = numberValue(input.projectNumber);
+  const activityNumber = numberValue(input.activityNumber);
+  const employeeNumber = numberValue(input.employeeNumber);
+  const date = stringValue(input.date);
+  const hours = numberValue(input.hours);
+
+  if (projectNumber === undefined || activityNumber === undefined || employeeNumber === undefined || !date || hours === undefined) {
+    return errorResult('create_time_entry requires projectNumber, activityNumber, employeeNumber, date, and hours.');
+  }
+
+  const additional = objectValue(input.additionalFields) ?? {};
+  const body: GatewayJsonObject = {
+    ...additional,
+    date,
+    hours,
+    project: { projectNumber },
+    activity: { activityNumber },
+    employee: { employeeNumber },
+  };
+  const description = stringValue(input.description);
+  if (description) {
+    body.description = description;
+  }
+
+  const denied = writePolicyDenial(policy, {
+    capability: 'create_time_entry',
+    serviceId: 'projects',
+    method: 'POST',
+    path: '/TimeEntries',
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
+  return jsonResult('Registered e-conomic project time.', await callEndpoint(client, {
+    serviceId: 'projects',
+    method: 'POST',
+    pathTemplate: '/TimeEntries',
+    body,
+  }));
 }
 
 async function firstLayoutNumber(client: EconomicClient): Promise<number | undefined> {
@@ -810,6 +1067,10 @@ function stringValue(value: GatewayJsonValue | undefined): string | undefined {
 
 function stringOrNumberValue(value: GatewayJsonValue | undefined): string | number | undefined {
   return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
+
+function objectValue(value: GatewayJsonValue | undefined): GatewayJsonObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
 }
 
 function assertEconomicUrl(value: string): void {
