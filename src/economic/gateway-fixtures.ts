@@ -166,9 +166,30 @@ export function economicGatewayContractFixture(
     case 'upsert_employee':
       return upsertEmployeeFixture(input);
 
+    case 'upsert_account':
+      return upsertAccountFixture(input);
+
     default:
       return undefined;
   }
+}
+
+function upsertAccountFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const accountNumber = typeof input.accountNumber === 'number' ? input.accountNumber : 0;
+  const exists = accounts.some(account => account.accountNumber === accountNumber);
+  const action = exists ? 'updated' : 'created';
+
+  return {
+    text: `${action === 'created' ? 'Created' : 'Updated'} e-conomic contract account.`,
+    structuredContent: {
+      mode: 'contract',
+      action,
+      accountNumber,
+      name: typeof input.name === 'string' ? input.name : 'Ny konto',
+      accountType: typeof input.accountType === 'string' ? input.accountType : 'profitAndLoss',
+      self: `https://restapi.e-conomic.com/accounts/${accountNumber}`,
+    },
+  };
 }
 
 function upsertSupplierFixture(input: GatewayJsonObject): GatewayContractFixture {

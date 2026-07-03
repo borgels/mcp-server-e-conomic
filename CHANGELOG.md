@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.5.0
+
+- Added `upsert_account` (risk `destructive`, disabled by default): create a
+  general-ledger account via `POST /accounts`, or update by `accountNumber` via
+  read-merge-write `PUT /accounts/{number}`. Editing the chart of accounts is a
+  structural change, so a hosting control plane should gate it behind approval.
+  Policy-gated; covered by live-path, negative-path, and contract-mode tests.
+
 ## 0.4.0
 
 - Added supplier and project-employee write tools (risk `write`, disabled by
