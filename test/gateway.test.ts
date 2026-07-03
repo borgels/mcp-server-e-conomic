@@ -22,6 +22,7 @@ describe('e-conomic gateway export', () => {
       ['create_time_entry', 'write', false],
       ['upsert_supplier', 'write', false],
       ['upsert_employee', 'write', false],
+      ['upsert_account', 'destructive', false],
     ]);
     // Write tools must never be enabled by default.
     const writeTools = economicGatewayTools.filter(tool => tool.riskLevel !== 'read');
@@ -33,6 +34,7 @@ describe('e-conomic gateway export', () => {
       'create_time_entry',
       'upsert_supplier',
       'upsert_employee',
+      'upsert_account',
     ]);
     expect(writeTools.every(tool => tool.enabledByDefault === false)).toBe(true);
   });
@@ -607,6 +609,63 @@ describe('e-conomic gateway export', () => {
     expect(supplier.structuredContent).toMatchObject({ mode: 'contract', action: 'created', supplierNumber: 2002 });
     const employee = await gateway.callTool('upsert_employee', { employeeNumber: 12, name: 'Rettet Navn' });
     expect(employee.structuredContent).toMatchObject({ mode: 'contract', action: 'updated', employeeNumber: 12 });
+  });
+
+  it('creates a ledger account and updates via read-merge-write', async () => {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      enableWrites: true,
+      fetchImpl: async (input, init) => {
+        const request = new Request(input, init);
+        const body = request.method !== 'GET' ? await request.clone().json() : undefined;
+        calls.push({ method: request.method, url: request.url, body });
+        if (request.method === 'GET') {
+          return new Response(JSON.stringify({ message: 'Not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        }
+        return Response.json({ accountNumber: 4010, name: 'Ny omsaetningskonto' });
+      },
+    });
+
+    const result = await gateway.callTool('upsert_account', {
+      accountNumber: 4010,
+      name: 'Ny omsaetningskonto',
+      accountType: 'profitAndLoss',
+    });
+    expect(result.isError).toBeUndefined();
+    const post = calls.find(call => call.method === 'POST');
+    expect(post?.url).toContain('/accounts');
+    expect(post?.body).toMatchObject({ accountNumber: 4010, name: 'Ny omsaetningskonto', accountType: 'profitAndLoss' });
+  });
+
+  it('rejects account creation without name/accountType', async () => {
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      enableWrites: true,
+      fetchImpl: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === 'GET') {
+          return new Response(JSON.stringify({ message: 'Not found' }), { status: 404, headers: { 'content-type': 'application/json' } });
+        }
+        return Response.json({});
+      },
+    });
+    const result = await gateway.callTool('upsert_account', { accountNumber: 4011 });
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content[0]?.text).toMatch(/requires accountNumber, name, and accountType/);
+  });
+
+  it('blocks account writes unless the embedder enables writes', async () => {
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      fetchImpl: async () => new Response(JSON.stringify({ message: 'Not found' }), { status: 404, headers: { 'content-type': 'application/json' } }),
+    });
+    const result = await gateway.callTool('upsert_account', { accountNumber: 4010, name: 'X', accountType: 'profitAndLoss' });
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content[0]?.text).toMatch(/writes disabled/);
   });
 
   it('keeps get_entity input validation in contract mode', async () => {

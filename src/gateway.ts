@@ -226,6 +226,35 @@ const upsertEmployeeInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+// Chart-of-accounts write (classic REST /accounts). Elevated: editing the CoA
+// is a structural change, so this is risk 'destructive' and the hosting control
+// plane gates it behind approval. accountType-specific required fields vary, so
+// only the always-required keys are validated here; additionalFields carries the
+// rest and e-conomic validates on write.
+const upsertAccountInput = {
+  type: 'object',
+  properties: {
+    accountNumber: {
+      type: 'number',
+      description: 'Account number (the account key). Updates the account when it exists (read-merge-write), creates it otherwise.',
+    },
+    name: { type: 'string', description: 'Account name. Required when creating.' },
+    accountType: {
+      type: 'string',
+      description: 'Account type, e.g. profitAndLoss, status, heading, headingStart, sumInterval, sumAlpha, totalFrom. Required when creating.',
+    },
+    blockDirectEntries: { type: 'boolean', description: 'Block direct entries on the account.' },
+    vatCode: { type: 'string', description: 'Default VAT code for the account.' },
+    additionalFields: {
+      type: 'object',
+      description: 'Optional additional account fields (accountType-specific, passthrough).',
+      additionalProperties: true,
+    },
+  },
+  required: ['accountNumber'],
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const readEndpointInput = {
   type: 'object',
   properties: {
@@ -407,6 +436,15 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
     enabledByDefault: false,
     inputSchema: upsertEmployeeInput,
   },
+  {
+    name: 'upsert_account',
+    title: 'Create or update e-conomic ledger account',
+    description:
+      'Create a general-ledger account, or update an existing one by accountNumber (read-merge-write). Editing the chart of accounts is a structural change (risk destructive); a hosting control plane should gate it behind approval. Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    riskLevel: 'destructive',
+    enabledByDefault: false,
+    inputSchema: upsertAccountInput,
+  },
 ];
 
 export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
@@ -501,6 +539,9 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
 
         case 'upsert_employee':
           return upsertEmployee(client, input, writePolicy);
+
+        case 'upsert_account':
+          return upsertAccount(client, input, writePolicy);
 
         default:
           return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
@@ -1089,6 +1130,85 @@ async function upsertEmployee(
     serviceId: 'projects',
     method: 'PUT',
     pathTemplate: '/Employees',
+    body,
+  }));
+}
+
+// Chart-of-accounts write on classic REST: create POST /accounts, update full-
+// object PUT /accounts/{number} (read-merge-write). Mirrors the customer/product
+// upsert flow; both endpoints are already allowlisted.
+async function upsertAccount(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const accountNumber = numberValue(input.accountNumber);
+  if (accountNumber === undefined) {
+    return errorResult('upsert_account requires an accountNumber.');
+  }
+
+  const flat: GatewayJsonObject = {};
+  const name = stringValue(input.name);
+  if (name) {
+    flat.name = name;
+  }
+  const accountType = stringValue(input.accountType);
+  if (accountType) {
+    flat.accountType = accountType;
+  }
+  const vatCode = stringValue(input.vatCode);
+  if (vatCode) {
+    flat.vatCode = vatCode;
+  }
+  if (typeof input.blockDirectEntries === 'boolean') {
+    flat.blockDirectEntries = input.blockDirectEntries;
+  }
+  const additional = objectValue(input.additionalFields) ?? {};
+
+  let existing: GatewayJsonObject | undefined;
+  try {
+    existing = (await client.rest(`/accounts/${accountNumber}`)) as GatewayJsonObject;
+  } catch (error) {
+    if (!(error instanceof EconomicHttpError) || error.status !== 404) {
+      throw error;
+    }
+  }
+
+  if (!existing) {
+    if (!flat.name || !flat.accountType) {
+      return errorResult('Creating an account requires accountNumber, name, and accountType.');
+    }
+
+    const body: GatewayJsonObject = { ...additional, ...flat, accountNumber };
+    const denied = writePolicyDenial(policy, { capability: 'upsert_account', method: 'POST', path: '/accounts', body });
+    if (denied) {
+      return denied;
+    }
+
+    return jsonResult('Created e-conomic account.', await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'POST',
+      pathTemplate: '/accounts',
+      body,
+    }));
+  }
+
+  const body: GatewayJsonObject = { ...existing, ...additional, ...flat };
+  const denied = writePolicyDenial(policy, {
+    capability: 'upsert_account',
+    method: 'PUT',
+    path: `/accounts/${accountNumber}`,
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
+  return jsonResult('Updated e-conomic account.', await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'PUT',
+    pathTemplate: '/accounts/{number}',
+    pathParams: { number: accountNumber },
     body,
   }));
 }
