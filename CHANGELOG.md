@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.3.0
+
+- Added gateway read tools for the newer OpenAPI services: `project_overview`
+  (Projects add-on: Projects/ProjectGroups/CostTypes/Activities/Employees/
+  TimeEntries via the `resource` param, default Projects) and `accounting_entries`
+  (booked entries by default; journal draft entries via serviceId/resource). Both
+  default OpenAPI-first (`apis.e-conomic.com`) and are enabled by default.
+- Added project write tools (risk `write`, disabled by default): `upsert_project`
+  (create via `POST /Projects`, update by `projectNumber` via read-merge-write
+  collection `PUT /Projects` preserving `objectVersion`) and `create_time_entry`
+  (register hours via `POST /TimeEntries`; create only). Both are policy-gated and
+  covered by live-path, negative-path, and contract-mode tests.
+- Generalized the gateway write-policy check to carry the OpenAPI `serviceId` so
+  project writes are governed on the correct surface.
+
 ## 0.2.0
 
 - Added an `enableWrites` gateway option (mirrors the Corpay One gateway): a
