@@ -160,9 +160,50 @@ export function economicGatewayContractFixture(
     case 'create_time_entry':
       return createTimeEntryFixture(input);
 
+    case 'upsert_supplier':
+      return upsertSupplierFixture(input);
+
+    case 'upsert_employee':
+      return upsertEmployeeFixture(input);
+
     default:
       return undefined;
   }
+}
+
+function upsertSupplierFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const supplierNumber = typeof input.supplierNumber === 'number' ? input.supplierNumber : undefined;
+  const action = supplierNumber === undefined ? 'created' : 'updated';
+  const resolvedNumber = supplierNumber ?? 2002;
+
+  return {
+    text: `${action === 'created' ? 'Created' : 'Updated'} e-conomic contract supplier.`,
+    structuredContent: {
+      mode: 'contract',
+      action,
+      supplierNumber: resolvedNumber,
+      name: typeof input.name === 'string' ? input.name : 'Demo Grossist A/S',
+      currency: typeof input.currency === 'string' ? input.currency : 'DKK',
+      self: `https://restapi.e-conomic.com/suppliers/${resolvedNumber}`,
+    },
+  };
+}
+
+function upsertEmployeeFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const employeeNumber = typeof input.employeeNumber === 'number' ? input.employeeNumber : undefined;
+  const action = employeeNumber === undefined ? 'created' : 'updated';
+  const resolvedNumber = employeeNumber ?? 12;
+
+  return {
+    text: `${action === 'created' ? 'Created' : 'Updated'} e-conomic contract project employee.`,
+    structuredContent: {
+      mode: 'contract',
+      action,
+      employeeNumber: resolvedNumber,
+      name: typeof input.name === 'string' ? input.name : 'Demo Medarbejder',
+      self: `https://apis.e-conomic.com/projectsapi/v1.1.0/Employees/${resolvedNumber}`,
+    },
+  };
 }
 
 function upsertProjectFixture(input: GatewayJsonObject): GatewayContractFixture {

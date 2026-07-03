@@ -176,6 +176,56 @@ const createTimeEntryInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+// Suppliers are classic REST master data (no OpenAPI supplier record), so the
+// upsert mirrors the customer flow: create via POST /suppliers, update by
+// supplierNumber via read-merge-write PUT /suppliers/{number}.
+const upsertSupplierInput = {
+  type: 'object',
+  properties: {
+    supplierNumber: {
+      type: 'number',
+      description: 'Existing supplier number. When set, that supplier is updated (read-merge-write); when omitted, a new supplier is created.',
+    },
+    name: { type: 'string', description: 'Supplier name. Required when creating.' },
+    currency: { type: 'string', description: 'Currency code, e.g. DKK. Required when creating.' },
+    supplierGroupNumber: { type: 'number', description: 'Supplier group number. Required when creating.' },
+    paymentTermsNumber: { type: 'number', description: 'Payment terms number. Required when creating.' },
+    vatZoneNumber: { type: 'number', description: 'VAT zone number. Required when creating.' },
+    email: { type: 'string' },
+    address: { type: 'string' },
+    zip: { type: 'string' },
+    city: { type: 'string' },
+    country: { type: 'string' },
+    corporateIdentificationNumber: { type: 'string', description: 'Company registration number (e.g. CVR).' },
+    additionalFields: {
+      type: 'object',
+      description: 'Optional additional supplier fields to set (passthrough).',
+      additionalProperties: true,
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+// Projects add-on employees upsert via the collection like projects: create
+// POST /Employees, update collection PUT /Employees (read-merge-write).
+const upsertEmployeeInput = {
+  type: 'object',
+  properties: {
+    employeeNumber: {
+      type: 'number',
+      description: 'Existing employee number. When set, that employee is updated (read-merge-write); when omitted, a new employee is created.',
+    },
+    name: { type: 'string', description: 'Employee name. Required when creating.' },
+    barred: { type: 'boolean', description: 'Bar the employee from new registrations.' },
+    additionalFields: {
+      type: 'object',
+      description: 'Optional additional Projects Employee fields (passthrough).',
+      additionalProperties: true,
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const readEndpointInput = {
   type: 'object',
   properties: {
@@ -339,6 +389,24 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
     enabledByDefault: false,
     inputSchema: createTimeEntryInput,
   },
+  {
+    name: 'upsert_supplier',
+    title: 'Create or update e-conomic supplier',
+    description:
+      'Create a supplier, or update an existing one by supplierNumber (reads the current supplier and merges the provided fields). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    riskLevel: 'write',
+    enabledByDefault: false,
+    inputSchema: upsertSupplierInput,
+  },
+  {
+    name: 'upsert_employee',
+    title: 'Create or update e-conomic project employee',
+    description:
+      'Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    riskLevel: 'write',
+    enabledByDefault: false,
+    inputSchema: upsertEmployeeInput,
+  },
 ];
 
 export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
@@ -427,6 +495,12 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
 
         case 'create_time_entry':
           return createTimeEntry(client, input, writePolicy);
+
+        case 'upsert_supplier':
+          return upsertSupplier(client, input, writePolicy);
+
+        case 'upsert_employee':
+          return upsertEmployee(client, input, writePolicy);
 
         default:
           return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
@@ -840,6 +914,181 @@ async function upsertProduct(
     method: 'PUT',
     pathTemplate: '/products/{number}',
     pathParams: { number: productNumber },
+    body,
+  }));
+}
+
+const SUPPLIER_FLAT_FIELDS = [
+  'name',
+  'currency',
+  'email',
+  'address',
+  'zip',
+  'city',
+  'country',
+  'corporateIdentificationNumber',
+] as const;
+
+// Suppliers mirror customers on the classic REST surface: create via POST, full-
+// object update via item PUT (read-merge-write).
+async function upsertSupplier(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const supplierNumber = numberValue(input.supplierNumber);
+  const flat: GatewayJsonObject = {};
+  for (const field of SUPPLIER_FLAT_FIELDS) {
+    const value = stringValue(input[field]);
+    if (value !== undefined) {
+      flat[field] = value;
+    }
+  }
+  const additional = objectValue(input.additionalFields) ?? {};
+  const supplierGroupNumber = numberValue(input.supplierGroupNumber);
+  const paymentTermsNumber = numberValue(input.paymentTermsNumber);
+  const vatZoneNumber = numberValue(input.vatZoneNumber);
+
+  const applyRefs = (body: GatewayJsonObject): void => {
+    if (supplierGroupNumber !== undefined) {
+      body.supplierGroup = { supplierGroupNumber };
+    }
+    if (paymentTermsNumber !== undefined) {
+      body.paymentTerms = { paymentTermsNumber };
+    }
+    if (vatZoneNumber !== undefined) {
+      body.vatZone = { vatZoneNumber };
+    }
+  };
+
+  if (supplierNumber === undefined) {
+    if (!flat.name || !flat.currency || supplierGroupNumber === undefined || paymentTermsNumber === undefined || vatZoneNumber === undefined) {
+      return errorResult(
+        'Creating a supplier requires name, currency, supplierGroupNumber, paymentTermsNumber, and vatZoneNumber.',
+      );
+    }
+
+    const body: GatewayJsonObject = { ...additional, ...flat };
+    applyRefs(body);
+
+    const denied = writePolicyDenial(policy, { capability: 'upsert_supplier', method: 'POST', path: '/suppliers', body });
+    if (denied) {
+      return denied;
+    }
+
+    return jsonResult('Created e-conomic supplier.', await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'POST',
+      pathTemplate: '/suppliers',
+      body,
+    }));
+  }
+
+  let existing: GatewayJsonObject;
+  try {
+    existing = (await client.rest(`/suppliers/${supplierNumber}`)) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Supplier ${supplierNumber} does not exist; omit supplierNumber to create a new supplier.`);
+    }
+    throw error;
+  }
+
+  const body: GatewayJsonObject = { ...existing, ...additional, ...flat };
+  applyRefs(body);
+
+  const denied = writePolicyDenial(policy, {
+    capability: 'upsert_supplier',
+    method: 'PUT',
+    path: `/suppliers/${supplierNumber}`,
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
+  return jsonResult('Updated e-conomic supplier.', await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'PUT',
+    pathTemplate: '/suppliers/{number}',
+    pathParams: { number: supplierNumber },
+    body,
+  }));
+}
+
+// Projects add-on employees upsert via the collection like projects.
+async function upsertEmployee(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const employeeNumber = numberValue(input.employeeNumber);
+  const flat: GatewayJsonObject = {};
+  const name = stringValue(input.name);
+  if (name) {
+    flat.name = name;
+  }
+  if (typeof input.barred === 'boolean') {
+    flat.barred = input.barred;
+  }
+  const additional = objectValue(input.additionalFields) ?? {};
+
+  if (employeeNumber === undefined) {
+    if (!flat.name) {
+      return errorResult('Creating an employee requires a name.');
+    }
+
+    const body: GatewayJsonObject = { ...additional, ...flat };
+    const denied = writePolicyDenial(policy, {
+      capability: 'upsert_employee',
+      serviceId: 'projects',
+      method: 'POST',
+      path: '/Employees',
+      body,
+    });
+    if (denied) {
+      return denied;
+    }
+
+    return jsonResult('Created e-conomic project employee.', await callEndpoint(client, {
+      serviceId: 'projects',
+      method: 'POST',
+      pathTemplate: '/Employees',
+      body,
+    }));
+  }
+
+  let existing: GatewayJsonObject;
+  try {
+    existing = (await callEndpoint(client, {
+      serviceId: 'projects',
+      method: 'GET',
+      pathTemplate: '/Employees/{number}',
+      pathParams: { number: employeeNumber },
+    })) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Employee ${employeeNumber} does not exist; omit employeeNumber to create a new employee.`);
+    }
+    throw error;
+  }
+
+  const body: GatewayJsonObject = { ...existing, ...additional, ...flat, employeeNumber };
+  const denied = writePolicyDenial(policy, {
+    capability: 'upsert_employee',
+    serviceId: 'projects',
+    method: 'PUT',
+    path: '/Employees',
+    body,
+  });
+  if (denied) {
+    return denied;
+  }
+
+  return jsonResult('Updated e-conomic project employee.', await callEndpoint(client, {
+    serviceId: 'projects',
+    method: 'PUT',
+    pathTemplate: '/Employees',
     body,
   }));
 }

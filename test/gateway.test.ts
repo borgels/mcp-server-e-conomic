@@ -20,6 +20,8 @@ describe('e-conomic gateway export', () => {
       ['upsert_product', 'write', false],
       ['upsert_project', 'write', false],
       ['create_time_entry', 'write', false],
+      ['upsert_supplier', 'write', false],
+      ['upsert_employee', 'write', false],
     ]);
     // Write tools must never be enabled by default.
     const writeTools = economicGatewayTools.filter(tool => tool.riskLevel !== 'read');
@@ -29,6 +31,8 @@ describe('e-conomic gateway export', () => {
       'upsert_product',
       'upsert_project',
       'create_time_entry',
+      'upsert_supplier',
+      'upsert_employee',
     ]);
     expect(writeTools.every(tool => tool.enabledByDefault === false)).toBe(true);
   });
@@ -533,6 +537,76 @@ describe('e-conomic gateway export', () => {
       hours: 4,
     });
     expect(time.structuredContent).toMatchObject({ mode: 'contract', project: { projectNumber: 5001 }, hours: 4 });
+  });
+
+  it('creates a supplier with nested reference objects', async () => {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      enableWrites: true,
+      fetchImpl: async (input, init) => {
+        const request = new Request(input, init);
+        const body = request.method === 'POST' ? await request.clone().json() : undefined;
+        calls.push({ method: request.method, url: request.url, body });
+        return Response.json({ supplierNumber: 2050, name: 'Ny Leverandoer ApS' });
+      },
+    });
+
+    const result = await gateway.callTool('upsert_supplier', {
+      name: 'Ny Leverandoer ApS',
+      currency: 'DKK',
+      supplierGroupNumber: 1,
+      paymentTermsNumber: 5,
+      vatZoneNumber: 1,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const post = calls.find(call => call.method === 'POST');
+    expect(post?.url).toContain('/suppliers');
+    expect(post?.body).toMatchObject({
+      name: 'Ny Leverandoer ApS',
+      currency: 'DKK',
+      supplierGroup: { supplierGroupNumber: 1 },
+      paymentTerms: { paymentTermsNumber: 5 },
+      vatZone: { vatZoneNumber: 1 },
+    });
+  });
+
+  it('rejects supplier creation without the required master data fields', async () => {
+    const gateway = createEconomicGateway({ appSecretToken: 'app', agreementGrantToken: 'grant', enableWrites: true });
+    const result = await gateway.callTool('upsert_supplier', { name: 'Ny Leverandoer' });
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content[0]?.text).toMatch(/requires name, currency, supplierGroupNumber/);
+  });
+
+  it('creates a project employee via the Projects collection', async () => {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      enableWrites: true,
+      fetchImpl: async (input, init) => {
+        const request = new Request(input, init);
+        const body = request.method === 'POST' ? await request.clone().json() : undefined;
+        calls.push({ method: request.method, url: request.url, body });
+        return Response.json({ employeeNumber: 20, name: 'Ny Medarbejder' });
+      },
+    });
+
+    const result = await gateway.callTool('upsert_employee', { name: 'Ny Medarbejder' });
+    expect(result.isError).toBeUndefined();
+    const post = calls.find(call => call.method === 'POST');
+    expect(post?.url).toContain('/projectsapi/v1.1.0/Employees');
+    expect(post?.body).toMatchObject({ name: 'Ny Medarbejder' });
+  });
+
+  it('serves deterministic supplier/employee upsert fixtures in contract mode', async () => {
+    const gateway = createEconomicGateway({ contractMode: true });
+    const supplier = await gateway.callTool('upsert_supplier', { name: 'Ny Leverandoer ApS', currency: 'DKK' });
+    expect(supplier.structuredContent).toMatchObject({ mode: 'contract', action: 'created', supplierNumber: 2002 });
+    const employee = await gateway.callTool('upsert_employee', { employeeNumber: 12, name: 'Rettet Navn' });
+    expect(employee.structuredContent).toMatchObject({ mode: 'contract', action: 'updated', employeeNumber: 12 });
   });
 
   it('keeps get_entity input validation in contract mode', async () => {
