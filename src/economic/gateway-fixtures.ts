@@ -83,6 +83,30 @@ const bookedInvoices = [
   },
 ];
 
+const projects = [
+  {
+    projectNumber: 5001,
+    name: 'Servicekontrakt Nord',
+    projectGroup: { projectGroupNumber: 1 },
+    customer: { customerNumber: 1001 },
+    responsibleEmployee: { employeeNumber: 10 },
+    barred: false,
+  },
+  {
+    projectNumber: 5002,
+    name: 'Anlaeg Syd',
+    projectGroup: { projectGroupNumber: 2 },
+    customer: { customerNumber: 1002 },
+    responsibleEmployee: { employeeNumber: 11 },
+    barred: false,
+  },
+];
+
+const bookedEntries = [
+  { entryNumber: 800001, accountNumber: 1010, amountInBaseCurrency: -8000, date: '2026-05-02', text: 'Faktura 70001' },
+  { entryNumber: 800002, accountNumber: 1000, amountInBaseCurrency: 8000, date: '2026-05-02', text: 'Debitor 1001' },
+];
+
 export function economicGatewayContractFixture(
   toolName: string,
   input: GatewayJsonObject,
@@ -115,6 +139,12 @@ export function economicGatewayContractFixture(
     case 'invoice_overview':
       return collectionFixture('Fetched e-conomic contract invoices.', input, bookedInvoices);
 
+    case 'project_overview':
+      return collectionFixture('Fetched e-conomic contract projects.', input, projects);
+
+    case 'accounting_entries':
+      return collectionFixture('Fetched e-conomic contract accounting entries.', input, bookedEntries);
+
     case 'create_draft_invoice':
       return draftInvoiceFixture(input);
 
@@ -124,9 +154,50 @@ export function economicGatewayContractFixture(
     case 'upsert_product':
       return upsertProductFixture(input);
 
+    case 'upsert_project':
+      return upsertProjectFixture(input);
+
+    case 'create_time_entry':
+      return createTimeEntryFixture(input);
+
     default:
       return undefined;
   }
+}
+
+function upsertProjectFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const projectNumber = typeof input.projectNumber === 'number' ? input.projectNumber : undefined;
+  const action = projectNumber === undefined ? 'created' : 'updated';
+  const resolvedNumber = projectNumber ?? 5003;
+
+  return {
+    text: `${action === 'created' ? 'Created' : 'Updated'} e-conomic contract project.`,
+    structuredContent: {
+      mode: 'contract',
+      action,
+      projectNumber: resolvedNumber,
+      name: typeof input.name === 'string' ? input.name : 'Servicekontrakt Nord',
+      self: `https://apis.e-conomic.com/projectsapi/v1.1.0/Projects/${resolvedNumber}`,
+    },
+  };
+}
+
+function createTimeEntryFixture(input: GatewayJsonObject): GatewayContractFixture {
+  const projectNumber = typeof input.projectNumber === 'number' ? input.projectNumber : 0;
+  const hours = typeof input.hours === 'number' ? input.hours : 0;
+
+  return {
+    text: 'Registered e-conomic contract project time.',
+    structuredContent: {
+      mode: 'contract',
+      timeEntryNumber: 900000 + projectNumber,
+      project: { projectNumber },
+      activity: { activityNumber: typeof input.activityNumber === 'number' ? input.activityNumber : 0 },
+      employee: { employeeNumber: typeof input.employeeNumber === 'number' ? input.employeeNumber : 0 },
+      date: typeof input.date === 'string' ? input.date : '2026-05-02',
+      hours,
+    },
+  };
 }
 
 export function economicGatewayContractEntity(input: GatewayJsonObject): GatewayContractFixture {

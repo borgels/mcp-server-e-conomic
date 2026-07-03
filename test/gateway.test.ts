@@ -13,13 +13,23 @@ describe('e-conomic gateway export', () => {
       ['product_overview', 'read', true],
       ['report_data', 'read', true],
       ['invoice_overview', 'read', true],
+      ['project_overview', 'read', true],
+      ['accounting_entries', 'read', true],
       ['create_draft_invoice', 'write', false],
       ['upsert_customer', 'write', false],
       ['upsert_product', 'write', false],
+      ['upsert_project', 'write', false],
+      ['create_time_entry', 'write', false],
     ]);
     // Write tools must never be enabled by default.
     const writeTools = economicGatewayTools.filter(tool => tool.riskLevel !== 'read');
-    expect(writeTools.map(tool => tool.name)).toEqual(['create_draft_invoice', 'upsert_customer', 'upsert_product']);
+    expect(writeTools.map(tool => tool.name)).toEqual([
+      'create_draft_invoice',
+      'upsert_customer',
+      'upsert_product',
+      'upsert_project',
+      'create_time_entry',
+    ]);
     expect(writeTools.every(tool => tool.enabledByDefault === false)).toBe(true);
   });
 
@@ -397,6 +407,132 @@ describe('e-conomic gateway export', () => {
     expect(updated.structuredContent).toMatchObject({ mode: 'contract', action: 'updated', productNumber: 'TIME-TECH' });
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reads the projects OpenAPI service via project_overview', async () => {
+    const requests: Request[] = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      fetchImpl: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json({ collection: [{ projectNumber: 5001 }] });
+      },
+    });
+
+    // TimeEntries resource selects a different projects resource on the OpenAPI surface.
+    const result = await gateway.callTool('project_overview', { resource: 'TimeEntries' });
+    expect(result.isError).toBeUndefined();
+    expect(requests[0]?.url).toContain('apis.e-conomic.com/projectsapi/v1.1.0/TimeEntries/paged');
+  });
+
+  it('registers a project time entry via POST /TimeEntries when writes are enabled', async () => {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      enableWrites: true,
+      fetchImpl: async (input, init) => {
+        const request = new Request(input, init);
+        const body = request.method === 'POST' ? await request.clone().json() : undefined;
+        calls.push({ method: request.method, url: request.url, body });
+        return Response.json({ timeEntryNumber: 900001 });
+      },
+    });
+
+    const result = await gateway.callTool('create_time_entry', {
+      projectNumber: 5001,
+      activityNumber: 3,
+      employeeNumber: 10,
+      date: '2026-05-02',
+      hours: 4,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const post = calls.find(call => call.method === 'POST');
+    expect(post?.url).toContain('/projectsapi/v1.1.0/TimeEntries');
+    expect(post?.body).toMatchObject({
+      date: '2026-05-02',
+      hours: 4,
+      project: { projectNumber: 5001 },
+      activity: { activityNumber: 3 },
+      employee: { employeeNumber: 10 },
+    });
+  });
+
+  it('blocks time-entry registration unless the embedder enables writes', async () => {
+    const gateway = createEconomicGateway({ appSecretToken: 'app', agreementGrantToken: 'grant' });
+    const result = await gateway.callTool('create_time_entry', {
+      projectNumber: 5001,
+      activityNumber: 3,
+      employeeNumber: 10,
+      date: '2026-05-02',
+      hours: 4,
+    });
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content[0]?.text).toMatch(/writes disabled/);
+  });
+
+  it('creates a project via collection POST and updates via merged collection PUT', async () => {
+    const calls: Array<{ method: string; url: string; body?: unknown }> = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      enableWrites: true,
+      fetchImpl: async (input, init) => {
+        const request = new Request(input, init);
+        const body = request.method === 'PUT' ? await request.clone().json() : undefined;
+        calls.push({ method: request.method, url: request.url, body });
+        if (request.method === 'GET') {
+          return Response.json({
+            projectNumber: 5001,
+            name: 'Servicekontrakt Nord',
+            projectGroup: { projectGroupNumber: 1 },
+            customer: { customerNumber: 1001 },
+            responsibleEmployee: { employeeNumber: 10 },
+            objectVersion: 'abc',
+          });
+        }
+        return Response.json({ projectNumber: 5001 });
+      },
+    });
+
+    const result = await gateway.callTool('upsert_project', { projectNumber: 5001, description: 'Ny beskrivelse' });
+    expect(result.isError).toBeUndefined();
+    const put = calls.find(call => call.method === 'PUT');
+    expect(put?.url).toContain('/projectsapi/v1.1.0/Projects');
+    // Read-merge-write keeps objectVersion + existing refs while applying the change.
+    expect(put?.body).toMatchObject({
+      projectNumber: 5001,
+      name: 'Servicekontrakt Nord',
+      description: 'Ny beskrivelse',
+      objectVersion: 'abc',
+      responsibleEmployee: { employeeNumber: 10 },
+    });
+  });
+
+  it('rejects project creation without the required fields', async () => {
+    const gateway = createEconomicGateway({ appSecretToken: 'app', agreementGrantToken: 'grant', enableWrites: true });
+    const result = await gateway.callTool('upsert_project', { name: 'Kun navn' });
+    expect(result).toMatchObject({ isError: true });
+    expect(result.content[0]?.text).toMatch(/requires name, projectGroupNumber/);
+  });
+
+  it('serves deterministic project fixtures in contract mode', async () => {
+    const gateway = createEconomicGateway({ contractMode: true });
+    const projects = await gateway.callTool('project_overview', {});
+    const sc = projects.structuredContent as { mode: string; collection: Array<Record<string, unknown>> };
+    expect(sc.mode).toBe('contract');
+    expect(sc.collection[0]).toMatchObject({ projectNumber: 5001 });
+
+    const time = await gateway.callTool('create_time_entry', {
+      projectNumber: 5001,
+      activityNumber: 3,
+      employeeNumber: 10,
+      date: '2026-05-02',
+      hours: 4,
+    });
+    expect(time.structuredContent).toMatchObject({ mode: 'contract', project: { projectNumber: 5001 }, hours: 4 });
   });
 
   it('keeps get_entity input validation in contract mode', async () => {
