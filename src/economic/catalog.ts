@@ -422,6 +422,9 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('rest', 'PUT', '/customers/{number}', 'Update a customer (full object).', 'commit'),
     customEndpoint('rest', 'POST', '/products', 'Create a product.', 'commit'),
     customEndpoint('rest', 'PUT', '/products/{number}', 'Update a product (full object).', 'commit'),
+    // Suppliers are classic REST master data (no OpenAPI supplier record).
+    customEndpoint('rest', 'POST', '/suppliers', 'Create a supplier.', 'commit'),
+    customEndpoint('rest', 'PUT', '/suppliers/{number}', 'Update a supplier (full object).', 'commit'),
     customEndpoint('journals', 'POST', '/journals/{number}/book', 'Book a journal.', 'dangerous'),
     customEndpoint('journals', 'POST', '/entries/draft/{journalNumber}/book', 'Book draft entries.', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),

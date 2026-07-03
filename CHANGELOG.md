@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.4.0
+
+- Added supplier and project-employee write tools (risk `write`, disabled by
+  default): `upsert_supplier` (classic REST: create `POST /suppliers`, update by
+  `supplierNumber` via read-merge-write `PUT /suppliers/{number}`) and
+  `upsert_employee` (Projects add-on collection upsert like `upsert_project`).
+  Both policy-gated; covered by live-path, negative-path, and contract-mode tests.
+- Allowlisted the classic REST supplier write endpoints (`POST /suppliers`,
+  `PUT /suppliers/{number}`).
+
 ## 0.3.0
 
 - Added gateway read tools for the newer OpenAPI services: `project_overview`
