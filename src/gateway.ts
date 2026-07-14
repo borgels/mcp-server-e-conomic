@@ -283,7 +283,7 @@ export const economicGatewayTools: GatewayToolDefinition[] = [
   {
     name: 'company_context',
     title: 'Get e-conomic company context',
-    description: 'Read the e-conomic REST root context and company/resource links.',
+    description: 'Read the agreement self-service context: company, agreement number, modules, and settings.',
     riskLevel: 'read',
     enabledByDefault: true,
     inputSchema: emptyInput,
@@ -465,8 +465,10 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
 
       switch (toolName) {
         case 'check_connection':
-        case 'company_context':
           return jsonResult('e-conomic connection is available.', await client.rest('/'));
+
+        case 'company_context':
+          return jsonResult('Fetched e-conomic company context.', await client.rest('/self'));
 
         case 'search_entities':
           return readEndpointResult(client, input, {

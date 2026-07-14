@@ -118,7 +118,8 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
     'economic_get_company_context',
     {
       title: 'Get e-conomic Company Context',
-      description: 'Return the e-conomic REST root context, company metadata, and resource links.',
+      description:
+        'Return the agreement self-service context: company (name, CVR, address), agreement number, application, modules, and settings. Use this to confirm which e-conomic agreement the server is connected to.',
       inputSchema: {},
       annotations: {
         readOnlyHint: true,
@@ -127,7 +128,7 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
         openWorldHint: true,
       },
     },
-    async () => jsonToolResult(await client.rest('/')),
+    async () => jsonToolResult(await client.rest('/self')),
   );
 
   registerReadTool(server, 'economic_search_entities', client, {
