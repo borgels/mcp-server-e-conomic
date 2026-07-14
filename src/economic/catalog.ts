@@ -190,7 +190,7 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
 
 export const CURATED_CAPABILITIES: Capability[] = [
   toolCapability('economic_check_connection', 'Check e-conomic connection', 'Validate credentials and return API context.', 'read', ['auth', 'setup']),
-  toolCapability('economic_get_company_context', 'Get company context', 'Return REST root links, company metadata, and available modules/resources.', 'read', ['company', 'resources']),
+  toolCapability('economic_get_company_context', 'Get company context', 'Return the agreement self-service context: company (name, CVR), agreement number, application, modules, and settings.', 'read', ['company', 'agreement', 'self']),
   toolCapability('economic_search_entities', 'Search entities', 'Find customers, suppliers, products, accounts, projects, and documents with filters.', 'read', ['search']),
   toolCapability('economic_get_entity', 'Get entity', 'Fetch one resource by service/resource/id or REST self URL.', 'read', ['lookup']),
   toolCapability('economic_get_customer_overview', 'Get customer overview', 'Inspect customer master data and related contacts/delivery locations.', 'read', ['customer']),

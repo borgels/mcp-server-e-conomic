@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 (2026-07-14)
+
+- `economic_get_company_context` (and the gateway `company_context` tool) now
+  calls `GET /self` and returns the agreement's own context — company name,
+  CVR, agreement number, modules, settings — instead of the anonymous REST
+  root document. Use it to confirm which agreement the server is connected to.
+
 ## Unreleased
 
 ## 0.5.0
