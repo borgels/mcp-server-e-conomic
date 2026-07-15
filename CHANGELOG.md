@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0 (2026-07-15)
+
+Conditional booking (booking duty) — booking stays denied by default:
+
+- `economic_prepare_booking`: validate and prepare booking of EXPLICIT journal
+  draft entries via journalsapi v15 `bookdraftentries`. Guardrails: entries
+  must exist in the journal, per-entry amounts run the policy maxAmount
+  check, and every referenced voucher must have an attached document.
+- `economic_prepare_open_item_match`: prepare udligning of booked
+  customer/supplier open items (no API undo exists).
+- `economic_commit_booking`: the only executor for the two capabilities above;
+  the ordinary commit tool rejects them (lets a gateway enforce a separate
+  booking duty per tool name). Requires `ECONOMIC_ENABLE_BOOKING=true`.
+- Journals service bumped to v15.0.0.
+
 ## 0.6.0 (2026-07-15)
 
 - New `economic_prepare_supplier_change` tool (supplier master records via

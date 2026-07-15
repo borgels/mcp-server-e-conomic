@@ -110,8 +110,9 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     id: 'journals',
     name: 'Journals',
     surface: 'openapi',
-    servicePath: 'journalsapi/v14.0.1',
-    version: '14.0.1',
+    // v15 adds POST /journals/{n}/bookdraftentries (booking of explicit entries).
+    servicePath: 'journalsapi/v15.0.0',
+    version: '15.0.0',
     resources: ['draft-entries', 'journals', 'accruals'],
   },
   {
@@ -215,6 +216,9 @@ export const CURATED_CAPABILITIES: Capability[] = [
   toolCapability('economic_prepare_employee_change', 'Prepare employee change', 'Create or update an employee in the Projects add-on (collection upsert).', 'draft', ['employee', 'write']),
   toolCapability('economic_prepare_time_entry', 'Prepare project time entry', 'Create or delete a project time registration (TimeEntries); requires project, activity and employee.', 'draft', ['project', 'time', 'hours', 'write']),
   toolCapability('economic_commit_prepared_operation', 'Commit prepared operation', 'Execute a prepared write operation only when write policy permits it.', 'commit', ['commit', 'audit']),
+  toolCapability('economic_prepare_booking', 'Prepare booking of draft entries', 'Validate and prepare IRREVERSIBLE booking of explicit journal draft entries (guardrails: entries verified, amounts policy-checked, vouchers must have attachments).', 'dangerous', ['booking', 'bogføring', 'journal', 'write']),
+  toolCapability('economic_prepare_open_item_match', 'Prepare open-item match', 'Prepare matching (udligning) of booked customer/supplier open items. No API undo exists.', 'dangerous', ['match', 'udligning', 'open items', 'write']),
+  toolCapability('economic_commit_booking', 'Commit booking/match', 'Execute a prepared booking or open-item match. Requires the booking duty; irreversible.', 'dangerous', ['booking', 'commit', 'bogføring', 'udligning']),
   toolCapability('economic_call_endpoint', 'Call validated endpoint', 'Call an allowlisted REST/OpenAPI endpoint with schema and policy checks.', 'read', ['endpoint', 'escape-hatch']),
 ];
 
@@ -428,6 +432,7 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('rest', 'PUT', '/suppliers/{number}', 'Update a supplier (full object).', 'commit'),
     customEndpoint('journals', 'POST', '/journals/{number}/book', 'Book a journal.', 'dangerous'),
     customEndpoint('journals', 'POST', '/entries/draft/{journalNumber}/book', 'Book draft entries.', 'dangerous'),
+    customEndpoint('journals', 'POST', '/journals/{journalNumber}/bookdraftentries', 'Book specific draft entries (irreversible).', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),
     customEndpoint('documents', 'GET', '/AttachedDocuments/{number}/pdf', 'Fetch attached document PDF.', 'read'),
     customEndpoint('booked-entries', 'POST', '/booked-entries/match', 'Match booked entries.', 'dangerous'),

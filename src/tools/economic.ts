@@ -4,7 +4,8 @@ import type { EconomicClient, HttpMethod, QueryValue } from '../economic/client.
 import { ECONOMIC_SERVICES, searchCapabilities, getCapability, getSchemaSummary } from '../economic/catalog.js';
 import { callEndpoint, type EndpointCallInput } from '../economic/endpoints.js';
 import { prepareOperation, verifyPreparedOperation, type PreparedOperation } from '../economic/operations.js';
-import { checkPolicy } from '../economic/policy.js';
+import { checkPolicy, isBookingCapability } from '../economic/policy.js';
+import { MAX_BOOKING_ENTRIES, prepareBooking, prepareOpenItemMatch } from '../economic/bookings.js';
 import { writeAuditEvent } from '../economic/audit.js';
 import { formatUnknownError } from '../errors.js';
 
@@ -382,6 +383,12 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       const operation = input.operation as PreparedOperation;
       verifyPreparedOperation(operation);
 
+      if (isBookingCapability(operation.capability)) {
+        throw new Error(
+          'Booking and open-item match operations must be executed with economic_commit_booking, which carries the booking duty.',
+        );
+      }
+
       if (input.confirmOperationHash !== operation.operationHash) {
         throw new Error('confirmOperationHash must equal operation.operationHash.');
       }
@@ -438,6 +445,156 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       } catch (error) {
         await writeAuditEvent({
           tool: 'economic_commit_prepared_operation',
+          action: 'commit',
+          serviceId: operation.serviceId,
+          method: operation.method,
+          path: operation.pathTemplate,
+          operationHash: operation.operationHash,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'error',
+          error: formatUnknownError(error),
+        });
+        throw error;
+      }
+    },
+  );
+
+  server.registerTool(
+    'economic_prepare_booking',
+    {
+      title: 'Prepare Booking of Draft Entries (IRREVERSIBLE on commit)',
+      description:
+        'Validate and prepare booking of EXPLICIT journal draft entries (never a whole journal). Guardrails run before anything is prepared: every entry must exist in the journal, per-entry amounts pass the policy maxAmount check, and every referenced voucher must have an attached document (requireVoucher=false only when the user has verified documentation elsewhere). Returns the validated entries for user review plus a prepared operation. Booking is IRREVERSIBLE — corrections require reversing entries or credit notes. Execute with economic_commit_booking, which requires the booking duty. This tool itself writes nothing.',
+      inputSchema: {
+        journalNumber: z.number().int().min(1).describe('Journal (kassekladde) number holding the draft entries.'),
+        entryNumbers: z
+          .array(z.number().int().min(1))
+          .min(1)
+          .max(MAX_BOOKING_ENTRIES)
+          .describe('Explicit draft entry numbers to book. Never book entries the user has not reviewed.'),
+        reason: z.string().trim().min(8).describe('Why these entries are being booked, e.g. the matching bank transaction.'),
+        requireVoucher: z.boolean().default(true),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async input => jsonToolResult(await prepareBooking(client, input)),
+  );
+
+  server.registerTool(
+    'economic_prepare_open_item_match',
+    {
+      title: 'Prepare Open-Item Match / Udligning (no undo on commit)',
+      description:
+        'Prepare matching (udligning) of booked open items — customer payments against sales invoices or supplier payments against supplier invoices. All entries must belong to the same customer or supplier ledger. e-conomic has NO API to undo a match (undo is UI-only), so execution requires the booking duty via economic_commit_booking. Find open items with economic_get_accounting_entries (remainder > 0). This tool itself writes nothing.',
+      inputSchema: {
+        entryIds: z
+          .array(z.number().int().min(1))
+          .min(2)
+          .max(100)
+          .describe('Booked entry numbers to match against each other (same customer/supplier).'),
+        reason: z.string().trim().min(8),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async input => jsonToolResult(prepareOpenItemMatch(input)),
+  );
+
+  server.registerTool(
+    'economic_commit_booking',
+    {
+      title: 'Commit Booking / Open-Item Match (IRREVERSIBLE)',
+      description:
+        'Execute a prepared booking (economic_prepare_booking) or open-item match (economic_prepare_open_item_match) after verifying its hash and policy. IRREVERSIBLE: booked entries cannot be edited or deleted, and matches cannot be undone via the API. Confirm with the user before calling. Only booking/match operations are accepted — ordinary writes go through economic_commit_prepared_operation.',
+      inputSchema: {
+        operation: preparedOperationSchema,
+        idempotencyKey: z.string().trim().min(8),
+        confirmOperationHash: z.string().trim().min(32),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async input => {
+      const operation = input.operation as PreparedOperation;
+      verifyPreparedOperation(operation);
+
+      if (!isBookingCapability(operation.capability)) {
+        throw new Error(
+          'economic_commit_booking only executes booking/match operations. Use economic_commit_prepared_operation for ordinary writes.',
+        );
+      }
+
+      if (input.confirmOperationHash !== operation.operationHash) {
+        throw new Error('confirmOperationHash must equal operation.operationHash.');
+      }
+
+      const decision = checkPolicy({
+        capability: operation.capability,
+        serviceId: operation.serviceId,
+        method: operation.method,
+        path: operation.pathTemplate,
+        body: operation.body,
+      });
+
+      await writeAuditEvent({
+        tool: 'economic_commit_booking',
+        action: 'policy_check',
+        serviceId: operation.serviceId,
+        method: operation.method,
+        path: operation.pathTemplate,
+        operationHash: operation.operationHash,
+        idempotencyKey: input.idempotencyKey,
+        allowed: decision.allowed,
+        reason: decision.reason,
+      });
+
+      if (!decision.allowed) {
+        throw new Error(`Booking blocked by policy: ${decision.reason}`);
+      }
+
+      try {
+        const result = await callEndpoint(client, {
+          serviceId: operation.serviceId,
+          method: operation.method,
+          pathTemplate: operation.pathTemplate,
+          pathParams: operation.pathParams,
+          query: operation.query,
+          body: operation.body,
+          idempotencyKey: input.idempotencyKey,
+        });
+
+        await writeAuditEvent({
+          tool: 'economic_commit_booking',
+          action: 'commit',
+          serviceId: operation.serviceId,
+          method: operation.method,
+          path: operation.pathTemplate,
+          operationHash: operation.operationHash,
+          idempotencyKey: input.idempotencyKey,
+          allowed: true,
+          reason: decision.reason,
+          status: 'ok',
+        });
+
+        return jsonToolResult(result ?? { ok: true, booked: true });
+      } catch (error) {
+        await writeAuditEvent({
+          tool: 'economic_commit_booking',
           action: 'commit',
           serviceId: operation.serviceId,
           method: operation.method,

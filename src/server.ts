@@ -10,7 +10,7 @@ export interface CreateServerOptions {
 export function createServer(options: CreateServerOptions = {}): McpServer {
   const server = new McpServer({
     name: 'e-conomic',
-    version: '0.6.0',
+    version: '0.7.0',
   });
 
   const client = options.client ?? new EconomicClient(options.clientOptions);
