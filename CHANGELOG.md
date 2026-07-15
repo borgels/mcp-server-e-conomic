@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 (2026-07-15)
+
+- New `economic_prepare_supplier_change` tool (supplier master records via
+  classic REST `/suppliers`).
+- Default policy now denies `POST /invoices/booked` (classic REST invoice
+  booking) — booking was already denied for journals; invoices are now
+  consistently draft-only unless a custom policy explicitly allows booking.
+
 ## 0.5.1 (2026-07-14)
 
 - `economic_get_company_context` (and the gateway `company_context` tool) now

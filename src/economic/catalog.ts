@@ -204,6 +204,7 @@ export const CURATED_CAPABILITIES: Capability[] = [
   toolCapability('economic_reconcile_open_items', 'Reconcile open items', 'Analyze customer/supplier/account entries without posting changes.', 'read', ['reconciliation']),
   toolCapability('economic_validate_payload', 'Validate payload', 'Validate a candidate write payload against known endpoint and policy constraints.', 'read', ['validation']),
   toolCapability('economic_prepare_customer_change', 'Prepare customer change', 'Create a dry-run operation for customer master data changes.', 'draft', ['customer', 'write']),
+  toolCapability('economic_prepare_supplier_change', 'Prepare supplier change', 'Create a dry-run operation for supplier master data changes (classic REST /suppliers).', 'draft', ['supplier', 'write']),
   toolCapability('economic_prepare_product_change', 'Prepare product change', 'Create a dry-run operation for product master data changes.', 'draft', ['product', 'write']),
   toolCapability('economic_prepare_sales_document', 'Prepare sales document', 'Create a dry-run operation for draft invoices, orders, or quotes.', 'draft', ['invoice', 'order', 'quote', 'write']),
   toolCapability('economic_prepare_journal_entry', 'Prepare journal entry', 'Create a dry-run operation for journal draft entries.', 'draft', ['journal', 'entry', 'write']),

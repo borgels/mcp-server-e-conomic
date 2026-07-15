@@ -34,6 +34,9 @@ export function loadPolicy(): EconomicPolicy {
       '/journals/.*/book',
       '/entries/draft/.*/book',
       '/booked-entries/match',
+      // Classic REST books a draft invoice by POSTing it to /invoices/booked —
+      // booking is irreversible, so it is denied alongside the journal book paths.
+      '/invoices/booked',
       '/webhooks',
       '/vat',
       '/payment',

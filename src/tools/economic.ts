@@ -276,6 +276,14 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
     defaultCreatePath: '/Customers',
     defaultUpdatePath: '/Customers/{number}',
   });
+  registerPrepareTool(server, 'economic_prepare_supplier_change', {
+    capability: 'economic_prepare_supplier_change',
+    title: 'Prepare Supplier Change',
+    // Supplier master records only exist on the classic REST surface.
+    defaultServiceId: 'rest',
+    defaultCreatePath: '/suppliers',
+    defaultUpdatePath: '/suppliers/{number}',
+  });
   registerPrepareTool(server, 'economic_prepare_product_change', {
     capability: 'economic_prepare_product_change',
     title: 'Prepare Product Change',
