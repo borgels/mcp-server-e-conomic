@@ -3,6 +3,13 @@ import type { HttpMethod } from './client.js';
 
 export interface EconomicPolicy {
   writesEnabled: boolean;
+  /**
+   * Gates the curated booking capabilities (economic_prepare_booking /
+   * economic_prepare_open_item_match + economic_commit_booking). Booking and
+   * matching are irreversible in e-conomic; the raw endpoint paths stay
+   * denied for every other capability regardless of this flag.
+   */
+  bookingEnabled: boolean;
   allowedCapabilities: string[];
   allowedServices: string[];
   allowedMethods: HttpMethod[];
@@ -27,6 +34,7 @@ export interface PolicyCheckInput {
 export function loadPolicy(): EconomicPolicy {
   const base: EconomicPolicy = {
     writesEnabled: process.env.ECONOMIC_ENABLE_WRITES === 'true',
+    bookingEnabled: process.env.ECONOMIC_ENABLE_BOOKING === 'true',
     allowedCapabilities: [],
     allowedServices: [],
     allowedMethods: ['POST', 'PUT', 'PATCH'],
@@ -53,6 +61,7 @@ export function loadPolicy(): EconomicPolicy {
     ...base,
     ...parsed,
     writesEnabled: parsed.writesEnabled ?? base.writesEnabled,
+    bookingEnabled: parsed.bookingEnabled ?? base.bookingEnabled,
     allowedCapabilities: parsed.allowedCapabilities ?? base.allowedCapabilities,
     allowedServices: parsed.allowedServices ?? base.allowedServices,
     allowedMethods: parsed.allowedMethods ?? base.allowedMethods,
@@ -64,6 +73,16 @@ export function isMutation(method: HttpMethod): boolean {
   return method !== 'GET';
 }
 
+/** Exact endpoints each booking capability may target — nothing else. */
+const BOOKING_CAPABILITY_PATHS: Record<string, RegExp> = {
+  economic_prepare_booking: /^\/journals\/(\{journalNumber\}|\d+)\/bookdraftentries$/,
+  economic_prepare_open_item_match: /^\/booked-entries\/match$/,
+};
+
+export function isBookingCapability(capability: string): boolean {
+  return capability in BOOKING_CAPABILITY_PATHS;
+}
+
 export function checkPolicy(input: PolicyCheckInput, policy = loadPolicy()): PolicyDecision {
   if (!isMutation(input.method)) {
     return { allowed: true, reason: 'read operation', policy };
@@ -71,6 +90,21 @@ export function checkPolicy(input: PolicyCheckInput, policy = loadPolicy()): Pol
 
   if (!policy.writesEnabled) {
     return { allowed: false, reason: 'writes disabled', policy };
+  }
+
+  // Curated booking capabilities: allowed only on their exact endpoint and
+  // only when booking is explicitly enabled. They bypass deniedPathPatterns
+  // (which exist to keep booking paths out of reach of everything else) but
+  // still run the amount check below via the ordinary flow in prepareBooking.
+  const bookingPattern = BOOKING_CAPABILITY_PATHS[input.capability];
+  if (bookingPattern) {
+    if (!bookingPattern.test(input.path)) {
+      return { allowed: false, reason: `booking capability used outside its endpoint: ${input.path}`, policy };
+    }
+    if (!policy.bookingEnabled) {
+      return { allowed: false, reason: 'booking disabled (ECONOMIC_ENABLE_BOOKING)', policy };
+    }
+    return { allowed: true, reason: 'booking capability enabled by policy', policy };
   }
 
   if (
