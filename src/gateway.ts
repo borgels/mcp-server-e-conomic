@@ -1,5 +1,6 @@
 import { EconomicClient, type EconomicClientOptions, type QueryValue } from './economic/client.js';
-import { callEndpoint } from './economic/endpoints.js';
+import { callEndpoint, resolveSelfUrl } from './economic/endpoints.js';
+import { encodePathParam } from './economic/path-params.js';
 import { checkPolicy, loadPolicy, type EconomicPolicy } from './economic/policy.js';
 import { EconomicHttpError } from './errors.js';
 import {
@@ -577,11 +578,10 @@ function fixtureResult(fixture: { text: string; structuredContent: unknown }): G
 async function getEntity(client: EconomicClient, input: GatewayJsonObject): Promise<GatewayToolResult> {
   const selfUrl = stringValue(input.selfUrl);
   if (selfUrl) {
-    assertEconomicUrl(selfUrl);
-    return jsonResult('Fetched e-conomic entity.', await client.request({
-      url: selfUrl,
-      query: queryValue(input.query),
-    }));
+    return jsonResult(
+      'Fetched e-conomic entity.',
+      await callEndpoint(client, resolveSelfUrl(selfUrl, queryValue(input.query))),
+    );
   }
 
   const serviceId = stringValue(input.serviceId);
@@ -895,7 +895,7 @@ async function upsertProduct(
   // The product number is its key, so existence decides create vs update.
   let existing: GatewayJsonObject | undefined;
   try {
-    existing = (await client.rest(`/products/${encodeURIComponent(String(productNumber))}`)) as GatewayJsonObject;
+    existing = (await client.rest(`/products/${encodePathParam(productNumber, 'productNumber')}`)) as GatewayJsonObject;
   } catch (error) {
     if (!(error instanceof EconomicHttpError) || error.status !== 404) {
       throw error;
@@ -1442,13 +1442,6 @@ function stringOrNumberValue(value: GatewayJsonValue | undefined): string | numb
 
 function objectValue(value: GatewayJsonValue | undefined): GatewayJsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
-}
-
-function assertEconomicUrl(value: string): void {
-  const url = new URL(value);
-  if (!['restapi.e-conomic.com', 'apis.e-conomic.com'].includes(url.hostname)) {
-    throw new Error('selfUrl must point to a supported e-conomic API host.');
-  }
 }
 
 function jsonResult(text: string, structuredContent: unknown): GatewayToolResult {
