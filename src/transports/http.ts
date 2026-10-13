@@ -4,12 +4,20 @@ import { createServer as createMcpServer } from '../server.js';
 import {
   assertAllowedOrigin,
   assertAuthorized,
+  assertSafeHttpStartup,
   corsHeaders,
   getHttpConfig,
   HttpRequestError,
   readJsonBody,
   sendJson,
 } from './http-helpers.js';
+
+try {
+  assertSafeHttpStartup();
+} catch (error) {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+}
 
 const config = getHttpConfig();
 

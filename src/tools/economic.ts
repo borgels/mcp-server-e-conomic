@@ -1,11 +1,17 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod/v4';
 import type { EconomicClient, HttpMethod, QueryValue } from '../economic/client.js';
-import { ECONOMIC_SERVICES, resolveReadPathTemplate, searchCapabilities, getCapability, getSchemaSummary } from '../economic/catalog.js';
-import { callEndpoint, type EndpointCallInput } from '../economic/endpoints.js';
+import { ECONOMIC_SERVICES, findEndpoint, resolveReadPathTemplate, searchCapabilities, getCapability, getSchemaSummary } from '../economic/catalog.js';
+import { callEndpoint, materializePath, resolveSelfUrl, type EndpointCallInput } from '../economic/endpoints.js';
 import { prepareOperation, verifyPreparedOperation, type PreparedOperation } from '../economic/operations.js';
 import { checkPolicy, isBookingCapability } from '../economic/policy.js';
-import { MAX_BOOKING_ENTRIES, prepareBooking, prepareOpenItemMatch } from '../economic/bookings.js';
+import {
+  MAX_BOOKING_ENTRIES,
+  prepareBooking,
+  prepareOpenItemMatch,
+  revalidateBookingOperation,
+} from '../economic/bookings.js';
+import { encodePathParam } from '../economic/path-params.js';
 import { writeAuditEvent } from '../economic/audit.js';
 import { formatUnknownError } from '../errors.js';
 
@@ -41,8 +47,12 @@ const preparedOperationSchema = z.object({
   body: bodySchema,
   dryRun: z.literal(true),
   reason: z.string().trim().min(1),
+  bookingGuards: z.object({ requireVoucher: z.boolean() }).optional(),
+  preparedAt: z.string().trim().min(1),
+  expiresAt: z.string().trim().min(1),
   operationHash: z.string().trim().min(32),
-  policyDecision: z.unknown(),
+  // Advisory output of prepare; ignored at commit (policy is re-evaluated).
+  policyDecision: z.unknown().optional(),
 });
 
 export function registerEconomicTools(server: McpServer, client: EconomicClient): void {
@@ -164,8 +174,7 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
     },
     async input => {
       if (input.selfUrl) {
-        assertEconomicUrl(input.selfUrl);
-        return jsonToolResult(await client.request({ url: input.selfUrl, query: input.query }));
+        return jsonToolResult(await callEndpoint(client, resolveSelfUrl(input.selfUrl, input.query)));
       }
 
       if (!input.serviceId || !input.resource || input.number === undefined) {
@@ -388,7 +397,9 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       },
     },
     async input => {
-      const operation = verifyPreparedOperation(input.operation as PreparedOperation);
+      const operation = verifyPreparedOperation(input.operation as PreparedOperation, {
+        confirmOperationHash: input.confirmOperationHash,
+      });
 
       if (isBookingCapability(operation.capability)) {
         throw new Error(
@@ -396,15 +407,11 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
         );
       }
 
-      if (input.confirmOperationHash !== operation.operationHash) {
-        throw new Error('confirmOperationHash must equal operation.operationHash.');
-      }
-
       const decision = checkPolicy({
         capability: operation.capability,
         serviceId: operation.serviceId,
         method: operation.method,
-        path: operation.pathTemplate,
+        path: operationPath(operation),
         body: operation.body,
       });
 
@@ -537,7 +544,9 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       },
     },
     async input => {
-      const operation = verifyPreparedOperation(input.operation as PreparedOperation);
+      const operation = verifyPreparedOperation(input.operation as PreparedOperation, {
+        confirmOperationHash: input.confirmOperationHash,
+      });
 
       if (!isBookingCapability(operation.capability)) {
         throw new Error(
@@ -545,15 +554,11 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
         );
       }
 
-      if (input.confirmOperationHash !== operation.operationHash) {
-        throw new Error('confirmOperationHash must equal operation.operationHash.');
-      }
-
       const decision = checkPolicy({
         capability: operation.capability,
         serviceId: operation.serviceId,
         method: operation.method,
-        path: operation.pathTemplate,
+        path: operationPath(operation),
         body: operation.body,
       });
 
@@ -572,6 +577,10 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       if (!decision.allowed) {
         throw new Error(`Booking blocked by policy: ${decision.reason}`);
       }
+
+      // Re-run every booking guardrail (entries, maxAmount, vouchers) against
+      // current data and policy; nothing from prepare is taken on trust.
+      await revalidateBookingOperation(client, operation);
 
       try {
         const result = await callEndpoint(client, {
@@ -642,9 +651,9 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       const pathTemplate =
         '/journals/{journalNumber}/vouchers/{accountingYear}-{voucherNumber}/attachment/file';
       const path = pathTemplate
-        .replace('{journalNumber}', encodeURIComponent(String(input.journalNumber)))
-        .replace('{accountingYear}', encodeURIComponent(input.accountingYear))
-        .replace('{voucherNumber}', encodeURIComponent(String(input.voucherNumber)));
+        .replace('{journalNumber}', encodePathParam(input.journalNumber, 'journalNumber'))
+        .replace('{accountingYear}', encodePathParam(input.accountingYear, 'accountingYear'))
+        .replace('{voucherNumber}', encodePathParam(input.voucherNumber, 'voucherNumber'));
 
       const decision = checkPolicy({
         capability: 'economic_attach_voucher_file',
@@ -765,7 +774,7 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       },
     },
     async input => {
-      const path = `/invoices/drafts/${encodeURIComponent(String(input.draftInvoiceNumber))}/attachment/file`;
+      const path = `/invoices/drafts/${encodePathParam(input.draftInvoiceNumber, 'draftInvoiceNumber')}/attachment/file`;
 
       const decision = checkPolicy({
         capability: 'economic_attach_sales_invoice_file',
@@ -937,7 +946,7 @@ function registerPrepareTool(
     {
       title: options.title,
       description:
-        'Prepare a policy-checkable dry-run write operation. This does not call e-conomic until economic_commit_prepared_operation is used.',
+        'Prepare a policy-checkable dry-run write operation. Only the endpoints owned by this capability can be targeted. The result is signed by the server and expires after 15 minutes; this does not call e-conomic until economic_commit_prepared_operation is used.',
       inputSchema: {
         serviceId: serviceIdSchema.default(options.defaultServiceId),
         method: z.enum(methods as [HttpMethod, ...HttpMethod[]]).default('POST'),
@@ -983,11 +992,12 @@ function registerPrepareTool(
   );
 }
 
-function assertEconomicUrl(urlValue: string): void {
-  const url = new URL(urlValue);
-  if (!['restapi.e-conomic.com', 'apis.e-conomic.com'].includes(url.hostname)) {
-    throw new Error('selfUrl must point to restapi.e-conomic.com or apis.e-conomic.com.');
-  }
+/** Concrete request path (params substituted) used for commit-time policy checks. */
+function operationPath(operation: PreparedOperation): string {
+  return materializePath(
+    findEndpoint(operation.serviceId, operation.method, operation.pathTemplate),
+    operation.pathParams,
+  );
 }
 
 function decodeBase64(value: string): Uint8Array {

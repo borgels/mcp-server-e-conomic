@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export class HttpRequestError extends Error {
@@ -31,8 +32,30 @@ export function assertAuthorized(req: IncomingMessage, config = getHttpConfig())
     return;
   }
 
-  if (req.headers.authorization !== `Bearer ${config.httpToken}`) {
+  if (!constantTimeEquals(req.headers.authorization ?? '', `Bearer ${config.httpToken}`)) {
     throw new HttpRequestError(401, 'Unauthorized');
+  }
+}
+
+/** Compares two strings in constant time (hashing first equalizes lengths). */
+export function constantTimeEquals(given: string, expected: string): boolean {
+  const a = createHash('sha256').update(given, 'utf8').digest();
+  const b = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(a, b);
+}
+
+/**
+ * Trusting a forwarded-user header is only safe when a shared token keeps
+ * everything but the trusted proxy out. Refuse to start otherwise.
+ */
+export function assertSafeHttpStartup(env: NodeJS.ProcessEnv = process.env): void {
+  const trusting = Object.keys(env).filter(
+    name => name.endsWith('_TRUST_FORWARDED_USER') && env[name] === 'true',
+  );
+  if (trusting.length > 0 && !env.MCP_HTTP_TOKEN) {
+    throw new Error(
+      `${trusting.join(', ')}=true requires MCP_HTTP_TOKEN to be set; refusing to start the HTTP server without it.`,
+    );
   }
 }
 

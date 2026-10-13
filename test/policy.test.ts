@@ -69,7 +69,7 @@ describe('write policy', () => {
         ...operation,
         body: { name: 'Different' },
       }),
-    ).toThrow('hash does not match');
+    ).toThrow('signature does not match');
   });
 
   it('normalizes a JSON-string body so the prepare result carries a real object', () => {

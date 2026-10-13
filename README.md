@@ -255,6 +255,25 @@ Write flow:
 3. Call `economic_commit_prepared_operation` with the full prepared operation,
    matching `confirmOperationHash`, and an `idempotencyKey`.
 
+Prepared operations are signed by the server (HMAC-SHA256) and expire after 15
+minutes. Commit only accepts operations this server signed; it re-evaluates the
+write policy against the current configuration and ignores the
+`policyDecision` returned by prepare. Booking and open-item match commits also
+re-run every booking guardrail (entries, `maxAmount`, vouchers) right before
+executing.
+
+```sh
+# Optional: shared signing secret (use a long random value). Without it, a
+# random per-process secret is used and prepared operations do not survive a
+# restart or work across replicas.
+export ECONOMIC_PREPARE_SECRET="..."
+```
+
+Each `economic_prepare_*` capability can only target its own fixed set of
+endpoints (for example, `economic_prepare_customer_change` can only write
+customer resources), and commit checks the same mapping, so
+`allowedCapabilities` in the policy restricts which resources can be written.
+
 ## Security And Audit
 
 If `ECONOMIC_AUDIT_LOG` is set, every mutating attempt writes a JSONL record with
@@ -280,6 +299,9 @@ By default the HTTP server binds to `127.0.0.1`, limits request bodies to 10 MiB
 allows browser CORS only from loopback origins, and does not require an HTTP
 Bearer token. You can override this with `MCP_HTTP_HOST`, `MCP_MAX_BODY_BYTES`,
 `MCP_ALLOWED_ORIGINS`, `MCP_ALLOW_ANY_ORIGIN=true`, and `MCP_HTTP_TOKEN`.
+The Bearer token is compared in constant time. If any `*_TRUST_FORWARDED_USER`
+variable is set to `true` (for deployments behind an identity-forwarding
+proxy), the HTTP server refuses to start unless `MCP_HTTP_TOKEN` is also set.
 
 The MCP endpoint is `POST http://127.0.0.1:3000/mcp`.
 
