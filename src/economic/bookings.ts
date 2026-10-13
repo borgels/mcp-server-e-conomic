@@ -68,8 +68,47 @@ export async function prepareBooking(
   client: EconomicClient,
   input: PrepareBookingInput,
 ): Promise<PreparedBooking> {
+  const requireVoucher = input.requireVoucher ?? true;
+  const validation = await validateBooking(client, {
+    journalNumber: input.journalNumber,
+    entryNumbers: input.entryNumbers,
+    requireVoucher,
+  });
+
+  const operation = prepareOperation({
+    capability: 'economic_prepare_booking',
+    serviceId: 'journals',
+    method: 'POST',
+    pathTemplate: '/journals/{journalNumber}/bookdraftentries',
+    pathParams: { journalNumber: validation.journalNumber },
+    body: { entryNumbers: validation.entries.map(entry => entry.entryNumber) },
+    reason: input.reason,
+    bookingGuards: { requireVoucher },
+  });
+
+  return {
+    operation,
+    validation,
+    note: 'BOOKING IS IRREVERSIBLE. Review the validated entries with the user, then execute with economic_commit_booking (not the ordinary commit tool). Corrections after booking require reversing entries or credit notes.',
+  };
+}
+
+/**
+ * Booking guardrails, run both when preparing and again right before commit
+ * (entries can change, and policy can tighten, in between): every requested
+ * entry must exist in the journal, per-entry amounts must pass the policy
+ * maxAmount check, and every referenced voucher must have an attached
+ * document unless explicitly waived.
+ */
+export async function validateBooking(
+  client: EconomicClient,
+  input: { journalNumber: number; entryNumbers: number[]; requireVoucher: boolean },
+): Promise<BookingValidation> {
   if (!Number.isInteger(input.journalNumber) || input.journalNumber < 1) {
     throw new Error('journalNumber must be a positive integer.');
+  }
+  if (!Array.isArray(input.entryNumbers) || !input.entryNumbers.every(isPositiveInteger)) {
+    throw new Error('entryNumbers must be positive integers.');
   }
   const entryNumbers = [...new Set(input.entryNumbers)];
   if (entryNumbers.length === 0 || entryNumbers.length > MAX_BOOKING_ENTRIES) {
@@ -123,9 +162,8 @@ export async function prepareBooking(
     }
   }
 
-  const requireVoucher = input.requireVoucher ?? true;
   const vouchers = [...new Set(entries.map(entry => entry.voucherNumber).filter(isNumber))];
-  if (requireVoucher) {
+  if (input.requireVoucher) {
     if (vouchers.length === 0) {
       throw new Error(
         'Booking blocked: no voucher numbers on the requested entries. Pass requireVoucher=false only if documentation is verified elsewhere.',
@@ -136,29 +174,82 @@ export async function prepareBooking(
     }
   }
 
-  const operation = prepareOperation({
-    capability: 'economic_prepare_booking',
-    serviceId: 'journals',
-    method: 'POST',
-    pathTemplate: '/journals/{journalNumber}/bookdraftentries',
-    pathParams: { journalNumber: input.journalNumber },
-    body: { entryNumbers },
-    reason: input.reason,
-  });
-
   return {
-    operation,
-    validation: {
-      journalNumber: input.journalNumber,
-      entries,
-      totalAbsoluteAmount: entries.reduce(
-        (sum, entry) => sum + Math.abs(typeof entry.amount === 'number' ? entry.amount : 0),
-        0,
-      ),
-      vouchersChecked: requireVoucher ? vouchers : [],
-    },
-    note: 'BOOKING IS IRREVERSIBLE. Review the validated entries with the user, then execute with economic_commit_booking (not the ordinary commit tool). Corrections after booking require reversing entries or credit notes.',
+    journalNumber: input.journalNumber,
+    entries,
+    totalAbsoluteAmount: entries.reduce(
+      (sum, entry) => sum + Math.abs(typeof entry.amount === 'number' ? entry.amount : 0),
+      0,
+    ),
+    vouchersChecked: input.requireVoucher ? vouchers : [],
   };
+}
+
+/**
+ * Commit-time re-validation of a (signature-verified) booking or match
+ * operation. The operation's shape is checked strictly and every booking
+ * guardrail runs again against current data and the current policy.
+ */
+export async function revalidateBookingOperation(
+  client: EconomicClient,
+  operation: PreparedOperation,
+): Promise<void> {
+  if (operation.query !== undefined && Object.keys(operation.query).length > 0) {
+    throw new Error('Booking operations take no query parameters.');
+  }
+  const body = operation.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new Error('Booking operation body must be an object.');
+  }
+  const keys = Object.keys(body);
+
+  if (operation.capability === 'economic_prepare_booking') {
+    if (
+      operation.serviceId !== 'journals' ||
+      operation.method !== 'POST' ||
+      operation.pathTemplate !== '/journals/{journalNumber}/bookdraftentries'
+    ) {
+      throw new Error('Booking operation targets an unexpected endpoint.');
+    }
+    const params = operation.pathParams ?? {};
+    const journal = String(params.journalNumber ?? '');
+    if (Object.keys(params).length !== 1 || !/^[1-9][0-9]*$/.test(journal)) {
+      throw new Error('Booking operation journalNumber must be a positive integer (digits only).');
+    }
+    const entryNumbers = (body as { entryNumbers?: unknown }).entryNumbers;
+    if (keys.length !== 1 || keys[0] !== 'entryNumbers' || !Array.isArray(entryNumbers)) {
+      throw new Error('Booking operation body must contain only entryNumbers.');
+    }
+    const requireVoucher = operation.bookingGuards?.requireVoucher ?? true;
+    if (typeof requireVoucher !== 'boolean') {
+      throw new Error('Booking operation has an invalid requireVoucher guard.');
+    }
+    await validateBooking(client, {
+      journalNumber: Number(journal),
+      entryNumbers: entryNumbers as number[],
+      requireVoucher,
+    });
+    return;
+  }
+
+  if (operation.capability === 'economic_prepare_open_item_match') {
+    if (
+      operation.serviceId !== 'booked-entries' ||
+      operation.method !== 'POST' ||
+      operation.pathTemplate !== '/booked-entries/match' ||
+      (operation.pathParams !== undefined && Object.keys(operation.pathParams).length > 0)
+    ) {
+      throw new Error('Open-item match operation targets an unexpected endpoint.');
+    }
+    const entryIds = (body as { entryIds?: unknown }).entryIds;
+    if (keys.length !== 1 || keys[0] !== 'entryIds' || !Array.isArray(entryIds)) {
+      throw new Error('Open-item match body must contain only entryIds.');
+    }
+    assertMatchEntryIds(entryIds);
+    return;
+  }
+
+  throw new Error(`Not a booking capability: ${operation.capability}`);
 }
 
 export interface PrepareOpenItemMatchInput {
@@ -174,9 +265,7 @@ export interface PrepareOpenItemMatchInput {
  */
 export function prepareOpenItemMatch(input: PrepareOpenItemMatchInput): PreparedOperation {
   const entryIds = [...new Set(input.entryIds)];
-  if (entryIds.length < 2 || entryIds.length > 100) {
-    throw new Error('entryIds must contain 2-100 unique booked entry numbers (same customer or supplier ledger).');
-  }
+  assertMatchEntryIds(entryIds);
 
   return prepareOperation({
     capability: 'economic_prepare_open_item_match',
@@ -225,6 +314,21 @@ async function assertVoucherHasAttachment(client: EconomicClient, voucherNumber:
       }). Attach the document first, or pass requireVoucher=false if documentation is verified elsewhere.`,
     );
   }
+}
+
+function assertMatchEntryIds(entryIds: unknown[]): void {
+  if (
+    entryIds.length < 2 ||
+    entryIds.length > 100 ||
+    !entryIds.every(isPositiveInteger) ||
+    new Set(entryIds).size !== entryIds.length
+  ) {
+    throw new Error('entryIds must contain 2-100 unique booked entry numbers (same customer or supplier ledger).');
+  }
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1;
 }
 
 function isNumber(value: unknown): value is number {

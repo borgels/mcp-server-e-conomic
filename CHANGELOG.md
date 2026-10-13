@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+Security hardening:
+
+- Prepared operations are now signed with HMAC-SHA256 using a server secret
+  (`ECONOMIC_PREPARE_SECRET`, or a random per-process secret when unset) and
+  expire after 15 minutes. Operations prepared by earlier versions must be
+  prepared again.
+- Booking / open-item match commits re-run all booking guardrails (entries,
+  `maxAmount`, vouchers) and require a digits-only `journalNumber`.
+- Each write capability is bound to a fixed set of endpoints, enforced at
+  prepare and commit; prepare tools no longer accept arbitrary endpoints.
+- `selfUrl` must be `https:` on the default port and is resolved to an
+  allowlisted read endpoint before it is called.
+- Caller-supplied URL path parameters reject empty/dot segments, separators,
+  `?`, `#`, and encoded dots/slashes.
+- HTTP transport: constant-time Bearer token comparison; refuses to start when
+  a `*_TRUST_FORWARDED_USER=true` setting is present without `MCP_HTTP_TOKEN`.
+- Linear-time trailing-slash trimming for configured base URLs.
+
 ## 0.7.0 (2026-07-15)
 
 Conditional booking (booking duty) — booking stays denied by default:

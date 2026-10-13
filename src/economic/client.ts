@@ -199,7 +199,13 @@ function appendQuery(urlValue: string, query?: Record<string, QueryValue>): stri
 }
 
 function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
+  // Linear scan instead of /\/+$/ (which backtracks polynomially on long
+  // runs of slashes not at the end of the string).
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+    end -= 1;
+  }
+  return value.slice(0, end);
 }
 
 function assertSafeBaseUrl(baseUrl: string, envName: string): void {

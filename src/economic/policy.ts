@@ -94,8 +94,11 @@ export function checkPolicy(input: PolicyCheckInput, policy = loadPolicy()): Pol
 
   // Curated booking capabilities: allowed only on their exact endpoint and
   // only when booking is explicitly enabled. They bypass deniedPathPatterns
-  // (which exist to keep booking paths out of reach of everything else) but
-  // still run the amount check below via the ordinary flow in prepareBooking.
+  // (which exist to keep booking paths out of reach of everything else). The
+  // per-entry maxAmount, entry and voucher checks are not done here: they run
+  // in bookings.ts both at prepare and again at commit
+  // (revalidateBookingOperation), since the request body only carries entry
+  // numbers, not amounts.
   const bookingPattern = BOOKING_CAPABILITY_PATHS[input.capability];
   if (bookingPattern) {
     if (!bookingPattern.test(input.path)) {
