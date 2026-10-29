@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkPolicy } from '../src/economic/policy.js';
+import type { EconomicPolicy, PolicyCheckInput } from '../src/economic/policy.js';
 import { prepareOperation, verifyPreparedOperation } from '../src/economic/operations.js';
 
 const originalWrites = process.env.ECONOMIC_ENABLE_WRITES;
@@ -70,6 +71,64 @@ describe('write policy', () => {
         body: { name: 'Different' },
       }),
     ).toThrow('signature does not match');
+  });
+
+  describe('maxAmount', () => {
+    const policy: EconomicPolicy = {
+      writesEnabled: true,
+      bookingEnabled: false,
+      allowedCapabilities: [],
+      allowedServices: [],
+      allowedMethods: ['POST', 'PUT'],
+      deniedPathPatterns: [],
+      maxAmount: 50_000,
+    };
+
+    const input = (body: unknown): PolicyCheckInput => ({
+      capability: 'economic_prepare_sales_document',
+      serviceId: 'rest',
+      method: 'POST',
+      path: '/invoices/drafts',
+      body,
+    });
+
+    it('does not treat a large identifier as an amount', () => {
+      // customerNumber is an 8-digit id, not kroner. Before the fix this
+      // blocked every write for any customer numbered above maxAmount.
+      expect(
+        checkPolicy(
+          input({
+            customer: { customerNumber: 12_345_678 },
+            lines: [{ unitNetPrice: 39, quantity: 469 }],
+          }),
+          policy,
+        ),
+      ).toMatchObject({ allowed: true });
+    });
+
+    it('still blocks a monetary value above the limit', () => {
+      expect(
+        checkPolicy(
+          input({
+            customer: { customerNumber: 12_345_678 },
+            lines: [{ totalNetAmount: 60_000 }],
+          }),
+          policy,
+        ),
+      ).toMatchObject({ allowed: false });
+    });
+
+    it('checks numbers in an array under a monetary key', () => {
+      expect(checkPolicy(input({ totalAmounts: [10, 60_000] }), policy)).toMatchObject({
+        allowed: false,
+      });
+    });
+
+    it('ignores a non-monetary number nested under a monetary key', () => {
+      expect(
+        checkPolicy(input({ totals: { customerNumber: 12_345_678 } }), policy),
+      ).toMatchObject({ allowed: true });
+    });
   });
 
   it('normalizes a JSON-string body so the prepare result carries a real object', () => {
