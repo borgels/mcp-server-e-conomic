@@ -143,9 +143,9 @@ const AMOUNT_KEY = /amount|total|price/i;
  *
  * Only numbers reached through a key that looks monetary are compared.
  * Walking into any number regardless of its key made identifiers trip the
- * check — an e-conomic customerNumber such as 64418577 is an ordinary 8-digit
- * id, and comparing it against a kroner limit blocked every write for that
- * customer with "amount exceeds policy maxAmount".
+ * check — an e-conomic customerNumber is an ordinary 8-digit id, and
+ * comparing it against a kroner limit blocked every write for that customer
+ * with "amount exceeds policy maxAmount".
  */
 function bodyContainsAmountAbove(
   value: unknown,
