@@ -136,24 +136,36 @@ export function checkPolicy(input: PolicyCheckInput, policy = loadPolicy()): Pol
   return { allowed: true, reason: 'matched write policy', policy };
 }
 
-function bodyContainsAmountAbove(value: unknown, maxAmount: number): boolean {
+const AMOUNT_KEY = /amount|total|price/i;
+
+/**
+ * True when the body carries a monetary value above maxAmount.
+ *
+ * Only numbers reached through a key that looks monetary are compared.
+ * Walking into any number regardless of its key made identifiers trip the
+ * check — an e-conomic customerNumber such as 64418577 is an ordinary 8-digit
+ * id, and comparing it against a kroner limit blocked every write for that
+ * customer with "amount exceeds policy maxAmount".
+ */
+function bodyContainsAmountAbove(
+  value: unknown,
+  maxAmount: number,
+  underAmountKey = false,
+): boolean {
   if (typeof value === 'number') {
-    return Math.abs(value) > maxAmount;
+    return underAmountKey && Math.abs(value) > maxAmount;
   }
 
   if (Array.isArray(value)) {
-    return value.some(item => bodyContainsAmountAbove(item, maxAmount));
+    // Inherit the flag so { totalAmounts: [1, 2] } is still checked.
+    return value.some(item => bodyContainsAmountAbove(item, maxAmount, underAmountKey));
   }
 
   if (typeof value !== 'object' || value === null) {
     return false;
   }
 
-  return Object.entries(value).some(([key, nested]) => {
-    if (/amount|total|price/i.test(key) && typeof nested === 'number') {
-      return Math.abs(nested) > maxAmount;
-    }
-
-    return bodyContainsAmountAbove(nested, maxAmount);
-  });
+  return Object.entries(value).some(([key, nested]) =>
+    bodyContainsAmountAbove(nested, maxAmount, AMOUNT_KEY.test(key)),
+  );
 }
