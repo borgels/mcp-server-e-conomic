@@ -47,12 +47,32 @@ export function formatUnknownError(error: unknown): string {
   return redactSecrets(String(error));
 }
 
+/** Configured credential values, redacted wherever they appear. */
+const registeredSecrets = new Set<string>();
+const MIN_SECRET_LENGTH = 8;
+
+/** Registers a credential value so redactSecrets removes it by value. */
+export function registerSecret(value: string | undefined): void {
+  if (!value || value.length < MIN_SECRET_LENGTH) {
+    return;
+  }
+  registeredSecrets.add(value);
+  const encoded = encodeURIComponent(value);
+  if (encoded !== value) {
+    registeredSecrets.add(encoded);
+  }
+}
+
 export function redactSecrets(value: string): string {
+  let result = value;
+  for (const secret of registeredSecrets) {
+    result = result.split(secret).join('[REDACTED]');
+  }
   return SECRET_PATTERNS.reduce((current, pattern) => current.replace(pattern, match => {
     const separator = match.includes(':') ? ':' : '=';
     const key = match.split(separator)[0]?.trim() ?? 'secret';
     return `${key}${separator} [REDACTED]`;
-  }), value);
+  }), result);
 }
 
 function formatEconomicHttpError(input: {

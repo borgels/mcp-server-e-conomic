@@ -167,3 +167,50 @@ function jsonResponse(payload: unknown): Response {
     },
   });
 }
+
+describe('EconomicClient redirects, error bodies and configuration', () => {
+  function client(fetchImpl: typeof fetch): EconomicClient {
+    return new EconomicClient({
+      appSecretToken: 'app-secret-value-123',
+      agreementGrantToken: 'grant-token-value-456',
+      restBaseUrl: 'https://example.test',
+      fetchImpl,
+    });
+  }
+
+  it('never follows redirects with the token headers', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(null, { status: 302, headers: { location: 'https://elsewhere.example/' } }),
+    );
+    await expect(client(fetchMock as unknown as typeof fetch).rest('/customers')).rejects.toThrow(
+      /HTTP 302.*redirect not followed/,
+    );
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).redirect).toBe('manual');
+  });
+
+  it('caps error bodies and redacts configured tokens by value', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(`echo app-secret-value-123 ${'x'.repeat(200_000)}`, {
+          status: 500,
+          headers: { 'content-type': 'text/plain' },
+        }),
+    );
+    const error = (await client(fetchMock as unknown as typeof fetch)
+      .rest('/customers')
+      .catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(EconomicHttpError);
+    expect(error.message.length).toBeLessThan(70_000);
+    expect(error.message).toContain('[truncated]');
+    expect(error.message).not.toContain('app-secret-value-123');
+  });
+
+  it('rejects an invalid ECONOMIC_TIMEOUT_MS instead of using NaN', () => {
+    process.env.ECONOMIC_TIMEOUT_MS = 'abc';
+    try {
+      expect(() => new EconomicClient({})).toThrow(/ECONOMIC_TIMEOUT_MS/);
+    } finally {
+      delete process.env.ECONOMIC_TIMEOUT_MS;
+    }
+  });
+});

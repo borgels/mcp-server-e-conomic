@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { EconomicClient, type EconomicClientOptions } from './economic/client.js';
 import { registerEconomicTools } from './tools/economic.js';
+import { PACKAGE_VERSION } from './version.js';
 
 export interface CreateServerOptions {
   client?: EconomicClient;
@@ -10,7 +11,7 @@ export interface CreateServerOptions {
 export function createServer(options: CreateServerOptions = {}): McpServer {
   const server = new McpServer({
     name: 'e-conomic',
-    version: '0.7.0',
+    version: PACKAGE_VERSION,
   });
 
   const client = options.client ?? new EconomicClient(options.clientOptions);

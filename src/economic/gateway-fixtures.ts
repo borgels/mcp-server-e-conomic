@@ -9,7 +9,7 @@ const rootContext = {
   mode: 'contract',
   agreement: {
     agreementNumber: 424242,
-    name: 'Borgels Demo Agreement',
+    name: 'Demo Agreement',
     country: 'DK',
     baseCurrency: 'DKK',
   },

@@ -1,4 +1,5 @@
-import { EconomicHttpError } from '../errors.js';
+import { readEnvInteger } from '../config-env.js';
+import { EconomicHttpError, registerSecret } from '../errors.js';
 import { normalizeJsonBody } from './json.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -58,7 +59,10 @@ export class EconomicClient {
     assertSafeBaseUrl(this.restBaseUrl, 'ECONOMIC_BASE_URL_REST');
     assertSafeBaseUrl(this.openApiBaseUrl, 'ECONOMIC_BASE_URL_OPENAPI');
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.timeoutMs = options.timeoutMs ?? Number(process.env.ECONOMIC_TIMEOUT_MS ?? 30_000);
+    this.timeoutMs =
+      options.timeoutMs ?? readEnvInteger('ECONOMIC_TIMEOUT_MS', 30_000, { min: 1, max: 600_000 });
+    registerSecret(this.appSecretToken);
+    registerSecret(this.agreementGrantToken);
   }
 
   async rest<T>(path: string, options: Omit<EconomicRequestOptions, 'path' | 'url'> = {}): Promise<T> {
@@ -128,8 +132,20 @@ export class EconomicClient {
       method,
       headers,
       body: fetchBody,
+      // Never follow a redirect: the token headers would be resent to the target.
+      redirect: 'manual',
       signal: AbortSignal.timeout(this.timeoutMs),
     });
+
+    if (response.status >= 300 && response.status < 400) {
+      void response.body?.cancel().catch(() => undefined);
+      throw new EconomicHttpError({
+        status: response.status,
+        method,
+        url: resolvedUrl,
+        fallbackMessage: 'redirect not followed (check ECONOMIC_BASE_URL_REST / ECONOMIC_BASE_URL_OPENAPI)',
+      });
+    }
 
     const body = await readResponseBody(response);
 
@@ -161,15 +177,24 @@ export class EconomicClient {
   }
 }
 
+/** Error bodies are read up to this many bytes; the rest is discarded. */
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
 async function readResponseBody(response: Response): Promise<unknown> {
   if (response.status === 204) {
     return null;
   }
 
-  const text = await response.text();
+  const { text, truncated } = response.ok
+    ? { text: await response.text(), truncated: false }
+    : await readTextUpTo(response, MAX_ERROR_BODY_BYTES);
 
   if (!text) {
     return null;
+  }
+
+  if (truncated) {
+    return `${text}... [truncated]`;
   }
 
   const contentType = response.headers.get('content-type') ?? '';
@@ -182,6 +207,32 @@ async function readResponseBody(response: Response): Promise<unknown> {
   } catch {
     return text;
   }
+}
+
+/** Reads at most `limit` bytes of the body as text and cancels the rest. */
+async function readTextUpTo(response: Response, limit: number): Promise<{ text: string; truncated: boolean }> {
+  if (!response.body) {
+    return { text: '', truncated: false };
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (total + value.byteLength > limit) {
+      chunks.push(value.subarray(0, limit - total));
+      truncated = true;
+      await reader.cancel().catch(() => undefined);
+      break;
+    }
+    chunks.push(value);
+    total += value.byteLength;
+  }
+  return { text: Buffer.concat(chunks).toString('utf8'), truncated };
 }
 
 function appendQuery(urlValue: string, query?: Record<string, QueryValue>): string {
