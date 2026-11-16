@@ -3,11 +3,11 @@
 TypeScript MCP server for Visma e-conomic APIs. It is intentionally boring good:
 typed, documented, read-first, policy-aware, credential-sane, and audit-friendly.
 
-> **Disclaimer:** This is an independent, unofficial project by Borgels. Borgels is
-> not affiliated with, endorsed by, or supported by Visma, Visma e-conomic, or
-> e-conomic. "Visma", "e-conomic", and the e-conomic APIs are referenced only to
-> describe what this server talks to. You need your own e-conomic credentials, and
-> use of the e-conomic APIs is subject to Visma/e-conomic's own terms.
+> **Disclaimer:** This is an independent, unofficial project. It is not developed,
+> endorsed or supported by Visma e-conomic. "Visma", "e-conomic", and the e-conomic
+> APIs are referenced only to describe what this server talks to. You need your own
+> e-conomic credentials, and use of the e-conomic APIs is subject to
+> Visma/e-conomic's own terms.
 
 ## Scope
 
@@ -295,21 +295,57 @@ available:
 PORT=3000 ECONOMIC_APP_SECRET_TOKEN="demo" ECONOMIC_AGREEMENT_GRANT_TOKEN="demo" npm run dev:http
 ```
 
-By default the HTTP server binds to `127.0.0.1`, limits request bodies to 10 MiB,
-allows browser CORS only from loopback origins, and does not require an HTTP
-Bearer token. You can override this with `MCP_HTTP_HOST`, `MCP_MAX_BODY_BYTES`,
-`MCP_ALLOWED_ORIGINS`, `MCP_ALLOW_ANY_ORIGIN=true`, and `MCP_HTTP_TOKEN`.
-The Bearer token is compared in constant time. If any `*_TRUST_FORWARDED_USER`
-variable is set to `true` (for deployments behind an identity-forwarding
-proxy), the HTTP server refuses to start unless `MCP_HTTP_TOKEN` is also set.
+By default the HTTP server binds to `127.0.0.1`, limits request bodies to 10 MiB
+and allows browser CORS only from loopback origins. A token is optional on
+loopback; on any other bind address (for example `0.0.0.0` in a container)
+`MCP_HTTP_TOKEN` is required. The Bearer token is compared in constant time.
+If any `*_TRUST_FORWARDED_USER` variable is set to `true` (for deployments
+behind an identity-forwarding proxy), the HTTP server refuses to start unless
+`MCP_HTTP_TOKEN` is also set.
 
 The MCP endpoint is `POST http://127.0.0.1:3000/mcp`.
 
-## Borgels Gateway Contract
+### HTTP Settings
 
-`mcp-server-e-conomic/gateway` is the supported package export for Borgels
-control-plane runtimes that need to wrap e-conomic without copying connector
-logic.
+The HTTP transport serves `POST /mcp` (stateless Streamable HTTP) and an
+unauthenticated `GET /healthz`. It binds to `127.0.0.1` unless told otherwise.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MCP_HTTP_HOST` / `HOST` | `127.0.0.1` | Bind address. |
+| `PORT` | `3000` | Listen port (1-65535). |
+| `MCP_HTTP_TOKEN` | – | Bearer token for `/mcp`: at least 32 printable ASCII characters, e.g. `openssl rand -hex 32`. **Required** on a non-loopback bind and with `MCP_ALLOW_ANY_ORIGIN=true`; the server refuses to start otherwise. |
+| `MCP_HTTP_ALLOW_UNAUTHENTICATED` | `false` | Start without a token where one would be required. Only for setups where access is restricted by other means; logs a warning. |
+| `MCP_ALLOWED_ORIGINS` | – | Comma-separated browser origins allowed to call `/mcp`. Default: localhost origins. Requests without an `Origin` header (server-to-server) are not affected. |
+| `MCP_ALLOW_ANY_ORIGIN` | `false` | Allow any browser origin. Requires `MCP_HTTP_TOKEN`. |
+| `MCP_ALLOWED_HOSTS` | – | Comma-separated host names accepted in the `Host` header. Default: on a loopback bind only `localhost`, `127.0.0.1`, `[::1]` and the bind address; no check on other binds. |
+| `MCP_MAX_BODY_BYTES` | `10485760` | Request body limit; larger requests get 413. |
+| `MCP_AUTH_FAILURE_LIMIT` | `20` | Failed authentication attempts per client address within the window before further failures get 429. `0` disables. Requests with a valid token are never throttled. |
+| `MCP_AUTH_FAILURE_WINDOW_MS` | `60000` | Window for `MCP_AUTH_FAILURE_LIMIT`. |
+
+Invalid values (a non-numeric `PORT`, a misspelt boolean) stop the server at
+startup with a message naming the variable. Rejected requests get a JSON error
+(401 with `WWW-Authenticate: Bearer`, 400 for invalid JSON, 413 for oversized
+bodies) and one log line on stderr. The server shuts down gracefully on
+SIGTERM/SIGINT.
+
+## Security Model
+
+- The server acts with one shared e-conomic identity: the credentials in its
+  environment. Everyone who can call it acts with the same rights.
+- `MCP_HTTP_TOKEN` decides who may call the server at all. It does not tell
+  users apart. Per-user authorization belongs in an identity-aware gateway in
+  front of the server.
+- Tool access is not data access. Disabling or hiding tools limits what a
+  client can call, but the upstream credentials decide what data the server can
+  reach. Scope those credentials as narrowly as the use case allows.
+- The HTTP server does not terminate TLS. Run it behind a reverse proxy that
+  does, or keep it on a private network.
+
+## Gateway Contract
+
+`mcp-server-e-conomic/gateway` is the supported package export for embedding
+hosts that need to wrap e-conomic without copying connector logic.
 
 The gateway exports:
 
@@ -360,7 +396,7 @@ const result = await gateway.callTool('customer_overview', { number: 1001 });
 
 Contract mode is deterministic, performs no network calls, and returns fixture
 customers, products, accounts, company context, and pagination metadata. It is
-intended for Borgels review/demo tests only; production connectors should use
+intended for review and demo tests only; production connectors should use
 real e-conomic credentials or e-conomic's documented `demo` tokens for live
 GET-only smoke tests.
 

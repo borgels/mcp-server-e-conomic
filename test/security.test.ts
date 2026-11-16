@@ -363,11 +363,12 @@ describe('client base URL', () => {
 
 describe('HTTP hardening', () => {
   it('rejects wrong tokens of any length', () => {
-    process.env.MCP_HTTP_TOKEN = 'secret';
-    for (const header of ['Bearer secre', 'Bearer secret2', 'Bearer x', 'secret']) {
-      expect(() => assertAuthorized({ headers: { authorization: header } } as never)).toThrow(HttpRequestError);
+    const secret = 's'.repeat(32);
+    const config = { host: '127.0.0.1', port: 0, maxBodyBytes: 1, httpToken: secret };
+    for (const header of [`Bearer ${secret.slice(1)}`, `Bearer ${secret}2`, 'Bearer x', secret]) {
+      expect(() => assertAuthorized({ headers: { authorization: header } } as never, config)).toThrow(HttpRequestError);
     }
-    expect(() => assertAuthorized({ headers: { authorization: 'Bearer secret' } } as never)).not.toThrow();
+    expect(() => assertAuthorized({ headers: { authorization: `Bearer ${secret}` } } as never, config)).not.toThrow();
   });
 
   it('refuses to start when a forwarded user is trusted without MCP_HTTP_TOKEN', () => {

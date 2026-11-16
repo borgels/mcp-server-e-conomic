@@ -41,18 +41,69 @@ export class EconomicHttpError extends Error {
 
 export function formatUnknownError(error: unknown): string {
   if (error instanceof Error) {
-    return redactSecrets(error.message);
+    return clampMessage(redactSecrets(error.message));
   }
 
-  return redactSecrets(String(error));
+  return clampMessage(redactSecrets(String(error)));
+}
+
+/** Longest error message returned to a client; the full payload stays on EconomicHttpError.payload. */
+export const MAX_ERROR_MESSAGE_LENGTH = 500;
+
+/** Shortens a (redacted) message to MAX_ERROR_MESSAGE_LENGTH characters. Redact first, then clamp. */
+export function clampMessage(message: string, max = MAX_ERROR_MESSAGE_LENGTH): string {
+  return message.length <= max ? message : `${message.slice(0, max)}... [truncated]`;
+}
+
+/**
+ * Configured credential values, redacted wherever they appear. Bounded, so an
+ * embedding host that creates a client per tenant does not grow it without
+ * limit: the most recently registered values are kept.
+ */
+const registeredSecrets = new Set<string>();
+const MIN_SECRET_LENGTH = 8;
+export const MAX_REGISTERED_SECRETS = 100;
+
+/** Registers a credential value so redactSecrets removes it by value. */
+export function registerSecret(value: string | undefined): void {
+  if (!value || value.length < MIN_SECRET_LENGTH) {
+    return;
+  }
+  remember(value);
+  const encoded = encodeURIComponent(value);
+  if (encoded !== value) {
+    remember(encoded);
+  }
+}
+
+function remember(value: string): void {
+  // Re-insert to mark as most recent; evict the oldest beyond the bound.
+  registeredSecrets.delete(value);
+  registeredSecrets.add(value);
+  while (registeredSecrets.size > MAX_REGISTERED_SECRETS) {
+    const oldest = registeredSecrets.values().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    registeredSecrets.delete(oldest);
+  }
+}
+
+/** Number of registered secret values (for tests). */
+export function registeredSecretCount(): number {
+  return registeredSecrets.size;
 }
 
 export function redactSecrets(value: string): string {
+  let result = value;
+  for (const secret of registeredSecrets) {
+    result = result.split(secret).join('[REDACTED]');
+  }
   return SECRET_PATTERNS.reduce((current, pattern) => current.replace(pattern, match => {
     const separator = match.includes(':') ? ':' : '=';
     const key = match.split(separator)[0]?.trim() ?? 'secret';
     return `${key}${separator} [REDACTED]`;
-  }), value);
+  }), result);
 }
 
 function formatEconomicHttpError(input: {
@@ -76,7 +127,7 @@ function formatEconomicHttpError(input: {
     input.fallbackMessage,
   ].filter(Boolean);
 
-  return redactSecrets(parts.join(' | '));
+  return clampMessage(redactSecrets(parts.join(' | ')));
 }
 
 function isEconomicErrorPayload(value: unknown): value is EconomicErrorPayload {

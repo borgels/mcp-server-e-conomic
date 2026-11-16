@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EconomicClient } from '../src/economic/client.js';
-import { EconomicHttpError, redactSecrets } from '../src/errors.js';
+import {
+  EconomicHttpError,
+  formatUnknownError,
+  MAX_ERROR_MESSAGE_LENGTH,
+  MAX_REGISTERED_SECRETS,
+  redactSecrets,
+  registeredSecretCount,
+  registerSecret,
+} from '../src/errors.js';
 
 describe('EconomicClient', () => {
   it('sends e-conomic auth headers from environment-style options', async () => {
@@ -167,3 +175,76 @@ function jsonResponse(payload: unknown): Response {
     },
   });
 }
+
+describe('EconomicClient redirects, error bodies and configuration', () => {
+  function client(fetchImpl: typeof fetch): EconomicClient {
+    return new EconomicClient({
+      appSecretToken: 'app-secret-value-123',
+      agreementGrantToken: 'grant-token-value-456',
+      restBaseUrl: 'https://example.test',
+      fetchImpl,
+    });
+  }
+
+  it('never follows redirects with the token headers', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(null, { status: 302, headers: { location: 'https://elsewhere.example/' } }),
+    );
+    await expect(client(fetchMock as unknown as typeof fetch).rest('/customers')).rejects.toThrow(
+      /HTTP 302.*redirect not followed/,
+    );
+    expect((fetchMock.mock.calls[0]?.[1] as RequestInit).redirect).toBe('manual');
+  });
+
+  it('caps error bodies and redacts configured tokens by value', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(`echo app-secret-value-123 ${'x'.repeat(200_000)}`, {
+          status: 500,
+          headers: { 'content-type': 'text/plain' },
+        }),
+    );
+    const error = (await client(fetchMock as unknown as typeof fetch)
+      .rest('/customers')
+      .catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(EconomicHttpError);
+    expect(error.message.length).toBeLessThan(70_000);
+    expect(error.message).toContain('[truncated]');
+    expect(error.message).not.toContain('app-secret-value-123');
+  });
+
+  it('rejects an invalid ECONOMIC_TIMEOUT_MS instead of using NaN', () => {
+    process.env.ECONOMIC_TIMEOUT_MS = 'abc';
+    try {
+      expect(() => new EconomicClient({})).toThrow(/ECONOMIC_TIMEOUT_MS/);
+    } finally {
+      delete process.env.ECONOMIC_TIMEOUT_MS;
+    }
+  });
+});
+
+describe('error message bounds', () => {
+  it('clamps error messages after redaction', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(`app-secret-value-123 ${'y'.repeat(5_000)}`, { status: 502, headers: { 'content-type': 'text/html' } }),
+    );
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret-value-123',
+      agreementGrantToken: 'grant-token-value-456',
+      restBaseUrl: 'https://example.test',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+    const error = (await client.rest('/customers').catch((e: unknown) => e)) as Error;
+    expect(error.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH + 20);
+    expect(error.message).not.toContain('app-secret-value-123');
+    expect(formatUnknownError(new Error('z'.repeat(2_000))).length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH + 20);
+  });
+
+  it('keeps the registered secret set bounded', () => {
+    for (let i = 0; i < 500; i++) {
+      registerSecret(`tenant-secret-${i}-xxxxxxxx`);
+    }
+    expect(registeredSecretCount()).toBeLessThanOrEqual(MAX_REGISTERED_SECRETS);
+    expect(redactSecrets('tenant-secret-499-xxxxxxxx')).toBe('[REDACTED]');
+  });
+});
