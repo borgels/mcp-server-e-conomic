@@ -25,7 +25,9 @@ HTTP transport, upstream client and supply chain.
   `X-AgreementGrantToken` headers are never resent to a redirect target; a
   redirect is reported as an error. Upstream error bodies are read up to
   64 KB, and the configured token values are redacted from error messages by
-  value.
+  value (the most recent 100 values are kept). Error messages returned to
+  clients are capped at 500 characters after redaction; the full payload
+  stays on `EconomicHttpError.payload`.
 - `ECONOMIC_TIMEOUT_MS` is validated (1-600000) instead of becoming `NaN`.
 - The server reports the package version.
 - Contract-mode fixtures and gateway docs use neutral names.

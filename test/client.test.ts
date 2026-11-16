@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EconomicClient } from '../src/economic/client.js';
-import { EconomicHttpError, redactSecrets } from '../src/errors.js';
+import {
+  EconomicHttpError,
+  formatUnknownError,
+  MAX_ERROR_MESSAGE_LENGTH,
+  MAX_REGISTERED_SECRETS,
+  redactSecrets,
+  registeredSecretCount,
+  registerSecret,
+} from '../src/errors.js';
 
 describe('EconomicClient', () => {
   it('sends e-conomic auth headers from environment-style options', async () => {
@@ -212,5 +220,31 @@ describe('EconomicClient redirects, error bodies and configuration', () => {
     } finally {
       delete process.env.ECONOMIC_TIMEOUT_MS;
     }
+  });
+});
+
+describe('error message bounds', () => {
+  it('clamps error messages after redaction', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response(`app-secret-value-123 ${'y'.repeat(5_000)}`, { status: 502, headers: { 'content-type': 'text/html' } }),
+    );
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret-value-123',
+      agreementGrantToken: 'grant-token-value-456',
+      restBaseUrl: 'https://example.test',
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+    const error = (await client.rest('/customers').catch((e: unknown) => e)) as Error;
+    expect(error.message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH + 20);
+    expect(error.message).not.toContain('app-secret-value-123');
+    expect(formatUnknownError(new Error('z'.repeat(2_000))).length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH + 20);
+  });
+
+  it('keeps the registered secret set bounded', () => {
+    for (let i = 0; i < 500; i++) {
+      registerSecret(`tenant-secret-${i}-xxxxxxxx`);
+    }
+    expect(registeredSecretCount()).toBeLessThanOrEqual(MAX_REGISTERED_SECRETS);
+    expect(redactSecrets('tenant-secret-499-xxxxxxxx')).toBe('[REDACTED]');
   });
 });

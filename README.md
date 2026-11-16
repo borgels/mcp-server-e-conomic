@@ -3,13 +3,11 @@
 TypeScript MCP server for Visma e-conomic APIs. It is intentionally boring good:
 typed, documented, read-first, policy-aware, credential-sane, and audit-friendly.
 
-> **Disclaimer:** This is an independent, unofficial project by Borgels. Borgels is
-> not affiliated with, endorsed by, or supported by Visma, Visma e-conomic, or
-> e-conomic. "Visma", "e-conomic", and the e-conomic APIs are referenced only to
-> describe what this server talks to. You need your own e-conomic credentials, and
-> use of the e-conomic APIs is subject to Visma/e-conomic's own terms.
-
-This is an independent, unofficial project. It is not developed, endorsed or supported by Visma e-conomic.
+> **Disclaimer:** This is an independent, unofficial project. It is not developed,
+> endorsed or supported by Visma e-conomic. "Visma", "e-conomic", and the e-conomic
+> APIs are referenced only to describe what this server talks to. You need your own
+> e-conomic credentials, and use of the e-conomic APIs is subject to
+> Visma/e-conomic's own terms.
 
 ## Scope
 
