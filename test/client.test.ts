@@ -248,3 +248,22 @@ describe('error message bounds', () => {
     expect(redactSecrets('tenant-secret-499-xxxxxxxx')).toBe('[REDACTED]');
   });
 });
+
+describe('environment source', () => {
+  it('reads nothing from process.env when given an explicit env', async () => {
+    const saved = { ...process.env };
+    process.env.ECONOMIC_APP_SECRET_TOKEN = 'env-app-secret-token';
+    process.env.ECONOMIC_AGREEMENT_GRANT_TOKEN = 'env-agreement-grant-token';
+    process.env.ECONOMIC_BASE_URL_REST = 'http://localhost:1';
+    process.env.ECONOMIC_TIMEOUT_MS = 'not-a-number';
+    try {
+      const fetchMock = vi.fn<typeof fetch>(async () => Response.json({}));
+      const client = new EconomicClient({ env: {}, fetchImpl: fetchMock as unknown as typeof fetch });
+      expect(client.buildRestUrl('/customers')).toBe('https://restapi.e-conomic.com/customers');
+      await expect(client.rest('/customers')).rejects.toThrow(/Missing e-conomic credentials/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      process.env = saved;
+    }
+  });
+});
