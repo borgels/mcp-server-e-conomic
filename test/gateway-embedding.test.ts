@@ -255,6 +255,87 @@ describe('call context and environment', () => {
   });
 });
 
+describe('per-call credential isolation', () => {
+  it('does not keep one call’s token in the gateway instance for the next call', async () => {
+    // Call 1 uses token A. Call 2 uses token B and gets an upstream error that
+    // echoes A. Only a gateway that kept A after call 1 would redact it here,
+    // so seeing A proves call 1's token stayed inside call 1.
+    const tokenA = 'tenant-a-token-1234567';
+    const tokenB = 'tenant-b-token-7654321';
+    let calls = 0;
+    const { gateway } = recordingGateway(() => {
+      calls += 1;
+      return calls === 1
+        ? Response.json({ collection: [] })
+        : new Response(`denied; last token seen ${tokenA}; this token ${tokenB}`, {
+          status: 403,
+          headers: { 'content-type': 'text/plain' },
+        });
+    });
+    await gateway.callTool('customer_overview', {}, context(tokenA));
+    const second = await gateway.callTool('customer_overview', {}, context(tokenB));
+    expect(second.isError).toBe(true);
+    expect(second.content[0]?.text).not.toContain(tokenB);
+    expect(second.content[0]?.text).toContain(tokenA);
+  });
+
+  it('redacts the call’s token from a thrown non-HTTP error', async () => {
+    const token = 'thrown-error-token-123456';
+    const fetchImpl = vi.fn(async () => {
+      throw new Error(`socket failed while sending ${token}`);
+    });
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app-secret-for-tests',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const result = await gateway.callTool('customer_overview', {}, context(token));
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('socket failed');
+    expect(result.content[0]?.text).not.toContain(token);
+  });
+
+  it('treats a whitespace-only token as missing', async () => {
+    expect(() => createEconomicGateway({ appSecretToken: '   ' })).toThrow(/appSecretToken is required/);
+    expect(() => createEconomicGateway({ appSecretToken: 'app-secret-for-tests', agreementGrantToken: ' 	 ' })).toThrow();
+    const { gateway, fetchImpl } = recordingGateway();
+    const result = await gateway.callTool('customer_overview', {}, context('   '));
+    expect(result.isError).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses writes before any preparatory read when writes are off', async () => {
+    const { gateway, fetchImpl } = recordingGateway(() => Response.json({ customerNumber: 1, layoutNumber: 1 }));
+    for (const [name, input] of [
+      ['upsert_customer', { customerNumber: 1, name: 'X' }],
+      ['upsert_product', { productNumber: 'P1', name: 'X' }],
+      ['create_draft_invoice', { customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+      ['upsert_account', { accountNumber: 1000, name: 'X' }],
+    ] as Array<[string, GatewayJsonObject]>) {
+      const result = await gateway.callTool(name, input, context('grant-token-for-tests'));
+      expect(result.isError, name).toBe(true);
+      expect(result.content[0]?.text).toContain('writes disabled');
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('get_entity self URL host', () => {
+  it('refuses a self URL on another host, even with an API-shaped path', async () => {
+    const { gateway, fetchImpl } = recordingGateway();
+    for (const selfUrl of [
+      'https://evil.example/customersapi/v3.1.0/Customers/1',
+      'https://evil.example/customers/1',
+      'https://restapi.e-conomic.com.evil.example/customers/1',
+    ]) {
+      expect(resolveEconomicReadTarget('get_entity', { selfUrl }).ok, selfUrl).toBe(false);
+      const result = await gateway.callTool('get_entity', { selfUrl }, context('grant-token-for-tests'));
+      expect(result.isError, selfUrl).toBe(true);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(resolveEconomicReadTarget('get_entity', { selfUrl: 'https://apis.e-conomic.com/customersapi/v3.1.0/Customers/1' }).ok).toBe(true);
+  });
+});
+
 describe('defaults, answer text and company context', () => {
   it('reads the REST lists behind the search_entities and supplier_overview defaults', async () => {
     for (const [name, path] of [['search_entities', '/customers'], ['supplier_overview', '/suppliers']] as const) {

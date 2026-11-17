@@ -22,7 +22,10 @@ standalone stdio/HTTP server is unchanged.
 - The embedded gateway never reads `ECONOMIC_*` environment variables.
   `appSecretToken` is required at creation outside contract mode; the
   agreement grant token comes from the call context or the options. Writes
-  are enabled only by `enableWrites`.
+  are enabled only by `enableWrites`. A blank or whitespace-only token counts
+  as missing.
+- With writes off, write tools are refused before any request (they used to
+  send their preparatory reads first).
 - Token redaction uses a `SecretRedactor` per gateway instance (and per call),
   instead of the module-global set; the standalone server keeps a process-wide
   redactor for its environment tokens.
@@ -31,7 +34,8 @@ standalone stdio/HTTP server is unchanged.
 - Results carry a short summary text next to `structuredContent`.
 - `company_context` returns only company name, address, CVR/VAT number,
   agreement number and type, modules and settings, not bank details, user
-  data or the app's tokens. `check_connection` returns `{ connected: true }`.
+  data or the app's tokens. `check_connection` returns `{ connected: true }`
+  (also in contract mode).
 
 ### Upgrade notes (embedders)
 

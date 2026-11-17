@@ -132,7 +132,7 @@ describe('e-conomic gateway export', () => {
   });
 
   it('rejects draft lines without a product reference', async () => {
-    const gateway = createEconomicGateway({ contractMode: false, appSecretToken: 'a', agreementGrantToken: 'g' });
+    const gateway = createEconomicGateway({ contractMode: false, appSecretToken: 'a', agreementGrantToken: 'g', enableWrites: true });
     const result = await gateway.callTool('create_draft_invoice', {
       customerNumber: 1000,
       lines: [{ quantity: 1, unitNetPrice: 1000 }],

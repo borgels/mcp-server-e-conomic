@@ -822,7 +822,7 @@ export function resolveEconomicReadTarget(
         return refuse('Provide either selfUrl or serviceId, resource, and number.');
       }
       const known = spec.reads.some(target => target.serviceId === serviceId.value && target.resource === resource.value);
-      if (!known) return refuse(`${serviceId.value}:${resource.value} is not a resource in the catalog.`);
+      if (!known) return refuse(`${serviceId.value.slice(0, 40)}:${resource.value.slice(0, 40)} is not a resource in the catalog.`);
       encodePathParam(numberValue, 'number');
       const pathTemplate = `/${resource.value}/{number}`;
       findEndpoint(serviceId.value, 'GET', pathTemplate);
@@ -993,6 +993,12 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           return contractToolResult(spec.name, args, target);
         }
 
+        // Refuse writes before any preparatory read (customer, layout, existing
+        // record). The full policy check still runs on the built request.
+        if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
+          return errorResult('Write blocked by policy: writes disabled');
+        }
+
         const grant = callGrantToken(context, options.agreementGrantToken);
         if (!grant) {
           return errorResult(
@@ -1013,8 +1019,9 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
   };
 }
 
+/** A credential value; blank or whitespace-only counts as missing. */
 function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
 /** The call's agreement grant token. A context with credentials is the only source; there is no fallback from it. */
@@ -1091,7 +1098,7 @@ function contractToolResult(
   target: EconomicReadTarget | undefined,
 ): GatewayToolResult {
   if (toolName === 'check_connection') {
-    return jsonResult('e-conomic connection is available.', { connected: true, mode: 'contract' });
+    return jsonResult('e-conomic connection is available.', { connected: true });
   }
   if (toolName === 'company_context') {
     return jsonResult(

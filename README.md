@@ -391,7 +391,7 @@ is the default. Anything else is refused before a request is sent.
 | `product_overview` | `products:products`, `products:productgroups`, `products:pricegroups`, `products:salespriceincurrencies`, `products:specialprices`, `rest:products`, `rest:product-groups`, `rest:units` |
 | `report_data` | `accounts:Accounts`, `accounts:KeyFigureCodes`, `accounts:TotalIntervals`, `rest:accounts`, `rest:accounting-years`, `accounting-years:AccountingYears`, `accounting-years:accountingYears/periods`, `budgets:budget-figures` |
 | `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |
-| `project_overview` | `projects:Projects`, `ProjectGroups`, `ProjectStatuses`, `CostTypes`, `Activities`, `ActivityGroups`, `Employees`, `EmployeeGroups`, `TimeEntries` |
+| `project_overview` | `projects:Projects`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
 | `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
 | `get_entity` | **Broad** (`broad: true`): one record from any read endpoint in the service catalog, by `serviceId`/`resource`/`number` or a self URL. Give it only to callers that may read all of the agreement's data. |
 
