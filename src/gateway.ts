@@ -1,12 +1,34 @@
-import { EconomicClient, type EconomicClientOptions, type QueryValue } from './economic/client.js';
+import { EconomicClient, type QueryValue } from './economic/client.js';
+import {
+  ECONOMIC_SERVICES,
+  ENDPOINT_OPERATIONS,
+  findEndpoint,
+  findService,
+  resolveReadPathTemplate,
+  type ApiSurface,
+  type CapabilityRisk,
+} from './economic/catalog.js';
 import { callEndpoint, resolveSelfUrl } from './economic/endpoints.js';
 import { encodePathParam } from './economic/path-params.js';
-import { checkPolicy, loadPolicy, type EconomicPolicy } from './economic/policy.js';
-import { EconomicHttpError } from './errors.js';
+import { basePolicy, checkPolicy, type EconomicPolicy } from './economic/policy.js';
+import { EconomicHttpError, SecretRedactor, formatUnknownError } from './errors.js';
 import {
   economicGatewayContractEntity,
   economicGatewayContractFixture,
+  economicGatewayContractSelf,
 } from './economic/gateway-fixtures.js';
+
+/**
+ * Embeddable entry point: an embedding host (for example an MCP gateway that
+ * does its own per-user authorization and logging) lists the tools, reads the
+ * catalog, and invokes `callTool` with a per-call context.
+ *
+ * The embedded surface never reads ECONOMIC_* environment variables: the app
+ * secret token and addresses come from the factory options, the agreement
+ * grant token from the call context (or the options), and writes are enabled
+ * only by `enableWrites`. Token values are redacted by a redactor owned by the
+ * gateway instance, not by process-wide state.
+ */
 
 export type GatewayRiskLevel = 'read' | 'write' | 'destructive';
 export type GatewayJsonValue = string | number | boolean | null | GatewayJsonValue[] | { [key: string]: GatewayJsonValue };
@@ -27,17 +49,137 @@ export interface GatewayToolResult {
   isError?: boolean;
 }
 
-export interface EconomicGatewayOptions extends EconomicClientOptions {
+/** Per-tenant credential passed with a call. */
+export interface EconomicGatewayCredentials {
+  /** The agreement grant token of the company the call is for. */
+  agreementGrantToken: string;
+}
+
+/**
+ * Per-call context. `caller` and `requestId` have the same shape as the other
+ * servers' gateways; this package does not send them to e-conomic or store
+ * them. When `credentials` is present it is the only source of the agreement
+ * grant token for the call (there is no fallback to the factory options).
+ */
+export interface GatewayCallContext {
+  caller?: string;
+  requestId?: string;
+  credentials?: EconomicGatewayCredentials;
+}
+
+export interface EconomicGatewayOptions {
+  /** The app's secret token. Required unless `contractMode` is on. */
+  appSecretToken?: string;
+  /**
+   * Agreement grant token for a single-tenant host. A multi-tenant host leaves
+   * it out and passes `credentials` in each call's context.
+   */
+  agreementGrantToken?: string;
+  /** Default https://restapi.e-conomic.com. */
+  restBaseUrl?: string;
+  /** Default https://apis.e-conomic.com. */
+  openApiBaseUrl?: string;
+  fetchImpl?: typeof fetch;
+  /** Per-request time limit. Default 30 seconds. */
+  timeoutMs?: number;
+  /** Answer from built-in fixtures; no credentials, no requests. */
   contractMode?: boolean;
   /**
-   * Allow the write-risk gateway tools to execute. A hosting control plane that
-   * embeds the gateway and applies its own write governance (scopes, approvals,
-   * audit) passes `true` to opt in, instead of relying on the
-   * ECONOMIC_ENABLE_WRITES environment flag used by the standalone server. The
-   * rest of the write policy (denied paths, max amount) still applies on top.
+   * Allow the write-risk tools to execute. A hosting control plane that applies
+   * its own write governance (roles, approvals, audit) passes `true`. The
+   * built-in write policy (denied paths such as booking) still applies on top.
+   * The ECONOMIC_ENABLE_WRITES environment flag does not apply here.
    */
   enableWrites?: boolean;
 }
+
+/** One e-conomic service and resource, as named in the service catalog. */
+export interface EconomicResourceRef {
+  readonly serviceId: string;
+  readonly resource: string;
+}
+
+/** Deeply read-only JSON, as found in the frozen tool catalog. */
+export type GatewayReadonlyJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly GatewayReadonlyJsonValue[]
+  | { readonly [key: string]: GatewayReadonlyJsonValue };
+
+/**
+ * One e-conomic API request a tool may make. `access`, `method` and `path` are
+ * the family's shape; `path` is relative to the REST base URL for the `rest`
+ * service and to the OpenAPI base URL (including the service path) otherwise.
+ * `serviceId` and `resource` are e-conomic additions naming the catalog entry.
+ */
+export interface GatewayUpstreamOperation {
+  readonly access: 'read' | 'write';
+  readonly method: 'GET' | 'POST' | 'PUT';
+  readonly path: string;
+  readonly serviceId: string;
+  readonly resource: string;
+}
+
+/** A tool catalog entry: the gateway definition plus the e-conomic API requests the tool may make. */
+export interface GatewayToolCatalogEntry {
+  readonly name: string;
+  readonly title: string;
+  readonly description: string;
+  readonly riskLevel: GatewayRiskLevel;
+  readonly enabledByDefault: boolean;
+  readonly inputSchema: { readonly [key: string]: GatewayReadonlyJsonValue };
+  /**
+   * Every request the tool may make. For a narrow read tool these are exactly
+   * the requests its enforced target list allows.
+   */
+  readonly upstream: readonly GatewayUpstreamOperation[];
+  /**
+   * e-conomic addition: true for the one tool that can read any read endpoint
+   * in the service catalog (`get_entity`). A host should give it only to
+   * callers that may read all of the agreement's data.
+   */
+  readonly broad: boolean;
+  /** e-conomic addition: what a narrow read tool reads when the input names no service or resource. */
+  readonly defaultRead?: EconomicResourceRef;
+}
+
+export interface EconomicServiceCatalogEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly surface: ApiSurface;
+  readonly servicePath: string;
+  readonly resources: readonly string[];
+}
+
+export interface EconomicEndpointCatalogEntry {
+  readonly id: string;
+  readonly serviceId: string;
+  readonly method: string;
+  readonly pathTemplate: string;
+  /** 'read' for GET, 'write' for everything else. */
+  readonly access: 'read' | 'write';
+  readonly risk: CapabilityRisk;
+}
+
+export interface EconomicServiceCatalog {
+  readonly services: readonly EconomicServiceCatalogEntry[];
+  readonly endpoints: readonly EconomicEndpointCatalogEntry[];
+}
+
+/** What a read tool call will read, resolved before any request is sent. */
+export interface EconomicReadTarget {
+  readonly serviceId: string;
+  readonly resource: string;
+  readonly method: 'GET';
+  readonly pathTemplate: string;
+  readonly pathParams?: Readonly<Record<string, string | number>>;
+}
+
+export type EconomicReadTargetResolution =
+  | { readonly ok: true; readonly target: EconomicReadTarget }
+  | { readonly ok: false; readonly reason: string };
 
 const emptyInput = {
   type: 'object',
@@ -256,390 +398,813 @@ const upsertAccountInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
-const readEndpointInput = {
+const DEFAULT_REST_BASE_URL = 'https://restapi.e-conomic.com';
+const DEFAULT_OPENAPI_BASE_URL = 'https://apis.e-conomic.com';
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+const ref = (serviceId: string, resource: string): EconomicResourceRef => ({ serviceId, resource });
+
+/** The fixed endpoint behind check_connection and company_context (not reachable through get_entity). */
+const SELF = ref('rest', 'self');
+
+/**
+ * What each narrow read tool may read. The first entry is the default. These
+ * lists are enforced before any request is sent; `economicToolCatalog` publishes
+ * the requests they allow as `upstream`.
+ */
+const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
+  search_entities: [
+    ref('rest', 'customers'),
+    ref('rest', 'suppliers'),
+    ref('rest', 'products'),
+    ref('rest', 'accounts'),
+    ref('projects', 'Projects'),
+  ],
+  customer_overview: [
+    ref('customers', 'Customers'),
+    ref('customers', 'Contacts'),
+    ref('customers', 'DeliveryLocations'),
+    ref('rest', 'customers'),
+    ref('rest', 'customer-groups'),
+  ],
+  supplier_overview: [
+    ref('rest', 'suppliers'),
+    ref('rest', 'supplier-groups'),
+    ref('suppliers', 'Contacts'),
+    ref('suppliers', 'Groups'),
+  ],
+  product_overview: [
+    ref('products', 'products'),
+    ref('products', 'productgroups'),
+    ref('products', 'pricegroups'),
+    ref('products', 'salespriceincurrencies'),
+    ref('products', 'specialprices'),
+    ref('rest', 'products'),
+    ref('rest', 'product-groups'),
+    ref('rest', 'units'),
+  ],
+  report_data: [
+    ref('accounts', 'Accounts'),
+    ref('accounts', 'KeyFigureCodes'),
+    ref('accounts', 'TotalIntervals'),
+    ref('rest', 'accounts'),
+    ref('rest', 'accounting-years'),
+    ref('accounting-years', 'AccountingYears'),
+    ref('accounting-years', 'accountingYears/periods'),
+    ref('budgets', 'budget-figures'),
+  ],
+  invoice_overview: [
+    ref('rest', 'invoices/booked'),
+    ref('rest', 'invoices/unpaid'),
+    ref('rest', 'invoices/overdue'),
+    ref('rest', 'invoices/paid'),
+    ref('rest', 'invoices/sent'),
+    ref('rest', 'invoices/drafts'),
+  ],
+  project_overview: [
+    ref('projects', 'Projects'),
+    ref('projects', 'ProjectGroups'),
+    ref('projects', 'ProjectStatuses'),
+    ref('projects', 'CostTypes'),
+    ref('projects', 'Activities'),
+    ref('projects', 'ActivityGroups'),
+    ref('projects', 'Employees'),
+    ref('projects', 'EmployeeGroups'),
+    ref('projects', 'TimeEntries'),
+  ],
+  accounting_entries: [
+    ref('booked-entries', 'booked-entries'),
+    ref('booked-entries', 'booked-entries/matched-pairs'),
+    ref('journals', 'draft-entries'),
+  ],
+};
+
+/** Every resource with read endpoints in the service catalog: what the broad get_entity may read. */
+const ALL_READ_TARGETS: readonly EconomicResourceRef[] = ECONOMIC_SERVICES.flatMap(service =>
+  service.resources.map(resource => ref(service.id, resource)),
+);
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function pairList(targets: readonly EconomicResourceRef[]): string {
+  return targets.map(target => `${target.serviceId}:${target.resource}`).join(', ');
+}
+
+function narrowReadInput(targets: readonly EconomicResourceRef[]): GatewayJsonObject {
+  const [first] = targets;
+  return {
+    type: 'object',
+    properties: {
+      serviceId: {
+        type: 'string',
+        enum: unique(targets.map(target => target.serviceId)),
+        description: `e-conomic service. Allowed serviceId:resource pairs: ${pairList(targets)}. Default ${first?.serviceId}:${first?.resource}.`,
+      },
+      resource: {
+        type: 'string',
+        enum: unique(targets.map(target => target.resource)),
+        description: 'Resource within the service. Without serviceId, the first allowed pair with this resource is used.',
+      },
+      number: { type: ['string', 'number'], description: 'Optional entity number/id for a direct lookup.' },
+      paged: { type: 'boolean', description: 'OpenAPI services: use the /paged collection endpoint when no number is supplied (default true).' },
+      query: {
+        type: 'object',
+        description: 'Optional query parameters passed to e-conomic (paging, filter, sort).',
+        additionalProperties: true,
+      },
+    },
+    additionalProperties: false,
+  };
+}
+
+const getEntityInput = {
   type: 'object',
   properties: {
-    serviceId: { type: 'string', description: 'e-conomic service id. Defaults to the tool-specific service.' },
-    resource: { type: 'string', description: 'Resource path within the selected service.' },
-    number: { type: ['string', 'number'], description: 'Optional entity number/id for a direct lookup.' },
-    paged: { type: 'boolean', description: 'Use the /paged collection endpoint when no number is supplied.' },
-    query: {
-      type: 'object',
-      description: 'Optional query parameters passed to e-conomic.',
-      additionalProperties: true,
-    },
+    serviceId: { type: 'string', enum: ECONOMIC_SERVICES.map(service => service.id) },
+    resource: { type: 'string', enum: unique(ALL_READ_TARGETS.map(target => target.resource)) },
+    number: { type: ['string', 'number'] },
+    selfUrl: { type: 'string', description: 'An e-conomic self URL that matches a read endpoint in the catalog.' },
+    query: { type: 'object', additionalProperties: true },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
-export const economicGatewayTools: GatewayToolDefinition[] = [
+interface ToolSpec extends GatewayToolDefinition {
+  broad: boolean;
+  /** Read tools: the targets enforced before any request. Empty for write tools. */
+  reads: readonly EconomicResourceRef[];
+  /** Write tools: the requests the tool makes. Read tools derive theirs from `reads`. */
+  upstream?: readonly GatewayUpstreamOperation[];
+}
+
+function operation(
+  access: 'read' | 'write',
+  method: 'GET' | 'POST' | 'PUT',
+  serviceId: string,
+  resource: string,
+  pathTemplate: string,
+): GatewayUpstreamOperation {
+  const service = findService(serviceId);
+  const path = service.surface === 'rest' ? pathTemplate : `/${service.servicePath}${pathTemplate}`;
+  return { access, method, path, serviceId, resource };
+}
+
+/** The GET requests a read target allows (collection, OpenAPI page, one record). */
+function targetOperations(target: EconomicResourceRef): GatewayUpstreamOperation[] {
+  if (target.serviceId === SELF.serviceId && target.resource === SELF.resource) {
+    return [operation('read', 'GET', 'rest', 'self', '/self')];
+  }
+  const base = `/${target.resource}`;
+  const templates = findService(target.serviceId).surface === 'rest'
+    ? [base, `${base}/{number}`]
+    : [`${base}/paged`, base, `${base}/{number}`];
+  return templates.map(template => operation('read', 'GET', target.serviceId, target.resource, template));
+}
+
+function upstreamOf(spec: ToolSpec): GatewayUpstreamOperation[] {
+  if (spec.upstream) return [...spec.upstream];
+  if (spec.broad) {
+    // get_entity: a record by number, or any GET endpoint a self URL can match.
+    return ENDPOINT_OPERATIONS
+      .filter(endpoint => endpoint.method === 'GET')
+      .map(endpoint =>
+        operation(
+          'read',
+          'GET',
+          endpoint.serviceId,
+          resourceOfTemplate(endpoint.serviceId, endpoint.pathTemplate) ?? '',
+          endpoint.pathTemplate,
+        ),
+      );
+  }
+  return spec.reads.flatMap(targetOperations);
+}
+
+function narrowReadTool(name: string, title: string, description: string): ToolSpec {
+  const reads = NARROW_READ_TARGETS[name] ?? [];
+  return {
+    name,
+    title,
+    description,
+    riskLevel: 'read',
+    enabledByDefault: true,
+    inputSchema: narrowReadInput(reads),
+    broad: false,
+    reads,
+  };
+}
+
+function writeTool(
+  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads'> & { riskLevel?: GatewayRiskLevel },
+): ToolSpec {
+  return { ...spec, riskLevel: spec.riskLevel ?? 'write', enabledByDefault: false, broad: false, reads: [] };
+}
+
+const WRITE_NOTE =
+  'Write — disabled by default; enable via the gateway’s enableWrites option (standalone server: ECONOMIC_ENABLE_WRITES).';
+
+const TOOL_SPECS: ToolSpec[] = [
   {
     name: 'check_connection',
     title: 'Check e-conomic connection',
-    description: 'Verify that the configured e-conomic credentials can access the API.',
+    description: 'Verify that the credentials can access the e-conomic API. Returns only whether the connection works.',
     riskLevel: 'read',
     enabledByDefault: true,
     inputSchema: emptyInput,
+    broad: false,
+    reads: [SELF],
   },
   {
     name: 'company_context',
     title: 'Get e-conomic company context',
-    description: 'Read the agreement self-service context: company, agreement number, modules, and settings.',
+    description:
+      'Read the company name, address, CVR/VAT number, agreement number and type, enabled modules, and the settings the other tools need (base currency, international ledger). Bank details and user data are not returned.',
     riskLevel: 'read',
     enabledByDefault: true,
     inputSchema: emptyInput,
+    broad: false,
+    reads: [SELF],
   },
-  {
-    name: 'search_entities',
-    title: 'Search e-conomic entities',
-    description: 'List customers, suppliers, products, accounts, projects, documents, or entries.',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: readEndpointInput,
-  },
+  narrowReadTool(
+    'search_entities',
+    'Search e-conomic master data',
+    'List master data: customers (default), suppliers, products, ledger accounts, or projects. Entries, invoices and documents are read with their own tools.',
+  ),
   {
     name: 'get_entity',
-    title: 'Get e-conomic entity',
-    description: 'Fetch one e-conomic entity by service/resource/number or by a safe e-conomic self URL.',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        serviceId: { type: 'string' },
-        resource: { type: 'string' },
-        number: { type: ['string', 'number'] },
-        selfUrl: { type: 'string' },
-        query: { type: 'object', additionalProperties: true },
-      },
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'customer_overview',
-    title: 'Get e-conomic customer overview',
-    description: 'Read customer master data and related customer resources.',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: readEndpointInput,
-  },
-  {
-    name: 'supplier_overview',
-    title: 'Get e-conomic supplier overview',
-    description: 'Read supplier groups or supplier contact data.',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: readEndpointInput,
-  },
-  {
-    name: 'product_overview',
-    title: 'Get e-conomic product overview',
-    description: 'Read products, product groups, price groups, and sales price data.',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: readEndpointInput,
-  },
-  {
-    name: 'report_data',
-    title: 'Get e-conomic report data',
-    description: 'Read accounts, booked entries, budgets, and accounting-year resources for reporting.',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: readEndpointInput,
-  },
-  {
-    name: 'invoice_overview',
-    title: 'Get e-conomic invoice overview',
+    title: 'Get any e-conomic record (broad)',
     description:
-      'List booked invoices (default) or an invoice collection (booked, unpaid, overdue, paid, sent, drafts) for revenue and receivables reporting. Supports query paging (skippages, pagesize) and filters.',
+      'Fetch one record from any read endpoint in the catalog, by serviceId/resource/number or by an e-conomic self URL. Broad: it can read everything the other tools read, including booked entries, invoices and documents. Give it only to callers that may read all of the agreement’s data.',
     riskLevel: 'read',
     enabledByDefault: true,
-    inputSchema: readEndpointInput,
+    inputSchema: getEntityInput,
+    broad: true,
+    reads: ALL_READ_TARGETS,
   },
-  {
-    name: 'project_overview',
-    title: 'Get e-conomic project overview',
-    description:
-      'Read the Projects add-on: projects (default), project groups, cost types, activities, employees, or time entries. Set resource to select (Projects, ProjectGroups, CostTypes, Activities, Employees, TimeEntries).',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: readEndpointInput,
-  },
-  {
-    name: 'accounting_entries',
-    title: 'Get e-conomic accounting entries',
-    description:
-      'Read booked accounting entries (default) or, via serviceId/resource, journal draft entries. Used for ledger, supplier-invoice, and reconciliation reads. Supports paging and filters.',
-    riskLevel: 'read',
-    enabledByDefault: true,
-    inputSchema: readEndpointInput,
-  },
-  {
+  narrowReadTool(
+    'customer_overview',
+    'Get e-conomic customer overview',
+    'Read customers (default), customer contacts, delivery locations, or customer groups. Reads customer resources only.',
+  ),
+  narrowReadTool(
+    'supplier_overview',
+    'Get e-conomic supplier overview',
+    'Read suppliers (default), supplier groups, or supplier contacts. Reads supplier resources only.',
+  ),
+  narrowReadTool(
+    'product_overview',
+    'Get e-conomic product overview',
+    'Read products (default), product groups, price groups, prices in currencies, special prices, or units. Reads product resources only.',
+  ),
+  narrowReadTool(
+    'report_data',
+    'Get e-conomic report data',
+    'Read the chart of accounts (default), key figure codes, total intervals, accounting years and periods, and budget figures for reporting. Booked entries are read with accounting_entries.',
+  ),
+  narrowReadTool(
+    'invoice_overview',
+    'Get e-conomic invoice overview',
+    'List booked invoices (default) or an invoice collection (booked, unpaid, overdue, paid, sent, drafts) for revenue and receivables reporting. Supports query paging (skippages, pagesize) and filters.',
+  ),
+  narrowReadTool(
+    'project_overview',
+    'Get e-conomic project overview',
+    'Read the Projects add-on: projects (default), project groups and statuses, cost types, activities and activity groups, employees and employee groups, or time entries.',
+  ),
+  narrowReadTool(
+    'accounting_entries',
+    'Get e-conomic accounting entries',
+    'Read booked accounting entries (default), matched pairs of booked entries, or journal draft entries. Used for ledger, supplier-invoice, and reconciliation reads. Supports paging and filters.',
+  ),
+  writeTool({
     name: 'create_draft_invoice',
     title: 'Create e-conomic draft invoice',
-    description:
-      'Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer. Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
-    riskLevel: 'write',
-    enabledByDefault: false,
+    description: `Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer. ${WRITE_NOTE}`,
     inputSchema: createDraftInvoiceInput,
-  },
-  {
+    upstream: [
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('read', 'GET', 'rest', 'layouts', '/layouts'),
+      operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
+    ],
+  }),
+  writeTool({
     name: 'upsert_customer',
     title: 'Create or update e-conomic customer',
-    description:
-      'Create a customer, or update an existing one by customerNumber (reads the current customer and merges the provided fields). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
-    riskLevel: 'write',
-    enabledByDefault: false,
+    description: `Create a customer, or update an existing one by customerNumber (reads the current customer and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertCustomerInput,
-  },
-  {
+    upstream: [
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('write', 'POST', 'rest', 'customers', '/customers'),
+      operation('write', 'PUT', 'rest', 'customers', '/customers/{number}'),
+    ],
+  }),
+  writeTool({
     name: 'upsert_product',
     title: 'Create or update e-conomic product',
-    description:
-      'Create a product, or update it when the productNumber already exists (reads the current product and merges the provided fields). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
-    riskLevel: 'write',
-    enabledByDefault: false,
+    description: `Create a product, or update it when the productNumber already exists (reads the current product and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertProductInput,
-  },
-  {
+    upstream: [
+      operation('read', 'GET', 'rest', 'products', '/products/{number}'),
+      operation('write', 'POST', 'rest', 'products', '/products'),
+      operation('write', 'PUT', 'rest', 'products', '/products/{number}'),
+    ],
+  }),
+  writeTool({
     name: 'upsert_project',
     title: 'Create or update e-conomic project',
-    description:
-      'Create a project in the Projects add-on, or update an existing one by projectNumber (reads the current project and merges the provided fields; upserts via the collection PUT). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
-    riskLevel: 'write',
-    enabledByDefault: false,
+    description: `Create a project in the Projects add-on, or update an existing one by projectNumber (reads the current project and merges the provided fields; upserts via the collection PUT). ${WRITE_NOTE}`,
     inputSchema: upsertProjectInput,
-  },
-  {
+    upstream: [
+      operation('read', 'GET', 'projects', 'Projects', '/Projects/{number}'),
+      operation('write', 'POST', 'projects', 'Projects', '/Projects'),
+      operation('write', 'PUT', 'projects', 'Projects', '/Projects'),
+    ],
+  }),
+  writeTool({
     name: 'create_time_entry',
     title: 'Register e-conomic project time',
-    description:
-      'Register a project time entry (hours on a project + activity for an employee, on a date). Create only; deletion is a separate operation. Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
-    riskLevel: 'write',
-    enabledByDefault: false,
+    description: `Register a project time entry (hours on a project + activity for an employee, on a date). Create only; deletion is a separate operation. ${WRITE_NOTE}`,
     inputSchema: createTimeEntryInput,
-  },
-  {
+    upstream: [operation('write', 'POST', 'projects', 'TimeEntries', '/TimeEntries')],
+  }),
+  writeTool({
     name: 'upsert_supplier',
     title: 'Create or update e-conomic supplier',
-    description:
-      'Create a supplier, or update an existing one by supplierNumber (reads the current supplier and merges the provided fields). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
-    riskLevel: 'write',
-    enabledByDefault: false,
+    description: `Create a supplier, or update an existing one by supplierNumber (reads the current supplier and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertSupplierInput,
-  },
-  {
+    upstream: [
+      operation('read', 'GET', 'rest', 'suppliers', '/suppliers/{number}'),
+      operation('write', 'POST', 'rest', 'suppliers', '/suppliers'),
+      operation('write', 'PUT', 'rest', 'suppliers', '/suppliers/{number}'),
+    ],
+  }),
+  writeTool({
     name: 'upsert_employee',
     title: 'Create or update e-conomic project employee',
-    description:
-      'Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
-    riskLevel: 'write',
-    enabledByDefault: false,
+    description: `Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). ${WRITE_NOTE}`,
     inputSchema: upsertEmployeeInput,
-  },
-  {
+    upstream: [
+      operation('read', 'GET', 'projects', 'Employees', '/Employees/{number}'),
+      operation('write', 'POST', 'projects', 'Employees', '/Employees'),
+      operation('write', 'PUT', 'projects', 'Employees', '/Employees'),
+    ],
+  }),
+  writeTool({
     name: 'upsert_account',
     title: 'Create or update e-conomic ledger account',
-    description:
-      'Create a general-ledger account, or update an existing one by accountNumber (read-merge-write). Editing the chart of accounts is a structural change (risk destructive); a hosting control plane should gate it behind approval. Write — disabled by default; enable via the gateway’s enableWrites option or the ECONOMIC_ENABLE_WRITES env flag.',
+    description: `Create a general-ledger account, or update an existing one by accountNumber (read-merge-write). Editing the chart of accounts is a structural change (risk destructive); a hosting control plane should gate it behind approval. ${WRITE_NOTE}`,
     riskLevel: 'destructive',
-    enabledByDefault: false,
     inputSchema: upsertAccountInput,
-  },
+    upstream: [
+      operation('read', 'GET', 'rest', 'accounts', '/accounts/{number}'),
+      operation('write', 'POST', 'rest', 'accounts', '/accounts'),
+      operation('write', 'PUT', 'rest', 'accounts', '/accounts/{number}'),
+    ],
+  }),
 ];
 
+const SPEC_BY_NAME = new Map(TOOL_SPECS.map(spec => [spec.name, spec]));
+
+export const economicGatewayTools: GatewayToolDefinition[] = TOOL_SPECS.map(spec => ({
+  name: spec.name,
+  title: spec.title,
+  description: spec.description,
+  riskLevel: spec.riskLevel,
+  enabledByDefault: spec.enabledByDefault,
+  inputSchema: structuredClone(spec.inputSchema),
+}));
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const nested of Object.values(value)) {
+      deepFreeze(nested);
+    }
+  }
+  return value;
+}
+
+/**
+ * The tool catalog: every tool with its gateway definition and the e-conomic
+ * API requests it may make. Generated from the same tool table as
+ * `economicGatewayTools`, and deeply frozen. Hosts can use it to build their
+ * own permission model without creating a gateway instance.
+ */
+export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreeze(
+  TOOL_SPECS.map(spec => {
+    const defaultRead = spec.broad ? undefined : NARROW_READ_TARGETS[spec.name]?.[0];
+    const entry: GatewayToolCatalogEntry = {
+      name: spec.name,
+      title: spec.title,
+      description: spec.description,
+      riskLevel: spec.riskLevel,
+      enabledByDefault: spec.enabledByDefault,
+      inputSchema: structuredClone(spec.inputSchema),
+      upstream: upstreamOf(spec),
+      broad: spec.broad,
+      ...(defaultRead ? { defaultRead: { ...defaultRead } } : {}),
+    };
+    return entry;
+  }),
+);
+
+/** The services, resources and endpoints the server knows, with read/write marking. Frozen. */
+export const economicServiceCatalog: EconomicServiceCatalog = deepFreeze({
+  services: ECONOMIC_SERVICES.map(service => ({
+    id: service.id,
+    name: service.name,
+    surface: service.surface,
+    servicePath: service.servicePath,
+    resources: [...service.resources],
+  })),
+  endpoints: ENDPOINT_OPERATIONS.map(endpoint => ({
+    id: endpoint.id,
+    serviceId: endpoint.serviceId,
+    method: endpoint.method,
+    pathTemplate: endpoint.pathTemplate,
+    access: endpoint.method === 'GET' ? ('read' as const) : ('write' as const),
+    risk: endpoint.risk,
+  })),
+});
+
+function refuse(reason: string): EconomicReadTargetResolution {
+  return { ok: false, reason };
+}
+
+function unknownInputFields(spec: ToolSpec, input: GatewayJsonObject): string[] {
+  const properties = spec.inputSchema.properties;
+  const known = properties && typeof properties === 'object' && !Array.isArray(properties) ? Object.keys(properties) : [];
+  return Object.keys(input).filter(key => !known.includes(key));
+}
+
+/** A string option: absent when undefined, null or blank; otherwise it must be a string. */
+function optionalString(input: GatewayJsonObject, key: string): { ok: true; value?: string } | { ok: false } {
+  const value = input[key];
+  if (value === undefined || value === null) return { ok: true };
+  if (typeof value !== 'string') return { ok: false };
+  const trimmed = value.trim();
+  return trimmed ? { ok: true, value: trimmed } : { ok: true };
+}
+
+function resourceOfTemplate(serviceId: string, pathTemplate: string): string | undefined {
+  const resources = [...findService(serviceId).resources].sort((a, b) => b.length - a.length);
+  return resources.find(resource => pathTemplate === `/${resource}` || pathTemplate.startsWith(`/${resource}/`));
+}
+
+/**
+ * Resolves what a read tool call will read, with the same checks callTool
+ * applies before sending anything: unknown fields, the tool's fixed target
+ * list, and the endpoint allowlist. An embedder can use it to log exactly what
+ * a call reads.
+ */
+export function resolveEconomicReadTarget(
+  toolName: string,
+  input: GatewayJsonObject = {},
+): EconomicReadTargetResolution {
+  const spec = typeof toolName === 'string' ? SPEC_BY_NAME.get(toolName) : undefined;
+  if (!spec) return refuse(`Unsupported e-conomic gateway tool: ${String(toolName).slice(0, 100)}`);
+  if (spec.riskLevel !== 'read') return refuse(`${spec.name} is not a read tool.`);
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return refuse('Input must be an object.');
+  const unknown = unknownInputFields(spec, input);
+  if (unknown.length > 0) {
+    return refuse(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
+  }
+
+  if (spec.name === 'check_connection' || spec.name === 'company_context') {
+    return { ok: true, target: { serviceId: SELF.serviceId, resource: SELF.resource, method: 'GET', pathTemplate: '/self' } };
+  }
+
+  const serviceId = optionalString(input, 'serviceId');
+  const resource = optionalString(input, 'resource');
+  if (!serviceId.ok || !resource.ok) return refuse('serviceId and resource must be strings.');
+  const number = input.number;
+  if (number !== undefined && number !== null && typeof number !== 'string' && typeof number !== 'number') {
+    return refuse('number must be a string or a number.');
+  }
+  const numberValue = number === null || number === '' ? undefined : number;
+  if (input.paged !== undefined && typeof input.paged !== 'boolean') return refuse('paged must be true or false.');
+
+  try {
+    if (spec.broad) {
+      const selfUrl = optionalString(input, 'selfUrl');
+      if (!selfUrl.ok) return refuse('selfUrl must be a string.');
+      if (selfUrl.value !== undefined) {
+        const resolved = resolveSelfUrl(selfUrl.value);
+        const selfResource = resourceOfTemplate(resolved.serviceId, resolved.pathTemplate);
+        if (!selfResource) return refuse('selfUrl does not match a resource in the catalog.');
+        return {
+          ok: true,
+          target: {
+            serviceId: resolved.serviceId,
+            resource: selfResource,
+            method: 'GET',
+            pathTemplate: resolved.pathTemplate,
+            ...(resolved.pathParams ? { pathParams: resolved.pathParams } : {}),
+          },
+        };
+      }
+      if (!serviceId.value || !resource.value || numberValue === undefined) {
+        return refuse('Provide either selfUrl or serviceId, resource, and number.');
+      }
+      const known = spec.reads.some(target => target.serviceId === serviceId.value && target.resource === resource.value);
+      if (!known) return refuse(`${serviceId.value.slice(0, 40)}:${resource.value.slice(0, 40)} is not a resource in the catalog.`);
+      encodePathParam(numberValue, 'number');
+      const pathTemplate = `/${resource.value}/{number}`;
+      findEndpoint(serviceId.value, 'GET', pathTemplate);
+      return {
+        ok: true,
+        target: { serviceId: serviceId.value, resource: resource.value, method: 'GET', pathTemplate, pathParams: { number: numberValue } },
+      };
+    }
+
+    const target = spec.reads.find(
+      candidate =>
+        (serviceId.value === undefined || candidate.serviceId === serviceId.value)
+        && (resource.value === undefined || candidate.resource === resource.value),
+    );
+    if (!target) {
+      return refuse(`${spec.name} reads only these serviceId:resource pairs: ${pairList(spec.reads)}.`);
+    }
+    if (numberValue !== undefined) encodePathParam(numberValue, 'number');
+    const pathTemplate = resolveReadPathTemplate(target.serviceId, target.resource, {
+      number: numberValue,
+      paged: input.paged !== false,
+    });
+    findEndpoint(target.serviceId, 'GET', pathTemplate);
+    return {
+      ok: true,
+      target: {
+        serviceId: target.serviceId,
+        resource: target.resource,
+        method: 'GET',
+        pathTemplate,
+        ...(numberValue === undefined ? {} : { pathParams: { number: numberValue } }),
+      },
+    };
+  } catch (error) {
+    return refuse(formatUnknownError(error));
+  }
+}
+
+/**
+ * The parts of GET /self that company_context promises. Everything else (bank
+ * details, the granting user, the app's tokens, contact data) is dropped.
+ */
+function companyContextFromSelf(self: unknown): GatewayJsonObject {
+  const source = asObject(self);
+  const company = asObject(source.company);
+  const settings = asObject(source.settings);
+  const agreementType = asObject(source.agreementType);
+  const modules = Array.isArray(source.modules) ? source.modules : [];
+  return {
+    agreementNumber: scalar(source.agreementNumber),
+    agreementType: scalar(agreementType.name),
+    company: {
+      name: scalar(company.name),
+      addressLine1: scalar(company.addressLine1),
+      addressLine2: scalar(company.addressLine2),
+      zip: scalar(company.zip),
+      city: scalar(company.city),
+      country: scalar(company.country),
+      companyIdentificationNumber: scalar(company.companyIdentificationNumber),
+      vatNumber: scalar(company.vatNumber),
+    },
+    modules: modules.map(module => {
+      const item = asObject(module);
+      return { moduleNumber: scalar(item.moduleNumber), name: scalar(item.name) };
+    }),
+    settings: {
+      baseCurrency: scalar(settings.baseCurrency),
+      internationalLedger: scalar(settings.internationalLedger),
+    },
+  };
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function scalar(value: unknown): string | number | boolean | null {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null;
+}
+
+/** A short answer text for a read result: what was read and how many records, never the data itself. */
+function readSummary(toolName: string, target: EconomicReadTarget, data: unknown): string {
+  const where = `${target.serviceId}:${target.resource}`;
+  if (target.pathParams && Object.keys(target.pathParams).length > 0) {
+    return `${toolName}: one record from ${where}.`;
+  }
+  const source = asObject(data);
+  const items = Array.isArray(data)
+    ? data
+    : Array.isArray(source.collection)
+      ? source.collection
+      : Array.isArray(source.items)
+        ? source.items
+        : undefined;
+  if (!items) {
+    return `${toolName}: read ${where}.`;
+  }
+  const pagination = asObject(source.pagination);
+  const total = typeof pagination.results === 'number' ? pagination.results : undefined;
+  const records = items.length === 1 ? 'record' : 'records';
+  return total !== undefined && total > items.length
+    ? `${toolName}: ${items.length} of ${total} ${records} from ${where}. More pages are available.`
+    : `${toolName}: ${items.length} ${records} from ${where}.`;
+}
+
 export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
-  const client = new EconomicClient(options);
-  // Writes are permitted when the embedder opts in via `enableWrites` or the
-  // standalone ECONOMIC_ENABLE_WRITES env flag; the rest of the write policy
-  // (allowed methods, denied paths, max amount) still applies on top.
-  const writePolicy: EconomicPolicy = options.enableWrites
-    ? { ...loadPolicy(), writesEnabled: true }
-    : loadPolicy();
+  const contractMode = options.contractMode === true;
+  const appSecretToken = nonEmptyString(options.appSecretToken);
+  if (!contractMode && !appSecretToken) {
+    throw new Error(
+      'createEconomicGateway: appSecretToken is required outside contract mode (the gateway does not read ECONOMIC_* environment variables).',
+    );
+  }
+  if (options.agreementGrantToken !== undefined && !nonEmptyString(options.agreementGrantToken)) {
+    throw new Error('createEconomicGateway: agreementGrantToken must be a non-empty string when given.');
+  }
+
+  const redactor = new SecretRedactor();
+  redactor.add(appSecretToken);
+  redactor.add(options.agreementGrantToken);
+  const clientOptions = {
+    appSecretToken,
+    restBaseUrl: options.restBaseUrl ?? DEFAULT_REST_BASE_URL,
+    openApiBaseUrl: options.openApiBaseUrl ?? DEFAULT_OPENAPI_BASE_URL,
+    fetchImpl: options.fetchImpl,
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    // Never read the environment on the embedded path.
+    credentialEnv: {},
+  };
+  // Validates the base URLs at creation.
+  new EconomicClient({ ...clientOptions, redactor: redactor.fork() });
+
+  const writePolicy: EconomicPolicy = { ...basePolicy(), writesEnabled: options.enableWrites === true };
 
   return {
     tools: economicGatewayTools,
-    async callTool(toolName: string, input: GatewayJsonObject = {}): Promise<GatewayToolResult> {
-      if (options.contractMode) {
-        return contractToolResult(toolName, input);
-      }
+    async callTool(
+      toolName: string,
+      input: GatewayJsonObject = {},
+      context?: GatewayCallContext,
+    ): Promise<GatewayToolResult> {
+      const callRedactor = redactor.fork();
+      try {
+        const spec = typeof toolName === 'string' ? SPEC_BY_NAME.get(toolName) : undefined;
+        if (!spec) {
+          return errorResult(`Unsupported e-conomic gateway tool: ${String(toolName).slice(0, 100)}`);
+        }
+        const args: GatewayJsonObject = input ?? {};
+        if (typeof args !== 'object' || Array.isArray(args)) {
+          return errorResult('Input must be an object.');
+        }
 
-      switch (toolName) {
-        case 'check_connection':
-          return jsonResult('e-conomic connection is available.', await client.rest('/'));
+        let target: EconomicReadTarget | undefined;
+        if (spec.riskLevel === 'read') {
+          const resolution = resolveEconomicReadTarget(spec.name, args);
+          if (!resolution.ok) {
+            return errorResult(resolution.reason);
+          }
+          target = resolution.target;
+        } else {
+          const unknown = unknownInputFields(spec, args);
+          if (unknown.length > 0) {
+            return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
+          }
+        }
 
-        case 'company_context':
-          return jsonResult('Fetched e-conomic company context.', await client.rest('/self'));
+        if (contractMode) {
+          return contractToolResult(spec.name, args, target);
+        }
 
-        case 'search_entities':
-          return readEndpointResult(client, input, {
-            serviceId: 'rest',
-            resource: 'customers',
-          });
+        // Refuse writes before any preparatory read (customer, layout, existing
+        // record). The full policy check still runs on the built request.
+        if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
+          return errorResult('Write blocked by policy: writes disabled');
+        }
 
-        case 'get_entity':
-          return getEntity(client, input);
+        const grant = callGrantToken(context, options.agreementGrantToken);
+        if (!grant) {
+          return errorResult(
+            'Missing e-conomic agreement grant token: pass credentials.agreementGrantToken in the call context or agreementGrantToken in the gateway options.',
+          );
+        }
+        callRedactor.add(grant);
+        const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
 
-        case 'customer_overview':
-          return readEndpointResult(client, input, {
-            serviceId: 'customers',
-            resource: 'Customers',
-          });
-
-        case 'supplier_overview':
-          return readEndpointResult(client, input, {
-            serviceId: 'rest',
-            resource: 'suppliers',
-          });
-
-        case 'product_overview':
-          return readEndpointResult(client, input, {
-            serviceId: 'products',
-            resource: 'products',
-          });
-
-        case 'report_data':
-          return readEndpointResult(client, input, {
-            serviceId: 'accounts',
-            resource: 'Accounts',
-          });
-
-        case 'invoice_overview':
-          return readRestList(client, input, {
-            serviceId: 'rest',
-            resource: 'invoices/booked',
-          });
-
-        case 'project_overview':
-          return readEndpointResult(client, input, {
-            serviceId: 'projects',
-            resource: 'Projects',
-          });
-
-        case 'accounting_entries':
-          return readEndpointResult(client, input, {
-            serviceId: 'booked-entries',
-            resource: 'booked-entries',
-          });
-
-        case 'create_draft_invoice':
-          return createDraftInvoice(client, input, writePolicy);
-
-        case 'upsert_customer':
-          return upsertCustomer(client, input, writePolicy);
-
-        case 'upsert_product':
-          return upsertProduct(client, input, writePolicy);
-
-        case 'upsert_project':
-          return upsertProject(client, input, writePolicy);
-
-        case 'create_time_entry':
-          return createTimeEntry(client, input, writePolicy);
-
-        case 'upsert_supplier':
-          return upsertSupplier(client, input, writePolicy);
-
-        case 'upsert_employee':
-          return upsertEmployee(client, input, writePolicy);
-
-        case 'upsert_account':
-          return upsertAccount(client, input, writePolicy);
-
-        default:
-          return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
+        if (target) {
+          return await readResult(client, spec.name, target, args);
+        }
+        return await writeResult(client, spec.name, args, writePolicy);
+      } catch (error) {
+        return errorResult(formatUnknownError(error, callRedactor));
       }
     },
   };
 }
 
-function contractToolResult(toolName: string, input: GatewayJsonObject): GatewayToolResult {
-  if (toolName === 'get_entity') {
-    const selfUrl = stringValue(input.selfUrl);
-    if (!selfUrl && (!stringValue(input.serviceId) || stringOrNumberValue(input.number) === undefined)) {
-      return errorResult('Provide either selfUrl or serviceId, resource, and number.');
-    }
+/** A credential value; blank or whitespace-only counts as missing. */
+/** One gateway instance, as returned by createEconomicGateway. */
+export type EconomicGateway = ReturnType<typeof createEconomicGateway>;
 
-    return fixtureResult(economicGatewayContractEntity(input));
-  }
-
-  const fixture = economicGatewayContractFixture(toolName, input);
-  if (!fixture) {
-    return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
-  }
-
-  return fixtureResult(fixture);
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
-function fixtureResult(fixture: { text: string; structuredContent: unknown }): GatewayToolResult {
-  return jsonResult(fixture.text, fixture.structuredContent);
+/** The call's agreement grant token. A context with credentials is the only source; there is no fallback from it. */
+function callGrantToken(context: GatewayCallContext | undefined, fallback: string | undefined): string | undefined {
+  if (context && context.credentials !== undefined) {
+    return nonEmptyString(context.credentials?.agreementGrantToken);
+  }
+  return nonEmptyString(fallback);
 }
 
-async function getEntity(client: EconomicClient, input: GatewayJsonObject): Promise<GatewayToolResult> {
-  const selfUrl = stringValue(input.selfUrl);
-  if (selfUrl) {
+async function readResult(
+  client: EconomicClient,
+  toolName: string,
+  target: EconomicReadTarget,
+  input: GatewayJsonObject,
+): Promise<GatewayToolResult> {
+  if (toolName === 'check_connection') {
+    await client.rest('/self');
+    return jsonResult('e-conomic connection is available.', { connected: true });
+  }
+  if (toolName === 'company_context') {
     return jsonResult(
-      'Fetched e-conomic entity.',
-      await callEndpoint(client, resolveSelfUrl(selfUrl, queryValue(input.query))),
+      'company_context: company, agreement, modules and settings.',
+      companyContextFromSelf(await client.rest('/self')),
     );
   }
 
-  const serviceId = stringValue(input.serviceId);
-  const resource = stringValue(input.resource);
-  const number = stringOrNumberValue(input.number);
-  if (!serviceId || !resource || number === undefined) {
-    return errorResult('Provide either selfUrl or serviceId, resource, and number.');
+  const selfUrl = typeof input.selfUrl === 'string' && input.selfUrl.trim() ? input.selfUrl.trim() : undefined;
+  // A self URL may carry its own query (paging, filter); keep it, as resolveSelfUrl does.
+  const query = selfUrl
+    ? resolveSelfUrl(selfUrl, queryValue(input.query)).query
+    : queryValue(input.query);
+  const data = await callEndpoint(client, {
+    serviceId: target.serviceId,
+    method: 'GET',
+    pathTemplate: target.pathTemplate,
+    pathParams: target.pathParams ? { ...target.pathParams } : undefined,
+    query,
+  });
+  return jsonResult(readSummary(toolName, target, data), data);
+}
+
+async function writeResult(
+  client: EconomicClient,
+  toolName: string,
+  input: GatewayJsonObject,
+  writePolicy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  switch (toolName) {
+    case 'create_draft_invoice':
+      return createDraftInvoice(client, input, writePolicy);
+    case 'upsert_customer':
+      return upsertCustomer(client, input, writePolicy);
+    case 'upsert_product':
+      return upsertProduct(client, input, writePolicy);
+    case 'upsert_project':
+      return upsertProject(client, input, writePolicy);
+    case 'create_time_entry':
+      return createTimeEntry(client, input, writePolicy);
+    case 'upsert_supplier':
+      return upsertSupplier(client, input, writePolicy);
+    case 'upsert_employee':
+      return upsertEmployee(client, input, writePolicy);
+    case 'upsert_account':
+      return upsertAccount(client, input, writePolicy);
+    default:
+      return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
+  }
+}
+
+function contractToolResult(
+  toolName: string,
+  input: GatewayJsonObject,
+  target: EconomicReadTarget | undefined,
+): GatewayToolResult {
+  if (toolName === 'check_connection') {
+    return jsonResult('e-conomic connection is available.', { connected: true });
+  }
+  if (toolName === 'company_context') {
+    return jsonResult(
+      'company_context: company, agreement, modules and settings.',
+      companyContextFromSelf(economicGatewayContractSelf),
+    );
   }
 
-  return jsonResult('Fetched e-conomic entity.', await callEndpoint(client, {
-    serviceId,
-    method: 'GET',
-    pathTemplate: `/${resource}/{number}`,
-    pathParams: { number },
-    query: queryValue(input.query),
-  }));
-}
-
-async function readEndpointResult(
-  client: EconomicClient,
-  input: GatewayJsonObject,
-  defaults: { serviceId: string; resource: string },
-): Promise<GatewayToolResult> {
-  const serviceId = stringValue(input.serviceId) ?? defaults.serviceId;
-  const resource = stringValue(input.resource) ?? defaults.resource;
-  const number = stringOrNumberValue(input.number);
-  const paged = input.paged === false ? false : true;
-  const pathTemplate = number !== undefined ? `/${resource}/{number}` : paged ? `/${resource}/paged` : `/${resource}`;
-
-  return jsonResult('Fetched e-conomic data.', await callEndpoint(client, {
-    serviceId,
-    method: 'GET',
-    pathTemplate,
-    pathParams: number === undefined ? undefined : { number },
-    query: queryValue(input.query),
-  }));
-}
-
-// REST sub-collections (e.g. /invoices/booked) page via query params, not a
-// /paged path segment, so this reads the collection path directly with the
-// caller's query (skippages, pagesize, filter), or one item by number.
-async function readRestList(
-  client: EconomicClient,
-  input: GatewayJsonObject,
-  defaults: { serviceId: string; resource: string },
-): Promise<GatewayToolResult> {
-  const serviceId = stringValue(input.serviceId) ?? defaults.serviceId;
-  const resource = stringValue(input.resource) ?? defaults.resource;
-  const number = stringOrNumberValue(input.number);
-  const pathTemplate = number !== undefined ? `/${resource}/{number}` : `/${resource}`;
-
-  return jsonResult('Fetched e-conomic data.', await callEndpoint(client, {
-    serviceId,
-    method: 'GET',
-    pathTemplate,
-    pathParams: number === undefined ? undefined : { number },
-    query: queryValue(input.query),
-  }));
+  const fixture = toolName === 'get_entity'
+    ? economicGatewayContractEntity(input)
+    : economicGatewayContractFixture(toolName, input);
+  if (!fixture) {
+    return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
+  }
+  const text = target ? readSummary(toolName, target, fixture.structuredContent) : fixture.text;
+  return jsonResult(text, fixture.structuredContent);
 }
 
 interface DraftCustomer {

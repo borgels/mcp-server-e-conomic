@@ -31,10 +31,11 @@ export interface PolicyCheckInput {
   body?: unknown;
 }
 
-export function loadPolicy(): EconomicPolicy {
-  const base: EconomicPolicy = {
-    writesEnabled: process.env.ECONOMIC_ENABLE_WRITES === 'true',
-    bookingEnabled: process.env.ECONOMIC_ENABLE_BOOKING === 'true',
+/** The built-in policy with writes and booking off. Reads no environment. */
+export function basePolicy(): EconomicPolicy {
+  return {
+    writesEnabled: false,
+    bookingEnabled: false,
     allowedCapabilities: [],
     allowedServices: [],
     allowedMethods: ['POST', 'PUT', 'PATCH'],
@@ -49,6 +50,15 @@ export function loadPolicy(): EconomicPolicy {
       '/vat',
       '/payment',
     ],
+  };
+}
+
+/** The standalone server's policy: the built-in policy plus ECONOMIC_* environment settings. */
+export function loadPolicy(): EconomicPolicy {
+  const base: EconomicPolicy = {
+    ...basePolicy(),
+    writesEnabled: process.env.ECONOMIC_ENABLE_WRITES === 'true',
+    bookingEnabled: process.env.ECONOMIC_ENABLE_BOOKING === 'true',
   };
 
   const policyPath = process.env.ECONOMIC_POLICY_PATH;

@@ -333,7 +333,7 @@ describe('selfUrl resolution', () => {
     });
     await expect(
       gateway.callTool('get_entity', { selfUrl: 'http://restapi.e-conomic.com/customers/1' }),
-    ).rejects.toThrow();
+    ).resolves.toMatchObject({ isError: true });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

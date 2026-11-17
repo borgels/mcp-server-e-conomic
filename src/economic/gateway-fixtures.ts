@@ -21,6 +21,32 @@ const rootContext = {
   },
 };
 
+/**
+ * A GET /self answer in e-conomic's shape, including the parts company_context
+ * must drop (bank details, the granting user, the app's tokens).
+ */
+export const economicGatewayContractSelf = {
+  agreementNumber: 424242,
+  agreementType: { agreementTypeNumber: 1, name: 'Demo' },
+  company: {
+    name: 'Demo Agreement',
+    addressLine1: 'Eksempelvej 1',
+    zip: '1000',
+    city: 'Byen',
+    country: 'Danmark',
+    companyIdentificationNumber: '12345678',
+    vatNumber: 'DK12345678',
+    email: 'kontakt@example.test',
+    phoneNumber: '+45 00 00 00 00',
+  },
+  bankInformation: { bankName: 'Demo Bank', bankAccountNumber: '0000000000', bankSortCode: '0000' },
+  user: { name: 'Demo User', email: 'user@example.test', loginId: 'demo-login', agreementNumber: 424242 },
+  userName: 'Demo User',
+  application: { name: 'Demo App', appPublicToken: 'demo-public-token', requiredRoles: [] },
+  modules: [{ moduleNumber: 1, name: 'Projekt' }],
+  settings: { baseCurrency: 'DKK', internationalLedger: false },
+};
+
 const customers = [
   {
     customerNumber: 1001,
