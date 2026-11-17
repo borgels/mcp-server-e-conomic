@@ -14,11 +14,11 @@ export interface EconomicClientOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   /**
-   * Where unset options are read from. Defaults to `process.env` (standalone
-   * server). The embedded gateway passes `{}`, so it never reads the
-   * environment.
+   * Where omitted options (credentials, base URLs, timeout) are read from.
+   * Defaults to `process.env` for the standalone server. The embedded gateway
+   * passes `{}`, so an instance only ever uses what it was given.
    */
-  env?: Env;
+  credentialEnv?: Env;
   /**
    * Redactor for this client's tokens. Defaults to the process-wide redactor
    * (standalone server); the embedded gateway passes its own instance.
@@ -57,7 +57,7 @@ export class EconomicClient {
   private readonly redactor: SecretRedactor;
 
   constructor(options: EconomicClientOptions = {}) {
-    const env = options.env ?? process.env;
+    const env = options.credentialEnv ?? process.env;
     this.appSecretToken = options.appSecretToken ?? env.ECONOMIC_APP_SECRET_TOKEN;
     this.agreementGrantToken =
       options.agreementGrantToken ?? env.ECONOMIC_AGREEMENT_GRANT_TOKEN;

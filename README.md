@@ -352,10 +352,14 @@ The gateway exports:
 
 - `economicGatewayTools`: stable unprefixed tool definitions with name, title,
   description, risk level, default enablement, and JSON input schema.
-- `economicToolCatalog`: the same tools as a frozen catalog, generated from the
-  tool table, with `broad`, `reads` and `writes` (the `{ serviceId, resource }`
-  pairs each tool may read and write) and `defaultRead`. For a read tool,
-  `reads` is exactly the list the gateway enforces.
+- `economicToolCatalog`: the same tools as a frozen catalog
+  (`GatewayToolCatalogEntry[]`), generated from the tool table. Each entry has
+  `upstream`: every e-conomic request the tool may make, as
+  `{ access, method, path, serviceId, resource }` (`path` relative to the REST
+  base URL, or to the OpenAPI base URL including the service path). For a
+  narrow read tool, `upstream` is exactly what its enforced target list allows,
+  and a test checks that every request any tool makes is declared there.
+  e-conomic additions: `broad` (true only for `get_entity`) and `defaultRead`.
 - `economicServiceCatalog`: the frozen service catalog: services, their
   resources, and every allowlisted endpoint with `access: 'read' | 'write'`.
 - `resolveEconomicReadTarget(tool, input)`: what a read call will read, with
@@ -370,6 +374,7 @@ The gateway exports:
   A multi-tenant host passes each company's agreement grant token per call.
   When `credentials` is present it is the only source of the token for that
   call.
+- `EconomicGateway`: the type of a gateway instance.
 
 The embedded gateway never reads `ECONOMIC_*` environment variables
 (credentials, base URLs, timeout, write and policy flags); those configure the

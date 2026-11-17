@@ -13,10 +13,15 @@ standalone stdio/HTTP server is unchanged.
   tool (any read endpoint in the catalog) and says so in its title and
   description. `report_data` no longer reads booked entries (use
   `accounting_entries`), and `search_entities` lists master data only.
-- New exports: `economicToolCatalog` (frozen; per tool `broad`, `reads`,
-  `writes`, `defaultRead`), `economicServiceCatalog` (frozen; services,
+- New exports, in the server family's shape: `economicToolCatalog` (frozen
+  `GatewayToolCatalogEntry[]`; per tool `upstream` with every request it may
+  make, plus the e-conomic additions `broad` and `defaultRead`), the
+  `EconomicGateway` type, `economicServiceCatalog` (frozen; services,
   resources, endpoints with read/write marking) and
-  `resolveEconomicReadTarget(tool, input)`.
+  `resolveEconomicReadTarget(tool, input)`. A test checks that every request a
+  tool makes is declared in its `upstream`.
+- `EconomicClient` takes `credentialEnv` (where omitted credentials, base URLs
+  and timeout are read from; default `process.env`); the gateway passes `{}`.
 - `callTool(name, input, context?)` with
   `{ caller?, requestId?, credentials?: { agreementGrantToken } }`.
 - The embedded gateway never reads `ECONOMIC_*` environment variables.

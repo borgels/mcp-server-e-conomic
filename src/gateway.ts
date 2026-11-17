@@ -99,24 +99,49 @@ export interface EconomicResourceRef {
   readonly resource: string;
 }
 
-export interface EconomicToolCatalogEntry {
+/** Deeply read-only JSON, as found in the frozen tool catalog. */
+export type GatewayReadonlyJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly GatewayReadonlyJsonValue[]
+  | { readonly [key: string]: GatewayReadonlyJsonValue };
+
+/**
+ * One e-conomic API request a tool may make. `access`, `method` and `path` are
+ * the family's shape; `path` is relative to the REST base URL for the `rest`
+ * service and to the OpenAPI base URL (including the service path) otherwise.
+ * `serviceId` and `resource` are e-conomic additions naming the catalog entry.
+ */
+export interface GatewayUpstreamOperation {
+  readonly access: 'read' | 'write';
+  readonly method: 'GET' | 'POST' | 'PUT';
+  readonly path: string;
+  readonly serviceId: string;
+  readonly resource: string;
+}
+
+/** A tool catalog entry: the gateway definition plus the e-conomic API requests the tool may make. */
+export interface GatewayToolCatalogEntry {
   readonly name: string;
   readonly title: string;
   readonly description: string;
   readonly riskLevel: GatewayRiskLevel;
   readonly enabledByDefault: boolean;
-  readonly inputSchema: GatewayJsonObject;
+  readonly inputSchema: { readonly [key: string]: GatewayReadonlyJsonValue };
   /**
-   * True for the one tool that can read any read endpoint in the service
-   * catalog (`get_entity`). A host should give it only to callers that may read
-   * all of the agreement's data.
+   * Every request the tool may make. For a narrow read tool these are exactly
+   * the requests its enforced target list allows.
+   */
+  readonly upstream: readonly GatewayUpstreamOperation[];
+  /**
+   * e-conomic addition: true for the one tool that can read any read endpoint
+   * in the service catalog (`get_entity`). A host should give it only to
+   * callers that may read all of the agreement's data.
    */
   readonly broad: boolean;
-  /** The resources the tool may read. For a read tool this is the list enforced before any request. */
-  readonly reads: readonly EconomicResourceRef[];
-  /** The resources the tool may write. Empty for read tools. */
-  readonly writes: readonly EconomicResourceRef[];
-  /** What a narrow read tool reads when the input names no service or resource. */
+  /** e-conomic addition: what a narrow read tool reads when the input names no service or resource. */
   readonly defaultRead?: EconomicResourceRef;
 }
 
@@ -384,8 +409,8 @@ const SELF = ref('rest', 'self');
 
 /**
  * What each narrow read tool may read. The first entry is the default. These
- * lists are enforced before any request is sent and published as `reads` in
- * `economicToolCatalog`.
+ * lists are enforced before any request is sent; `economicToolCatalog` publishes
+ * the requests they allow as `upstream`.
  */
 const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
   search_entities: [
@@ -508,8 +533,53 @@ const getEntityInput = {
 
 interface ToolSpec extends GatewayToolDefinition {
   broad: boolean;
+  /** Read tools: the targets enforced before any request. Empty for write tools. */
   reads: readonly EconomicResourceRef[];
-  writes: readonly EconomicResourceRef[];
+  /** Write tools: the requests the tool makes. Read tools derive theirs from `reads`. */
+  upstream?: readonly GatewayUpstreamOperation[];
+}
+
+function operation(
+  access: 'read' | 'write',
+  method: 'GET' | 'POST' | 'PUT',
+  serviceId: string,
+  resource: string,
+  pathTemplate: string,
+): GatewayUpstreamOperation {
+  const service = findService(serviceId);
+  const path = service.surface === 'rest' ? pathTemplate : `/${service.servicePath}${pathTemplate}`;
+  return { access, method, path, serviceId, resource };
+}
+
+/** The GET requests a read target allows (collection, OpenAPI page, one record). */
+function targetOperations(target: EconomicResourceRef): GatewayUpstreamOperation[] {
+  if (target.serviceId === SELF.serviceId && target.resource === SELF.resource) {
+    return [operation('read', 'GET', 'rest', 'self', '/self')];
+  }
+  const base = `/${target.resource}`;
+  const templates = findService(target.serviceId).surface === 'rest'
+    ? [base, `${base}/{number}`]
+    : [`${base}/paged`, base, `${base}/{number}`];
+  return templates.map(template => operation('read', 'GET', target.serviceId, target.resource, template));
+}
+
+function upstreamOf(spec: ToolSpec): GatewayUpstreamOperation[] {
+  if (spec.upstream) return [...spec.upstream];
+  if (spec.broad) {
+    // get_entity: a record by number, or any GET endpoint a self URL can match.
+    return ENDPOINT_OPERATIONS
+      .filter(endpoint => endpoint.method === 'GET')
+      .map(endpoint =>
+        operation(
+          'read',
+          'GET',
+          endpoint.serviceId,
+          resourceOfTemplate(endpoint.serviceId, endpoint.pathTemplate) ?? '',
+          endpoint.pathTemplate,
+        ),
+      );
+  }
+  return spec.reads.flatMap(targetOperations);
 }
 
 function narrowReadTool(name: string, title: string, description: string): ToolSpec {
@@ -523,14 +593,13 @@ function narrowReadTool(name: string, title: string, description: string): ToolS
     inputSchema: narrowReadInput(reads),
     broad: false,
     reads,
-    writes: [],
   };
 }
 
 function writeTool(
-  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad'> & { riskLevel?: GatewayRiskLevel },
+  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads'> & { riskLevel?: GatewayRiskLevel },
 ): ToolSpec {
-  return { ...spec, riskLevel: spec.riskLevel ?? 'write', enabledByDefault: false, broad: false };
+  return { ...spec, riskLevel: spec.riskLevel ?? 'write', enabledByDefault: false, broad: false, reads: [] };
 }
 
 const WRITE_NOTE =
@@ -546,7 +615,6 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: emptyInput,
     broad: false,
     reads: [SELF],
-    writes: [],
   },
   {
     name: 'company_context',
@@ -558,7 +626,6 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: emptyInput,
     broad: false,
     reads: [SELF],
-    writes: [],
   },
   narrowReadTool(
     'search_entities',
@@ -575,7 +642,6 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: getEntityInput,
     broad: true,
     reads: ALL_READ_TARGETS,
-    writes: [],
   },
   narrowReadTool(
     'customer_overview',
@@ -617,56 +683,73 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create e-conomic draft invoice',
     description: `Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer. ${WRITE_NOTE}`,
     inputSchema: createDraftInvoiceInput,
-    reads: [ref('rest', 'customers'), ref('rest', 'layouts')],
-    writes: [ref('rest', 'invoices/drafts')],
+    upstream: [
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('read', 'GET', 'rest', 'layouts', '/layouts'),
+      operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
+    ],
   }),
   writeTool({
     name: 'upsert_customer',
     title: 'Create or update e-conomic customer',
     description: `Create a customer, or update an existing one by customerNumber (reads the current customer and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertCustomerInput,
-    reads: [ref('rest', 'customers')],
-    writes: [ref('rest', 'customers')],
+    upstream: [
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('write', 'POST', 'rest', 'customers', '/customers'),
+      operation('write', 'PUT', 'rest', 'customers', '/customers/{number}'),
+    ],
   }),
   writeTool({
     name: 'upsert_product',
     title: 'Create or update e-conomic product',
     description: `Create a product, or update it when the productNumber already exists (reads the current product and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertProductInput,
-    reads: [ref('rest', 'products')],
-    writes: [ref('rest', 'products')],
+    upstream: [
+      operation('read', 'GET', 'rest', 'products', '/products/{number}'),
+      operation('write', 'POST', 'rest', 'products', '/products'),
+      operation('write', 'PUT', 'rest', 'products', '/products/{number}'),
+    ],
   }),
   writeTool({
     name: 'upsert_project',
     title: 'Create or update e-conomic project',
     description: `Create a project in the Projects add-on, or update an existing one by projectNumber (reads the current project and merges the provided fields; upserts via the collection PUT). ${WRITE_NOTE}`,
     inputSchema: upsertProjectInput,
-    reads: [ref('projects', 'Projects')],
-    writes: [ref('projects', 'Projects')],
+    upstream: [
+      operation('read', 'GET', 'projects', 'Projects', '/Projects/{number}'),
+      operation('write', 'POST', 'projects', 'Projects', '/Projects'),
+      operation('write', 'PUT', 'projects', 'Projects', '/Projects'),
+    ],
   }),
   writeTool({
     name: 'create_time_entry',
     title: 'Register e-conomic project time',
     description: `Register a project time entry (hours on a project + activity for an employee, on a date). Create only; deletion is a separate operation. ${WRITE_NOTE}`,
     inputSchema: createTimeEntryInput,
-    reads: [],
-    writes: [ref('projects', 'TimeEntries')],
+    upstream: [operation('write', 'POST', 'projects', 'TimeEntries', '/TimeEntries')],
   }),
   writeTool({
     name: 'upsert_supplier',
     title: 'Create or update e-conomic supplier',
     description: `Create a supplier, or update an existing one by supplierNumber (reads the current supplier and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertSupplierInput,
-    reads: [ref('rest', 'suppliers')],
-    writes: [ref('rest', 'suppliers')],
+    upstream: [
+      operation('read', 'GET', 'rest', 'suppliers', '/suppliers/{number}'),
+      operation('write', 'POST', 'rest', 'suppliers', '/suppliers'),
+      operation('write', 'PUT', 'rest', 'suppliers', '/suppliers/{number}'),
+    ],
   }),
   writeTool({
     name: 'upsert_employee',
     title: 'Create or update e-conomic project employee',
     description: `Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). ${WRITE_NOTE}`,
     inputSchema: upsertEmployeeInput,
-    reads: [ref('projects', 'Employees')],
-    writes: [ref('projects', 'Employees')],
+    upstream: [
+      operation('read', 'GET', 'projects', 'Employees', '/Employees/{number}'),
+      operation('write', 'POST', 'projects', 'Employees', '/Employees'),
+      operation('write', 'PUT', 'projects', 'Employees', '/Employees'),
+    ],
   }),
   writeTool({
     name: 'upsert_account',
@@ -674,8 +757,11 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Create a general-ledger account, or update an existing one by accountNumber (read-merge-write). Editing the chart of accounts is a structural change (risk destructive); a hosting control plane should gate it behind approval. ${WRITE_NOTE}`,
     riskLevel: 'destructive',
     inputSchema: upsertAccountInput,
-    reads: [ref('rest', 'accounts')],
-    writes: [ref('rest', 'accounts')],
+    upstream: [
+      operation('read', 'GET', 'rest', 'accounts', '/accounts/{number}'),
+      operation('write', 'POST', 'rest', 'accounts', '/accounts'),
+      operation('write', 'PUT', 'rest', 'accounts', '/accounts/{number}'),
+    ],
   }),
 ];
 
@@ -701,22 +787,23 @@ function deepFreeze<T>(value: T): T {
 }
 
 /**
- * The tool catalog, generated from the tool table and frozen: for each tool its
- * definition, whether it is broad, and the resources it reads and writes.
+ * The tool catalog: every tool with its gateway definition and the e-conomic
+ * API requests it may make. Generated from the same tool table as
+ * `economicGatewayTools`, and deeply frozen. Hosts can use it to build their
+ * own permission model without creating a gateway instance.
  */
-export const economicToolCatalog: readonly EconomicToolCatalogEntry[] = deepFreeze(
+export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreeze(
   TOOL_SPECS.map(spec => {
     const defaultRead = spec.broad ? undefined : NARROW_READ_TARGETS[spec.name]?.[0];
-    const entry: EconomicToolCatalogEntry = {
+    const entry: GatewayToolCatalogEntry = {
       name: spec.name,
       title: spec.title,
       description: spec.description,
       riskLevel: spec.riskLevel,
       enabledByDefault: spec.enabledByDefault,
       inputSchema: structuredClone(spec.inputSchema),
+      upstream: upstreamOf(spec),
       broad: spec.broad,
-      reads: spec.reads.map(target => ({ ...target })),
-      writes: spec.writes.map(target => ({ ...target })),
       ...(defaultRead ? { defaultRead: { ...defaultRead } } : {}),
     };
     return entry;
@@ -950,7 +1037,7 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
     fetchImpl: options.fetchImpl,
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     // Never read the environment on the embedded path.
-    env: {},
+    credentialEnv: {},
   };
   // Validates the base URLs at creation.
   new EconomicClient({ ...clientOptions, redactor: redactor.fork() });
@@ -1020,6 +1107,9 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
 }
 
 /** A credential value; blank or whitespace-only counts as missing. */
+/** One gateway instance, as returned by createEconomicGateway. */
+export type EconomicGateway = ReturnType<typeof createEconomicGateway>;
+
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }

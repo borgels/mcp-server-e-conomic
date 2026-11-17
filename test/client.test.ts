@@ -258,7 +258,7 @@ describe('environment source', () => {
     process.env.ECONOMIC_TIMEOUT_MS = 'not-a-number';
     try {
       const fetchMock = vi.fn<typeof fetch>(async () => Response.json({}));
-      const client = new EconomicClient({ env: {}, fetchImpl: fetchMock as unknown as typeof fetch });
+      const client = new EconomicClient({ credentialEnv: {}, fetchImpl: fetchMock as unknown as typeof fetch });
       expect(client.buildRestUrl('/customers')).toBe('https://restapi.e-conomic.com/customers');
       await expect(client.rest('/customers')).rejects.toThrow(/Missing e-conomic credentials/);
       expect(fetchMock).not.toHaveBeenCalled();

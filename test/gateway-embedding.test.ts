@@ -43,6 +43,16 @@ function catalogEntry(name: string) {
   return entry;
 }
 
+/** The distinct serviceId:resource pairs a tool's catalog entry declares as reads. */
+function readTargets(name: string): Array<{ serviceId: string; resource: string }> {
+  const seen = new Map<string, { serviceId: string; resource: string }>();
+  for (const operation of catalogEntry(name).upstream) {
+    if (operation.access !== 'read') continue;
+    seen.set(`${operation.serviceId}:${operation.resource}`, { serviceId: operation.serviceId, resource: operation.resource });
+  }
+  return [...seen.values()];
+}
+
 const allResources = economicServiceCatalog.services.flatMap(service =>
   service.resources.map(resource => ({ serviceId: service.id, resource })),
 );
@@ -50,7 +60,7 @@ const allResources = economicServiceCatalog.services.flatMap(service =>
 describe('fixed read targets per tool', () => {
   it('lets every narrow tool read each of its listed targets, at that target', async () => {
     for (const name of NARROW_READ_TOOLS) {
-      for (const target of catalogEntry(name).reads) {
+      for (const target of readTargets(name)) {
         const { gateway, requests } = recordingGateway();
         const result = await gateway.callTool(name, { ...target, number: 7 }, context('grant-token-for-tests'));
         expect(result.isError, `${name} ${target.serviceId}:${target.resource}`).toBeUndefined();
@@ -64,7 +74,7 @@ describe('fixed read targets per tool', () => {
 
   it('refuses every catalog resource outside a narrow tool’s list, before any request', async () => {
     for (const name of NARROW_READ_TOOLS) {
-      const allowed = new Set(catalogEntry(name).reads.map(target => `${target.serviceId}:${target.resource}`));
+      const allowed = new Set(readTargets(name).map(target => `${target.serviceId}:${target.resource}`));
       for (const target of allResources) {
         if (allowed.has(`${target.serviceId}:${target.resource}`)) continue;
         const { gateway, fetchImpl } = recordingGateway();
@@ -124,7 +134,10 @@ describe('fixed read targets per tool', () => {
   it('keeps get_entity as the one broad tool, limited to the catalog', async () => {
     const broad = economicToolCatalog.filter(tool => tool.broad).map(tool => tool.name);
     expect(broad).toEqual(['get_entity']);
-    expect(catalogEntry('get_entity').reads).toEqual(allResources);
+    expect(readTargets('get_entity')).toEqual(allResources);
+    expect(catalogEntry('get_entity').upstream).toHaveLength(
+      economicServiceCatalog.endpoints.filter(endpoint => endpoint.access === 'read').length,
+    );
     expect(catalogEntry('get_entity').title).toMatch(/broad/i);
 
     const { gateway, requests } = recordingGateway(() => Response.json({ entryNumber: 1 }));
@@ -155,19 +168,106 @@ describe('fixed read targets per tool', () => {
   });
 });
 
+describe('declared upstream requests', () => {
+  /** Turns a declared path template into a pattern for an actual request path. */
+  function pattern(path: string): RegExp {
+    const escaped = path
+      .split(/\{[^}]+\}/)
+      .map(part => part.replace(/[.*+?^$()|[\]\\]/g, '\\$&'))
+      .join('[^/]+');
+    return new RegExp(`^${escaped}$`);
+  }
+
+  /** Answers a plausible e-conomic body for each request so write tools reach their write. */
+  function upstreamResponse(request: Request): Response {
+    const path = new URL(request.url).pathname;
+    if (request.method === 'GET' && path === '/layouts') return Response.json({ collection: [{ layoutNumber: 1 }] });
+    if (request.method === 'GET' && path.startsWith('/customers/')) {
+      return Response.json({ name: 'C', currency: 'DKK', paymentTerms: { paymentTermsNumber: 1 }, vatZone: { vatZoneNumber: 1 } });
+    }
+    if (request.method === 'GET' && /^\/(products\/NEW|accounts\/2000)$/.test(path)) return new Response('', { status: 404 });
+    return Response.json({ collection: [] });
+  }
+
+  const writeInputs: Record<string, GatewayJsonObject[]> = {
+    create_draft_invoice: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+    upsert_customer: [
+      { name: 'C', currency: 'DKK', customerGroupNumber: 1, paymentTermsNumber: 1, vatZoneNumber: 1 },
+      { customerNumber: 1, name: 'C' },
+    ],
+    upsert_product: [{ productNumber: 'NEW', name: 'P', productGroupNumber: 1 }, { productNumber: 'P1', name: 'P' }],
+    upsert_project: [
+      { name: 'P', projectGroupNumber: 1, customerNumber: 1, responsibleEmployeeNumber: 1 },
+      { projectNumber: 1, name: 'P' },
+    ],
+    create_time_entry: [{ projectNumber: 1, activityNumber: 1, employeeNumber: 1, date: '2026-01-02', hours: 1 }],
+    upsert_supplier: [
+      { name: 'S', currency: 'DKK', supplierGroupNumber: 1, paymentTermsNumber: 1, vatZoneNumber: 1 },
+      { supplierNumber: 1, name: 'S' },
+    ],
+    upsert_employee: [{ name: 'E' }, { employeeNumber: 1, name: 'E' }],
+    upsert_account: [{ accountNumber: 2000, name: 'A', accountType: 'status' }, { accountNumber: 1000, name: 'A' }],
+  };
+
+  function inputsFor(name: string): GatewayJsonObject[] {
+    if (writeInputs[name]) return writeInputs[name]!;
+    if (name === 'check_connection' || name === 'company_context') return [{}];
+    if (name === 'get_entity') {
+      return [
+        ...allResources.map(target => ({ ...target, number: 1 })),
+        { selfUrl: 'https://restapi.e-conomic.com/invoices/booked/70001' },
+        { selfUrl: 'https://apis.e-conomic.com/documentsapi/v3.0.1/AttachedDocuments/5/pdf' },
+        { selfUrl: 'https://apis.e-conomic.com/customersapi/v3.1.0/Customers/paged' },
+      ];
+    }
+    return readTargets(name).flatMap(target => [{ ...target }, { ...target, number: 7 }, { ...target, paged: false }]);
+  }
+
+  it('makes only requests its catalog entry declares, for every tool', async () => {
+    for (const entry of economicToolCatalog) {
+      const declared = entry.upstream.map(operation => ({ method: operation.method, pattern: pattern(operation.path) }));
+      const requests: Request[] = [];
+      const gateway = createEconomicGateway({
+        appSecretToken: 'app-secret-for-tests',
+        enableWrites: true,
+        fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return upstreamResponse(request);
+        }) as typeof fetch,
+      });
+      for (const input of inputsFor(entry.name)) {
+        const result = await gateway.callTool(entry.name, input, context('grant-token-for-tests'));
+        expect(result.isError, `${entry.name} ${JSON.stringify(input)}: ${result.content[0]?.text}`).toBeUndefined();
+      }
+      expect(requests.length, entry.name).toBeGreaterThan(0);
+      for (const request of requests) {
+        const url = new URL(request.url);
+        const ok = declared.some(operation => operation.method === request.method && operation.pattern.test(url.pathname));
+        expect(ok, `${entry.name} made undeclared ${request.method} ${url.pathname}`).toBe(true);
+      }
+    }
+  });
+});
+
 describe('catalog export', () => {
-  it('lists every tool once with its reads and writes, frozen', () => {
+  it('lists every tool once with its upstream requests, frozen', () => {
     expect(economicToolCatalog.map(tool => tool.name)).toEqual(economicGatewayTools.map(tool => tool.name));
     expect(Object.isFrozen(economicToolCatalog)).toBe(true);
-    expect(Object.isFrozen(economicToolCatalog[0]!.reads)).toBe(true);
+    expect(Object.isFrozen(economicToolCatalog[0]!.upstream)).toBe(true);
     expect(Object.isFrozen(economicServiceCatalog.endpoints)).toBe(true);
     expect(() => {
-      (catalogEntry('customer_overview').reads as Array<{ serviceId: string; resource: string }>).push({ serviceId: 'booked-entries', resource: 'booked-entries' });
+      (catalogEntry('customer_overview').upstream as unknown[]).push({ access: 'read', method: 'GET', path: '/x' });
     }).toThrow();
     for (const tool of economicToolCatalog) {
-      expect(tool.riskLevel === 'read' ? tool.writes : tool.reads.concat(tool.writes)).toBeDefined();
-      if (tool.riskLevel === 'read') expect(tool.writes).toEqual([]);
-      else expect(tool.writes.length).toBeGreaterThan(0);
+      expect(tool.upstream.length, tool.name).toBeGreaterThan(0);
+      const writes = tool.upstream.filter(operation => operation.access === 'write');
+      if (tool.riskLevel === 'read') expect(writes, tool.name).toEqual([]);
+      else expect(writes.length, tool.name).toBeGreaterThan(0);
+      for (const operation of tool.upstream) {
+        expect(operation.access).toBe(operation.method === 'GET' ? 'read' : 'write');
+        expect(operation.path.startsWith('/'), operation.path).toBe(true);
+      }
     }
     expect(catalogEntry('customer_overview').defaultRead).toEqual({ serviceId: 'customers', resource: 'Customers' });
     expect(catalogEntry('get_entity').defaultRead).toBeUndefined();
@@ -175,7 +275,7 @@ describe('catalog export', () => {
 
   it('keeps booked entries out of every narrow read tool except accounting_entries', () => {
     for (const name of NARROW_READ_TOOLS.filter(tool => tool !== 'accounting_entries')) {
-      expect(catalogEntry(name).reads.some(target => target.serviceId === 'booked-entries')).toBe(false);
+      expect(readTargets(name).some(target => target.serviceId === 'booked-entries')).toBe(false);
     }
   });
 
@@ -223,6 +323,9 @@ describe('call context and environment', () => {
     process.env.ECONOMIC_BASE_URL_OPENAPI = 'http://localhost:2';
     process.env.ECONOMIC_TIMEOUT_MS = 'not-a-number';
     process.env.ECONOMIC_ENABLE_WRITES = 'true';
+    process.env.ECONOMIC_ENABLE_BOOKING = 'true';
+    // loadPolicy() would throw reading this file; the gateway must not read it.
+    process.env.ECONOMIC_POLICY_PATH = '/nonexistent/economic-policy.json';
 
     expect(() => createEconomicGateway({})).toThrow(/appSecretToken is required/);
 
