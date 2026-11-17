@@ -1,5 +1,5 @@
-import { readEnvInteger } from '../config-env.js';
-import { EconomicHttpError, registerSecret } from '../errors.js';
+import { readEnvInteger, type Env } from '../config-env.js';
+import { EconomicHttpError, SecretRedactor, defaultRedactor } from '../errors.js';
 import { normalizeJsonBody } from './json.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -13,6 +13,17 @@ export interface EconomicClientOptions {
   openApiBaseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /**
+   * Where unset options are read from. Defaults to `process.env` (standalone
+   * server). The embedded gateway passes `{}`, so it never reads the
+   * environment.
+   */
+  env?: Env;
+  /**
+   * Redactor for this client's tokens. Defaults to the process-wide redactor
+   * (standalone server); the embedded gateway passes its own instance.
+   */
+  redactor?: SecretRedactor;
 }
 
 export interface EconomicRequestOptions {
@@ -43,26 +54,29 @@ export class EconomicClient {
   private readonly openApiBaseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly redactor: SecretRedactor;
 
   constructor(options: EconomicClientOptions = {}) {
-    this.appSecretToken = options.appSecretToken ?? process.env.ECONOMIC_APP_SECRET_TOKEN;
+    const env = options.env ?? process.env;
+    this.appSecretToken = options.appSecretToken ?? env.ECONOMIC_APP_SECRET_TOKEN;
     this.agreementGrantToken =
-      options.agreementGrantToken ?? process.env.ECONOMIC_AGREEMENT_GRANT_TOKEN;
+      options.agreementGrantToken ?? env.ECONOMIC_AGREEMENT_GRANT_TOKEN;
     this.restBaseUrl = trimTrailingSlash(
-      options.restBaseUrl ?? process.env.ECONOMIC_BASE_URL_REST ?? 'https://restapi.e-conomic.com',
+      options.restBaseUrl ?? env.ECONOMIC_BASE_URL_REST ?? 'https://restapi.e-conomic.com',
     );
     this.openApiBaseUrl = trimTrailingSlash(
       options.openApiBaseUrl ??
-        process.env.ECONOMIC_BASE_URL_OPENAPI ??
+        env.ECONOMIC_BASE_URL_OPENAPI ??
         'https://apis.e-conomic.com',
     );
     assertSafeBaseUrl(this.restBaseUrl, 'ECONOMIC_BASE_URL_REST');
     assertSafeBaseUrl(this.openApiBaseUrl, 'ECONOMIC_BASE_URL_OPENAPI');
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs =
-      options.timeoutMs ?? readEnvInteger('ECONOMIC_TIMEOUT_MS', 30_000, { min: 1, max: 600_000 });
-    registerSecret(this.appSecretToken);
-    registerSecret(this.agreementGrantToken);
+      options.timeoutMs ?? readEnvInteger('ECONOMIC_TIMEOUT_MS', 30_000, { min: 1, max: 600_000 }, env);
+    this.redactor = options.redactor ?? defaultRedactor();
+    this.redactor.add(this.appSecretToken);
+    this.redactor.add(this.agreementGrantToken);
   }
 
   async rest<T>(path: string, options: Omit<EconomicRequestOptions, 'path' | 'url'> = {}): Promise<T> {
@@ -144,6 +158,7 @@ export class EconomicClient {
         method,
         url: resolvedUrl,
         fallbackMessage: 'redirect not followed (check ECONOMIC_BASE_URL_REST / ECONOMIC_BASE_URL_OPENAPI)',
+        redactor: this.redactor,
       });
     }
 
@@ -157,6 +172,7 @@ export class EconomicClient {
         payload: body,
         retryAfter: response.headers.get('retry-after') ?? undefined,
         fallbackMessage: typeof body === 'string' ? body : undefined,
+        redactor: this.redactor,
       });
     }
 

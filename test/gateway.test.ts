@@ -51,7 +51,8 @@ describe('e-conomic gateway export', () => {
     });
 
     const result = await gateway.callTool('check_connection');
-    expect(result.structuredContent).toEqual({ ok: true });
+    expect(result.structuredContent).toEqual({ connected: true });
+    expect(new URL(requests[0]!.url).pathname).toBe('/self');
     expect(requests[0]?.headers.get('X-AppSecretToken')).toBe('app');
     expect(requests[0]?.headers.get('X-AgreementGrantToken')).toBe('grant');
   });
@@ -691,7 +692,9 @@ describe('e-conomic gateway export', () => {
         }),
     });
 
-    await expect(gateway.callTool('check_connection')).rejects.toThrow(/HTTP 401/);
-    await expect(gateway.callTool('check_connection')).rejects.not.toThrow(/app-secret|grant-token/);
+    const result = await gateway.callTool('check_connection');
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/HTTP 401/);
+    expect(result.content[0]?.text).not.toMatch(/app-secret|grant-token/);
   });
 });

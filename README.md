@@ -345,44 +345,71 @@ SIGTERM/SIGINT.
 ## Gateway Contract
 
 `mcp-server-e-conomic/gateway` is the supported package export for embedding
-hosts that need to wrap e-conomic without copying connector logic.
+hosts (for example a gateway that filters tools by role and logs every call)
+that need to wrap e-conomic without copying connector logic.
 
 The gateway exports:
 
 - `economicGatewayTools`: stable unprefixed tool definitions with name, title,
   description, risk level, default enablement, and JSON input schema.
-- `createEconomicGateway(options)`: a factory that accepts e-conomic credentials,
-  optional base URLs, timeout, optional `fetchImpl`, optional contract mode, and
-  optional `enableWrites`.
+- `economicToolCatalog`: the same tools as a frozen catalog, generated from the
+  tool table, with `broad`, `reads` and `writes` (the `{ serviceId, resource }`
+  pairs each tool may read and write) and `defaultRead`. For a read tool,
+  `reads` is exactly the list the gateway enforces.
+- `economicServiceCatalog`: the frozen service catalog: services, their
+  resources, and every allowlisted endpoint with `access: 'read' | 'write'`.
+- `resolveEconomicReadTarget(tool, input)`: what a read call will read, with
+  the same checks `callTool` applies before sending anything. Useful for
+  logging the target of a call.
+- `createEconomicGateway(options)`: a factory taking `appSecretToken`
+  (required outside contract mode), an optional single-tenant
+  `agreementGrantToken`, optional base URLs, timeout, `fetchImpl`,
+  `contractMode` and `enableWrites`.
+- `gateway.callTool(name, input, context?)` with
+  `context = { caller?, requestId?, credentials?: { agreementGrantToken } }`.
+  A multi-tenant host passes each company's agreement grant token per call.
+  When `credentials` is present it is the only source of the token for that
+  call.
 
-Read gateway tools:
+The embedded gateway never reads `ECONOMIC_*` environment variables
+(credentials, base URLs, timeout, write and policy flags); those configure the
+standalone server only. Token values are redacted by a redactor owned by the
+gateway instance (and per call for a per-call token), not by process-wide
+state. Errors, including upstream HTTP failures, are returned as `isError`
+results with a redacted message.
 
-- `check_connection`
-- `company_context`
-- `search_entities`
-- `get_entity`
-- `customer_overview`
-- `supplier_overview`
-- `product_overview`
-- `report_data`
-- `invoice_overview`
+Read gateway tools. Each narrow tool reads only its listed targets; the first
+is the default. Anything else is refused before a request is sent.
 
-Write gateway tools (risk `write`, disabled by default, policy-gated):
+| Tool | Reads (`serviceId:resource`) |
+| --- | --- |
+| `check_connection` | `rest:self` (returns only `{ connected: true }`) |
+| `company_context` | `rest:self`, filtered to company name, address, CVR/VAT number, agreement number and type, modules, base currency and international ledger |
+| `search_entities` | `rest:customers`, `rest:suppliers`, `rest:products`, `rest:accounts`, `projects:Projects` |
+| `customer_overview` | `customers:Customers`, `customers:Contacts`, `customers:DeliveryLocations`, `rest:customers`, `rest:customer-groups` |
+| `supplier_overview` | `rest:suppliers`, `rest:supplier-groups`, `suppliers:Contacts`, `suppliers:Groups` |
+| `product_overview` | `products:products`, `products:productgroups`, `products:pricegroups`, `products:salespriceincurrencies`, `products:specialprices`, `rest:products`, `rest:product-groups`, `rest:units` |
+| `report_data` | `accounts:Accounts`, `accounts:KeyFigureCodes`, `accounts:TotalIntervals`, `rest:accounts`, `rest:accounting-years`, `accounting-years:AccountingYears`, `accounting-years:accountingYears/periods`, `budgets:budget-figures` |
+| `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |
+| `project_overview` | `projects:Projects`, `ProjectGroups`, `ProjectStatuses`, `CostTypes`, `Activities`, `ActivityGroups`, `Employees`, `EmployeeGroups`, `TimeEntries` |
+| `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
+| `get_entity` | **Broad** (`broad: true`): one record from any read endpoint in the service catalog, by `serviceId`/`resource`/`number` or a self URL. Give it only to callers that may read all of the agreement's data. |
 
-- `create_draft_invoice` — draft (unbooked, unsent) sales invoice
-- `upsert_customer` — create, or read-merge-write update by `customerNumber`
-- `upsert_product` — create or update keyed on `productNumber`
+Write gateway tools (risk `write`, `upsert_account` risk `destructive`,
+disabled by default, policy-gated): `create_draft_invoice`, `upsert_customer`,
+`upsert_product`, `upsert_project`, `create_time_entry`, `upsert_supplier`,
+`upsert_employee`, `upsert_account`.
 
 Write tools execute only when the embedder passes `enableWrites: true` (for
-control planes that apply their own write governance: scopes, approvals, audit)
-or the standalone `ECONOMIC_ENABLE_WRITES` env flag is set. The rest of the
-write policy (denied paths, max amount) still applies on top. Booking, sending,
-payments, and deletes are not exposed through the gateway; the generic prepare
-and commit tools remain available only on the full MCP server surface.
+control planes that apply their own write governance: roles, approvals, audit).
+The built-in write policy (denied paths such as booking) still applies on top.
+Booking, sending, payments, and deletes are not exposed through the gateway;
+the generic prepare and commit tools remain available only on the full MCP
+server surface.
 
-The gateway reads credentials from the server environment or factory options,
-never from tool arguments. Upstream HTTP failures use the same formatted,
-redacted error path as the full MCP server.
+Every result has a short text (for example
+`search_entities: 25 of 112 records from rest:customers. More pages are available.`)
+next to `structuredContent`; the text never contains the data itself.
 
 For review automation without live e-conomic credentials, set
 `contractMode: true` when creating the gateway:
@@ -394,11 +421,37 @@ const gateway = createEconomicGateway({ contractMode: true });
 const result = await gateway.callTool('customer_overview', { number: 1001 });
 ```
 
+A multi-tenant host:
+
+```ts
+const gateway = createEconomicGateway({ appSecretToken: process.env.APP_SECRET });
+const result = await gateway.callTool('invoice_overview', { resource: 'invoices/overdue' }, {
+  requestId,
+  credentials: { agreementGrantToken: tokenForThisCompany },
+});
+```
+
 Contract mode is deterministic, performs no network calls, and returns fixture
-customers, products, accounts, company context, and pagination metadata. It is
-intended for review and demo tests only; production connectors should use
-real e-conomic credentials or e-conomic's documented `demo` tokens for live
-GET-only smoke tests.
+customers, products, accounts, company context, and pagination metadata. It
+applies the same target checks as live mode. It is intended for review and
+demo tests only; production connectors should use real e-conomic credentials
+or e-conomic's documented `demo` tokens for live GET-only smoke tests.
+
+### Installing without the npm registry
+
+The package is not published to npm yet. To embed a pinned commit without
+running its build on the consumer side, pack it once and install the tarball:
+
+```sh
+git clone https://github.com/borgels/mcp-server-e-conomic && cd mcp-server-e-conomic
+git checkout <commit>
+npm ci && npm pack            # prepack runs typecheck, tests and build
+# in the consuming project:
+npm install --ignore-scripts /path/to/mcp-server-e-conomic-<version>.tgz
+```
+
+The tarball contains `dist`, and the package has no install scripts, so the
+consumer installs only the runtime dependencies.
 
 ## Verification
 

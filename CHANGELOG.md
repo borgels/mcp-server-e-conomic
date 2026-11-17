@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.9.0
+
+Embedded gateway (`mcp-server-e-conomic/gateway`): fixed read targets per tool,
+catalog export, and per-call credentials. Breaking for embedders; the
+standalone stdio/HTTP server is unchanged.
+
+- Each narrow read tool reads only a fixed list of `{ serviceId, resource }`
+  targets that matches its name and description, enforced before any request
+  is sent (also in contract mode). `serviceId` and `resource` are enums in the
+  input schema; unknown input fields are refused. `get_entity` is the one broad
+  tool (any read endpoint in the catalog) and says so in its title and
+  description. `report_data` no longer reads booked entries (use
+  `accounting_entries`), and `search_entities` lists master data only.
+- New exports: `economicToolCatalog` (frozen; per tool `broad`, `reads`,
+  `writes`, `defaultRead`), `economicServiceCatalog` (frozen; services,
+  resources, endpoints with read/write marking) and
+  `resolveEconomicReadTarget(tool, input)`.
+- `callTool(name, input, context?)` with
+  `{ caller?, requestId?, credentials?: { agreementGrantToken } }`.
+- The embedded gateway never reads `ECONOMIC_*` environment variables.
+  `appSecretToken` is required at creation outside contract mode; the
+  agreement grant token comes from the call context or the options. Writes
+  are enabled only by `enableWrites`.
+- Token redaction uses a `SecretRedactor` per gateway instance (and per call),
+  instead of the module-global set; the standalone server keeps a process-wide
+  redactor for its environment tokens.
+- The `search_entities` and `supplier_overview` defaults read `/customers` and
+  `/suppliers` (they built a REST `/paged` path the allowlist refused).
+- Results carry a short summary text next to `structuredContent`.
+- `company_context` returns only company name, address, CVR/VAT number,
+  agreement number and type, modules and settings, not bank details, user
+  data or the app's tokens. `check_connection` returns `{ connected: true }`.
+
+### Upgrade notes (embedders)
+
+- Pass `appSecretToken` to `createEconomicGateway`; pass the agreement grant
+  token per call in `context.credentials` (or once in the options for a
+  single-tenant host). `ECONOMIC_APP_SECRET_TOKEN`,
+  `ECONOMIC_AGREEMENT_GRANT_TOKEN`, `ECONOMIC_BASE_URL_*`,
+  `ECONOMIC_TIMEOUT_MS`, `ECONOMIC_ENABLE_WRITES` and `ECONOMIC_POLICY_PATH`
+  no longer affect the gateway.
+- `callTool` no longer throws on upstream or validation errors; it returns an
+  `isError` result with a redacted message.
+- Inputs that named a `serviceId`/`resource` outside a tool's list, or a
+  `selfUrl` on a tool other than `get_entity`, are now refused.
+
 ## 0.8.0
 
 HTTP transport, upstream client and supply chain.
