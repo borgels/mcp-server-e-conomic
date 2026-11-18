@@ -148,3 +148,25 @@ export function resolveSelfUrl(
     query: Object.keys(mergedQuery).length > 0 ? mergedQuery : undefined,
   };
 }
+
+/**
+ * The call with its endpoint resolved against the allowlist: `pathTemplate`
+ * becomes the catalog's own spelling (findEndpoint also accepts a template
+ * without the leading "/"), and `path` is the concrete path with parameters
+ * filled in, or the template when a parameter is missing. Every policy and
+ * guard check must run on this form, never on the caller's spelling.
+ */
+export function canonicalEndpointCall(input: EndpointCallInput): {
+  call: EndpointCallInput;
+  endpoint: EndpointOperation;
+  path: string;
+} {
+  const endpoint = findEndpoint(input.serviceId, input.method, input.pathTemplate);
+  let path = endpoint.pathTemplate;
+  try {
+    path = materializePath(endpoint, input.pathParams);
+  } catch {
+    // A missing parameter fails the call itself; the checks use the template.
+  }
+  return { call: { ...input, pathTemplate: endpoint.pathTemplate }, endpoint, path };
+}

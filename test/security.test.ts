@@ -379,3 +379,55 @@ describe('HTTP hardening', () => {
     expect(() => assertSafeHttpStartup({})).not.toThrow();
   });
 });
+
+describe('standalone endpoint tool: canonical paths', () => {
+  const supplier = { supplierNumber: 2001, name: 'Demo Grossist A/S', bankAccount: '1234-0001234567' };
+
+  function recordingFetch() {
+    return vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/suppliers/2001')) return Response.json(supplier);
+      return Response.json({ ok: true });
+    });
+  }
+
+  it('refuses booking a draft invoice through a path without the leading "/" when booking is off', async () => {
+    process.env.ECONOMIC_ENABLE_WRITES = 'true';
+    delete process.env.ECONOMIC_ENABLE_BOOKING;
+    const fetchImpl = recordingFetch();
+    const mcp = await connectTools(makeClient(fetchImpl as never));
+    for (const pathTemplate of ['invoices/booked', '/invoices/booked']) {
+      const result = await mcp.callTool({
+        name: 'economic_call_endpoint',
+        arguments: { serviceId: 'rest', method: 'POST', pathTemplate, body: { draftInvoice: { draftInvoiceNumber: 7 } }, idempotencyKey: 'idem-key-9' },
+      });
+      expect(result.isError, pathTemplate).toBe(true);
+      const validated = await mcp.callTool({
+        name: 'economic_validate_payload',
+        arguments: { serviceId: 'rest', method: 'POST', pathTemplate, body: {} },
+      });
+      const text = (validated.content as Array<{ text: string }>)[0]!.text;
+      expect(JSON.parse(text)).toMatchObject({ endpoint: { pathTemplate: '/invoices/booked' }, policyDecision: { allowed: false } });
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses a supplier PUT without the leading "/" that would drop the bank details', async () => {
+    process.env.ECONOMIC_ENABLE_WRITES = 'true';
+    const fetchImpl = recordingFetch();
+    const mcp = await connectTools(makeClient(fetchImpl as never));
+    const result = await mcp.callTool({
+      name: 'economic_call_endpoint',
+      arguments: {
+        serviceId: 'rest',
+        method: 'PUT',
+        pathTemplate: 'suppliers/{number}',
+        pathParams: { number: 2001 },
+        body: { supplierNumber: 2001, name: 'Nyt navn' },
+        idempotencyKey: 'idem-key-10',
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect(fetchImpl.mock.calls.every(([, init]) => ((init as RequestInit | undefined)?.method ?? 'GET') === 'GET')).toBe(true);
+  });
+});

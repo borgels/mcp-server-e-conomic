@@ -104,7 +104,11 @@ export function isBookingCapability(capability: string): boolean {
   return capability in BOOKING_CAPABILITY_PATHS;
 }
 
-export function checkPolicy(input: PolicyCheckInput, policy = loadPolicy()): PolicyDecision {
+export function checkPolicy(rawInput: PolicyCheckInput, policy = loadPolicy()): PolicyDecision {
+  // Defence in depth: callers pass the catalog's spelling, but a path without
+  // the leading "/" must never slip past an anchored or slash-led pattern.
+  const trimmed = String(rawInput.path ?? '').trim();
+  const input = { ...rawInput, path: trimmed.startsWith('/') ? trimmed : `/${trimmed}` };
   if (!isMutation(input.method)) {
     return { allowed: true, reason: 'read operation', policy };
   }

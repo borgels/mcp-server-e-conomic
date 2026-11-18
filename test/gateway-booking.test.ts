@@ -9,6 +9,7 @@ import {
 import { assertNoBankChange, bankFieldPaths, changedBankFields } from '../src/economic/bank-fields.js';
 import { EconomicClient } from '../src/economic/client.js';
 import { basePolicy, checkPolicy } from '../src/economic/policy.js';
+import { canonicalEndpointCall } from '../src/economic/endpoints.js';
 
 const BOOKING_TOOLS = ['book_journal_entries', 'book_invoice', 'match_open_items'];
 const context = { credentials: { agreementGrantToken: 'grant-token-for-tests' } };
@@ -438,7 +439,8 @@ describe('change targets for the host’s log', () => {
       }
       expect(entry.change, entry.name).toBeDefined();
       const properties = Object.keys((entry.inputSchema.properties ?? {}) as object);
-      for (const field of entry.change!.logFields) expect(properties, `${entry.name}.${field}`).toContain(field);
+      for (const field of entry.change!.logFields) expect(properties, `${entry.name}.${field.name}`).toContain(field.name);
+      expect(entry.change!.logFields.map(field => field.name)).not.toContain('supplierInvoiceNumber');
       expect(entry.booking, entry.name).toBe(BOOKING_TOOLS.includes(entry.name));
     }
   });
@@ -476,5 +478,124 @@ describe('change targets for the host’s log', () => {
     });
     expect(resolveEconomicChange('customer_overview', {})).toMatchObject({ ok: false });
     expect(resolveEconomicChange('register_payment', { surprise: 1 })).toMatchObject({ ok: false });
+  });
+});
+
+describe('review regressions', () => {
+  it('canonicalises a path without the leading "/" before any policy check', () => {
+    const { call, path } = canonicalEndpointCall({ serviceId: 'rest', method: 'POST', pathTemplate: 'invoices/booked', body: {} });
+    expect(call.pathTemplate).toBe('/invoices/booked');
+    expect(path).toBe('/invoices/booked');
+    const policy = { ...basePolicy(), writesEnabled: true, bookingEnabled: false };
+    for (const raw of ['invoices/booked', '/invoices/booked', ' invoices/booked']) {
+      expect(checkPolicy({ capability: 'economic_call_endpoint', serviceId: 'rest', method: 'POST', path: raw }, policy).allowed, raw).toBe(false);
+      expect(checkPolicy({ capability: 'book_invoice', serviceId: 'rest', method: 'POST', path: raw }, policy).allowed, raw).toBe(false);
+    }
+    expect(checkPolicy({ capability: 'economic_call_endpoint', serviceId: 'rest', method: 'PUT', path: 'self' }, policy).allowed).toBe(false);
+    const journal = canonicalEndpointCall({
+      serviceId: 'journals', method: 'POST', pathTemplate: 'journals/{journalNumber}/bookdraftentries', pathParams: { journalNumber: 1 },
+    });
+    expect(journal.path).toBe('/journals/1/bookdraftentries');
+    expect(checkPolicy({ capability: 'economic_call_endpoint', serviceId: 'journals', method: 'POST', path: journal.path }, policy).allowed).toBe(false);
+  });
+
+  it('compares supplier bank details on a PUT written without the leading "/"', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      return defaultResponse(request.method, new URL(request.url).pathname);
+    });
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret-for-tests',
+      agreementGrantToken: 'grant-token-for-tests',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      credentialEnv: {},
+    });
+    // A full replace without the bank fields would wipe them.
+    const withoutBank: Record<string, unknown> = { ...existingSupplier };
+    delete withoutBank.bankAccount;
+    delete withoutBank.remittanceAdvice;
+    await expect(assertNoBankChange(client, {
+      serviceId: 'rest', method: 'PUT', pathTemplate: 'suppliers/{number}', pathParams: { number: 2001 }, body: withoutBank,
+    })).rejects.toThrow('bankAccount');
+    await expect(assertNoBankChange(client, {
+      serviceId: 'rest', method: 'PUT', pathTemplate: 'suppliers/{number}', pathParams: { number: 2001 },
+      body: { ...existingSupplier, name: 'Nyt navn' },
+    })).resolves.toBeUndefined();
+  });
+
+  it('never puts a name or free text in the log values, whatever the input type', () => {
+    for (const text of ['Anna Hansen', 'Private confidential note', 'Anna', '12 34']) {
+      const resolvedPayment = resolveEconomicChange('register_payment', {
+        journalNumber: text, kind: text, customerNumber: text, customerInvoiceNumber: text, supplierNumber: text,
+        supplierInvoiceNumber: text, amount: text, currency: text, date: text, accountingYear: text,
+      });
+      expect(resolvedPayment.ok).toBe(true);
+      if (resolvedPayment.ok) expect(resolvedPayment.change.values, text).toEqual({});
+      const others: Array<[string, GatewayJsonObject]> = [
+        ['upsert_product', { productNumber: text }],
+        ['create_journal_entries', { journalNumber: 1, accountingYear: text, voucherNumber: text, entries: [] }],
+        ['book_journal_entries', { journalNumber: 1, entryNumbers: [1, text] }],
+        ['create_time_entry', { projectNumber: 1, date: text, hours: text }],
+      ];
+      for (const [tool, input] of others) {
+        const resolved = resolveEconomicChange(tool, input);
+        expect(resolved.ok, tool).toBe(true);
+        if (resolved.ok) expect(JSON.stringify(resolved.change.values), `${tool} ${text}`).not.toContain(text);
+      }
+    }
+    const ok = resolveEconomicChange('register_payment', {
+      journalNumber: 1, kind: 'supplierPayment', supplierNumber: 2001, supplierInvoiceNumber: 'F-77', amount: 250.5, currency: 'dkk', date: '2026-03-02',
+    });
+    expect(ok).toEqual({
+      ok: true,
+      change: {
+        tool: 'register_payment',
+        action: 'register',
+        record: 'payment',
+        booking: false,
+        values: { journalNumber: 1, kind: 'supplierPayment', supplierNumber: 2001, amount: 250.5, currency: 'DKK', date: '2026-03-02' },
+      },
+    });
+    expect(resolveEconomicChange('register_payment', { amount: 10.005, date: '2026-02-30' })).toMatchObject({ ok: true, change: { values: {} } });
+    expect(resolveEconomicChange('upsert_product', { productNumber: '4711' })).toMatchObject({ change: { values: { productNumber: '4711' } } });
+  });
+
+  it('exports date patterns that accept an ISO date and reject other text', () => {
+    const patterns: string[] = [];
+    const collect = (value: unknown, key = ''): void => {
+      if (Array.isArray(value)) value.forEach(item => collect(item));
+      else if (value && typeof value === 'object') {
+        for (const [nestedKey, nested] of Object.entries(value)) collect(nested, nestedKey);
+      } else if (key === 'pattern' && typeof value === 'string') patterns.push(value);
+    };
+    for (const name of ['create_journal_entries', 'register_payment']) {
+      collect(economicToolCatalog.find(entry => entry.name === name)!.inputSchema);
+    }
+    const datePatterns = patterns.filter(pattern => pattern.includes('{4}'));
+    expect(datePatterns.length).toBeGreaterThanOrEqual(3);
+    for (const pattern of datePatterns) {
+      expect(pattern).toBe('^\\d{4}-\\d{2}-\\d{2}$');
+      const regex = new RegExp(pattern);
+      expect(regex.test('2026-03-02'), pattern).toBe(true);
+      expect(regex.test('dddd-dd-dd'), pattern).toBe(false);
+      expect(regex.test('2. marts'), pattern).toBe(false);
+    }
+  });
+
+  it('refuses writes in contract mode when writes are off', async () => {
+    const off = createEconomicGateway({ contractMode: true });
+    const writesOff: Array<[string, GatewayJsonObject]> = [
+      ['create_draft_invoice', { customerNumber: 1001, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+      ['register_payment', payment()],
+      ['upsert_customer', { customerNumber: 1001, name: 'X' }],
+    ];
+    for (const [tool, input] of writesOff) {
+      const result = await off.callTool(tool, input);
+      expect(result.isError, tool).toBe(true);
+      expect(result.content[0]?.text).toBe('Write blocked by policy: writes disabled');
+    }
+    expect((await off.callTool('customer_overview', {})).isError).toBeUndefined();
+    const on = createEconomicGateway({ contractMode: true, policy: { enableWrites: true } });
+    expect((await on.callTool('register_payment', payment())).isError).toBeUndefined();
   });
 });

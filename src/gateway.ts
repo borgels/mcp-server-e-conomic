@@ -189,8 +189,9 @@ export interface GatewayToolCatalogEntry {
   /**
    * e-conomic addition, write tools only: what the change does, for a host
    * that logs a change before it is sent. `logFields` are the input fields
-   * that identify the change (numbers, dates, amounts, codes; never names or
-   * free text); `resolveEconomicChange` returns their values for a call.
+   * that identify the change, each with the one type its value must have
+   * (record numbers, dates, amounts, currency codes; never names or free
+   * text); `resolveEconomicChange` returns their values for a call.
    */
   readonly change?: EconomicChangeSpec;
 }
@@ -201,7 +202,33 @@ export interface EconomicChangeSpec {
   readonly action: EconomicChangeAction;
   /** The kind of record the change creates or touches, e.g. 'payment', 'journal-entry', 'invoice'. */
   readonly record: string;
-  readonly logFields: readonly string[];
+  readonly logFields: readonly EconomicLogField[];
+}
+
+/**
+ * The type a logged value must have; anything else is left out of the values.
+ *   recordNumber  a whole number >= 0, or a string of 1-15 digits
+ *   numberList    1-100 whole numbers >= 1
+ *   amount        a finite number with at most two decimals
+ *   quantity      a finite number >= 0 (hours)
+ *   date          an ISO date (YYYY-MM-DD) that exists
+ *   currency      three letters, returned in capitals
+ *   accountingYear  e-conomic's year name: 2026 or 2025/2026
+ *   enum          one of the input schema's enum values
+ */
+export type EconomicLogFieldType =
+  | 'recordNumber'
+  | 'numberList'
+  | 'amount'
+  | 'quantity'
+  | 'date'
+  | 'currency'
+  | 'accountingYear'
+  | 'enum';
+
+export interface EconomicLogField {
+  readonly name: string;
+  readonly type: EconomicLogFieldType;
 }
 
 export type EconomicLogValue = string | number | readonly number[];
@@ -213,10 +240,10 @@ export interface EconomicChange {
   readonly record: string;
   readonly booking: boolean;
   /**
-   * The values of the tool's `logFields` that are present and well-formed:
-   * whole or decimal numbers, short codes (digits, letters, `-`, `/`, `.`,
-   * `:`; at most 40 characters) and lists of whole numbers. Plus `lineCount`
-   * for tools that take lines. Never a name, an address or a free text.
+   * The values of the tool's `logFields` that are present and have their
+   * field's type (see EconomicLogFieldType), plus `lineCount` for tools that
+   * take lines. A value of the wrong type is left out, so a name or a free
+   * text can never reach the values.
    */
   readonly values: Readonly<Record<string, EconomicLogValue>>;
 }
@@ -483,7 +510,7 @@ const upsertAccountInput = {
 // (FI/giro numbers) on supplier invoices are not accepted: they come from the
 // supplier record, and bank details are not changed through this server.
 const MAX_JOURNAL_LINES = 50;
-const ISO_DATE = '^\d{4}-\d{2}-\d{2}$';
+const ISO_DATE = String.raw`^\d{4}-\d{2}-\d{2}$`;
 
 const journalVoucherFields = {
   journalNumber: { type: 'integer', minimum: 1, description: 'Journal (kassekladde) number.' },
@@ -836,10 +863,14 @@ function writeTool(
   };
 }
 
-const change = (action: EconomicChangeAction, record: string, logFields: string[]): EconomicChangeSpec => ({
+const change = (
+  action: EconomicChangeAction,
+  record: string,
+  logFields: Record<string, EconomicLogFieldType>,
+): EconomicChangeSpec => ({
   action,
   record,
-  logFields,
+  logFields: Object.entries(logFields).map(([name, type]) => ({ name, type })),
 });
 
 const WRITE_NOTE =
@@ -929,7 +960,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create e-conomic draft invoice',
     description: `Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer. ${WRITE_NOTE}`,
     inputSchema: createDraftInvoiceInput,
-    change: change('create', 'draft-invoice', ['customerNumber', 'currency', 'date']),
+    change: change('create', 'draft-invoice', { customerNumber: 'recordNumber', currency: 'currency', date: 'date' }),
     upstream: [
       operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
       operation('read', 'GET', 'rest', 'layouts', '/layouts'),
@@ -941,7 +972,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic customer',
     description: `Create a customer, or update an existing one by customerNumber (reads the current customer and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertCustomerInput,
-    change: change('upsert', 'customer', ['customerNumber']),
+    change: change('upsert', 'customer', { customerNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
       operation('write', 'POST', 'rest', 'customers', '/customers'),
@@ -953,7 +984,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic product',
     description: `Create a product, or update it when the productNumber already exists (reads the current product and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertProductInput,
-    change: change('upsert', 'product', ['productNumber']),
+    change: change('upsert', 'product', { productNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'products', '/products/{number}'),
       operation('write', 'POST', 'rest', 'products', '/products'),
@@ -965,7 +996,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic project',
     description: `Create a project in the Projects add-on, or update an existing one by projectNumber (reads the current project and merges the provided fields; upserts via the collection PUT). ${WRITE_NOTE}`,
     inputSchema: upsertProjectInput,
-    change: change('upsert', 'project', ['projectNumber', 'customerNumber']),
+    change: change('upsert', 'project', { projectNumber: 'recordNumber', customerNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'projects', 'Projects', '/Projects/{number}'),
       operation('write', 'POST', 'projects', 'Projects', '/Projects'),
@@ -977,7 +1008,13 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Register e-conomic project time',
     description: `Register a project time entry (hours on a project + activity for an employee, on a date). Create only; deletion is a separate operation. ${WRITE_NOTE}`,
     inputSchema: createTimeEntryInput,
-    change: change('create', 'time-entry', ['projectNumber', 'activityNumber', 'employeeNumber', 'date', 'hours']),
+    change: change('create', 'time-entry', {
+      projectNumber: 'recordNumber',
+      activityNumber: 'recordNumber',
+      employeeNumber: 'recordNumber',
+      date: 'date',
+      hours: 'quantity',
+    }),
     upstream: [operation('write', 'POST', 'projects', 'TimeEntries', '/TimeEntries')],
   }),
   writeTool({
@@ -985,7 +1022,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic supplier',
     description: `Create a supplier, or update an existing one by supplierNumber (reads the current supplier and merges the provided fields). Bank details (bank account, remittance advice, payment details) are never changed: such fields are refused. ${WRITE_NOTE}`,
     inputSchema: upsertSupplierInput,
-    change: change('upsert', 'supplier', ['supplierNumber']),
+    change: change('upsert', 'supplier', { supplierNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'suppliers', '/suppliers/{number}'),
       operation('write', 'POST', 'rest', 'suppliers', '/suppliers'),
@@ -997,7 +1034,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic project employee',
     description: `Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). ${WRITE_NOTE}`,
     inputSchema: upsertEmployeeInput,
-    change: change('upsert', 'project-employee', ['employeeNumber']),
+    change: change('upsert', 'project-employee', { employeeNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'projects', 'Employees', '/Employees/{number}'),
       operation('write', 'POST', 'projects', 'Employees', '/Employees'),
@@ -1010,7 +1047,7 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Create a general-ledger account, or update an existing one by accountNumber (read-merge-write). Editing the chart of accounts is a structural change (risk destructive); a hosting control plane should gate it behind approval. ${WRITE_NOTE}`,
     riskLevel: 'destructive',
     inputSchema: upsertAccountInput,
-    change: change('upsert', 'account', ['accountNumber']),
+    change: change('upsert', 'account', { accountNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'accounts', '/accounts/{number}'),
       operation('write', 'POST', 'rest', 'accounts', '/accounts'),
@@ -1022,7 +1059,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create e-conomic journal entries',
     description: `Add one voucher with draft lines to a journal (kassekladde): ledger lines (account against contra account) or supplier invoices. The lines are not booked; book them with book_journal_entries. Payments are registered with register_payment. ${WRITE_NOTE}`,
     inputSchema: createJournalEntriesInput,
-    change: change('create', 'journal-entry', ['journalNumber', 'voucherNumber', 'accountingYear']),
+    change: change('create', 'journal-entry', { journalNumber: 'recordNumber', voucherNumber: 'recordNumber', accountingYear: 'accountingYear' }),
     upstream: [
       operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years'),
       operation('write', 'POST', 'rest', 'journals', '/journals/{journalNumber}/vouchers'),
@@ -1033,17 +1070,17 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Register e-conomic payment',
     description: `Register a payment as a draft line in a journal (kassekladde): money received from a customer, or money paid to a supplier, against an invoice. The line is not booked; book it with book_journal_entries. This records the payment in the accounts; it does not move money in the bank. ${WRITE_NOTE}`,
     inputSchema: registerPaymentInput,
-    change: change('register', 'payment', [
-      'journalNumber',
-      'kind',
-      'customerNumber',
-      'customerInvoiceNumber',
-      'supplierNumber',
-      'supplierInvoiceNumber',
-      'amount',
-      'currency',
-      'date',
-    ]),
+    // supplierInvoiceNumber is the supplier's own free text: never logged.
+    change: change('register', 'payment', {
+      journalNumber: 'recordNumber',
+      kind: 'enum',
+      customerNumber: 'recordNumber',
+      customerInvoiceNumber: 'recordNumber',
+      supplierNumber: 'recordNumber',
+      amount: 'amount',
+      currency: 'currency',
+      date: 'date',
+    }),
     upstream: [
       operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years'),
       operation('write', 'POST', 'rest', 'journals', '/journals/{journalNumber}/vouchers'),
@@ -1055,7 +1092,7 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Book explicit draft entries of a journal (kassekladde), by entry numbers or by voucher numbers; never a whole journal. Every entry must exist in the journal, and every voucher must have an attached document unless requireVoucher is false. Booking is irreversible: corrections are made with counter-entries. ${BOOKING_NOTE}`,
     inputSchema: bookJournalEntriesInput,
     booking: true,
-    change: change('book', 'journal-entry', ['journalNumber', 'entryNumbers', 'voucherNumbers']),
+    change: change('book', 'journal-entry', { journalNumber: 'recordNumber', entryNumbers: 'numberList', voucherNumbers: 'numberList' }),
     upstream: [
       operation('read', 'GET', 'journals', 'draft-entries', '/draft-entries'),
       operation('read', 'GET', 'documents', 'AttachedDocuments', '/AttachedDocuments/{number}'),
@@ -1068,7 +1105,7 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Book a draft sales invoice, so it becomes a booked invoice with its own number and is posted to the ledger. It is not sent electronically (sendBy none). Booking is irreversible: corrections are made with a credit note. ${BOOKING_NOTE}`,
     inputSchema: bookInvoiceInput,
     booking: true,
-    change: change('book', 'invoice', ['draftInvoiceNumber']),
+    change: change('book', 'invoice', { draftInvoiceNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'invoices/drafts', '/invoices/drafts/{number}'),
       operation('write', 'POST', 'rest', 'invoices/booked', '/invoices/booked'),
@@ -1080,7 +1117,7 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Match (udligne) booked open items of one customer or supplier against each other, e.g. a payment against the invoice it settles. e-conomic has no way to undo a match through its API. ${BOOKING_NOTE}`,
     inputSchema: matchOpenItemsInput,
     booking: true,
-    change: change('match', 'booked-entry', ['entryIds']),
+    change: change('match', 'booked-entry', { entryIds: 'numberList' }),
     upstream: [operation('write', 'POST', 'booked-entries', 'booked-entries', '/booked-entries/match')],
   }),
 ];
@@ -1126,7 +1163,7 @@ export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreez
       broad: spec.broad,
       ...(defaultRead ? { defaultRead: { ...defaultRead } } : {}),
       booking: spec.booking,
-      ...(spec.change ? { change: { ...spec.change, logFields: [...spec.change.logFields] } } : {}),
+      ...(spec.change ? { change: { ...spec.change, logFields: spec.change.logFields.map(field => ({ ...field })) } } : {}),
     };
     return entry;
   }),
@@ -1270,18 +1307,41 @@ export function resolveEconomicReadTarget(
   }
 }
 
-const LOG_CODE = /^[A-Za-z0-9][A-Za-z0-9 ._/:-]{0,39}$/;
 const MAX_LOGGED_NUMBERS = 100;
 
-/** A log field's value, when it is a number, a short code or a list of whole numbers; otherwise nothing. */
-function logValue(value: GatewayJsonValue | undefined): EconomicLogValue | undefined {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (typeof value === 'string') return LOG_CODE.test(value) ? value : undefined;
-  if (Array.isArray(value)) {
-    const numbers = value.filter((item): item is number => typeof item === 'number' && Number.isSafeInteger(item));
-    return numbers.length === value.length && numbers.length <= MAX_LOGGED_NUMBERS ? numbers : undefined;
+/** The schema enum of an input field, for 'enum' log fields. */
+function schemaEnum(spec: ToolSpec, field: string): readonly unknown[] {
+  const properties = asObject(spec.inputSchema.properties);
+  const values = asObject(properties[field]).enum;
+  return Array.isArray(values) ? values : [];
+}
+
+/** A log field's value when it has exactly the field's type; otherwise nothing. */
+function logValue(spec: ToolSpec, field: EconomicLogField, value: GatewayJsonValue | undefined): EconomicLogValue | undefined {
+  switch (field.type) {
+    case 'recordNumber':
+      if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+      return typeof value === 'string' && /^\d{1,15}$/.test(value) ? value : undefined;
+    case 'numberList': {
+      if (!Array.isArray(value) || value.length === 0 || value.length > MAX_LOGGED_NUMBERS) return undefined;
+      const numbers = value.filter((item): item is number => typeof item === 'number' && Number.isSafeInteger(item) && item >= 1);
+      return numbers.length === value.length ? numbers : undefined;
+    }
+    case 'amount':
+      return typeof value === 'number' ? amountValue(value) : undefined;
+    case 'quantity':
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+    case 'date':
+      return isoDateValue(value);
+    case 'currency':
+      return typeof value === 'string' && /^[A-Za-z]{3}$/.test(value) ? value.toUpperCase() : undefined;
+    case 'accountingYear':
+      return typeof value === 'string' && /^\d{4}(\/\d{4})?$/.test(value) ? value : undefined;
+    case 'enum':
+      return typeof value === 'string' && schemaEnum(spec, field.name).includes(value) ? value : undefined;
+    default:
+      return undefined;
   }
-  return undefined;
 }
 
 /**
@@ -1305,8 +1365,8 @@ export function resolveEconomicChange(
   }
   const values: Record<string, EconomicLogValue> = {};
   for (const field of spec.change.logFields) {
-    const value = logValue(input[field]);
-    if (value !== undefined) values[field] = value;
+    const value = logValue(spec, field, input[field.name]);
+    if (value !== undefined) values[field.name] = value;
   }
   const lines = spec.name === 'create_draft_invoice' ? input.lines : spec.name === 'create_journal_entries' ? input.entries : undefined;
   if (Array.isArray(lines)) values.lineCount = lines.length;
@@ -1532,14 +1592,16 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           }
         }
 
-        if (contractMode) {
-          return contractToolResult(spec.name, args, target);
-        }
-
         // Refuse writes before any preparatory read (customer, layout, existing
-        // record). The full policy check still runs on the built request.
+        // record), and before a contract fixture: contract mode answers only
+        // what live mode would allow. The full policy check still runs on the
+        // built request.
         if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
           return errorResult('Write blocked by policy: writes disabled');
+        }
+
+        if (contractMode) {
+          return contractToolResult(spec.name, args, target);
         }
 
         const grant = callGrantToken(context, options.agreementGrantToken);

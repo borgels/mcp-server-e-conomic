@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod/v4';
 import type { EconomicClient, HttpMethod, QueryValue } from '../economic/client.js';
 import { ECONOMIC_SERVICES, findEndpoint, resolveReadPathTemplate, searchCapabilities, getCapability, getSchemaSummary } from '../economic/catalog.js';
-import { callEndpoint, materializePath, resolveSelfUrl, type EndpointCallInput } from '../economic/endpoints.js';
+import { callEndpoint, canonicalEndpointCall, materializePath, resolveSelfUrl, type EndpointCallInput } from '../economic/endpoints.js';
 import { prepareOperation, verifyPreparedOperation, type PreparedOperation } from '../economic/operations.js';
 import { checkPolicy, isBookingCapability } from '../economic/policy.js';
 import {
@@ -268,20 +268,15 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
     },
     async input => {
       const method = input.method as HttpMethod;
-      const path = input.pathTemplate;
-      const decision = checkPolicy({
-        capability: 'economic_call_endpoint',
-        serviceId: input.serviceId,
-        method,
-        path,
-        body: input.body,
-      });
+      // Checks run on the catalog's spelling of the endpoint, never the caller's.
+      const { call, path } = canonicalEndpointCall({ ...input, method } as EndpointCallInput);
+      const decision = endpointPolicyDecision(call, path);
       return jsonToolResult({
         valid: true,
         endpoint: {
-          serviceId: input.serviceId,
+          serviceId: call.serviceId,
           method,
-          pathTemplate: input.pathTemplate,
+          pathTemplate: call.pathTemplate,
         },
         policyDecision: decision,
       });
@@ -738,14 +733,10 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       },
     },
     async input => {
-      const endpointInput = input as EndpointCallInput;
-      const decision = checkPolicy({
-        capability: 'economic_call_endpoint',
-        serviceId: endpointInput.serviceId,
-        method: endpointInput.method,
-        path: endpointInput.pathTemplate,
-        body: endpointInput.body,
-      });
+      // Canonicalise once (the catalog accepts a template with or without the
+      // leading "/"), and run every check and the call itself on that form.
+      const { call: endpointInput, path } = canonicalEndpointCall(input as EndpointCallInput);
+      const decision = endpointPolicyDecision(endpointInput, path);
 
       if (!decision.allowed) {
         throw new Error(`Endpoint call blocked by policy: ${decision.reason}`);
@@ -999,6 +990,23 @@ function registerPrepareTool(
       );
     },
   );
+}
+
+/**
+ * The write policy decision for a raw endpoint call, on the canonical template
+ * and on the concrete path: both must be allowed.
+ */
+function endpointPolicyDecision(call: EndpointCallInput, path: string) {
+  const check = (candidate: string) =>
+    checkPolicy({
+      capability: 'economic_call_endpoint',
+      serviceId: call.serviceId,
+      method: call.method,
+      path: candidate,
+      body: call.body,
+    });
+  const onTemplate = check(call.pathTemplate);
+  return onTemplate.allowed && path !== call.pathTemplate ? check(path) : onTemplate;
 }
 
 /** Concrete request path (params substituted) used for commit-time policy checks. */

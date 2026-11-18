@@ -20,9 +20,17 @@ bank-detail guard. Additive for embedders.
   Unknown tool names and contradictions throw at creation.
   `gateway.policy` is the resolved policy.
 - Catalog entries gain `booking` and, for write tools,
-  `change: { action, record, logFields }`. New
-  `resolveEconomicChange(tool, input)` returns the values that identify a
-  change (numbers, dates, amounts, codes; never names or free text).
+  `change: { action, record, logFields }`, where each log field has one
+  type (record number, number list, amount, quantity, date, currency,
+  accounting year, enum). New `resolveEconomicChange(tool, input)` returns
+  only values of the right type, so names and free text never reach a log.
+- Contract mode refuses write tools while writes are off, as live mode does
+  (it used to answer with a fixture). Contract-mode hosts that write pass
+  `enableWrites`.
+- Raw endpoint calls in the standalone server are canonicalised against the
+  catalog before any policy or bank check (a template without the leading
+  `/` named the same endpoint but slipped past slash-led patterns), and
+  `checkPolicy` adds a missing leading `/` itself.
 - Bank details are never changed: bank fields (`bankAccount`,
   `remittanceAdvice`, `paymentDetails`, `bankInformation`, IBAN,
   SWIFT/BIC, giro, registration number) are refused in gateway write input and

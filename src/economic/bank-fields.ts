@@ -1,5 +1,5 @@
 import type { EconomicClient, HttpMethod } from './client.js';
-import { callEndpoint } from './endpoints.js';
+import { callEndpoint, canonicalEndpointCall } from './endpoints.js';
 
 /**
  * Bank details are never changed through this server: a false account number
@@ -92,6 +92,9 @@ export async function assertNoBankChange(
   },
 ): Promise<void> {
   if (call.method === 'GET') return;
+  // Compare on the catalog's spelling: "suppliers/{number}" is the same endpoint.
+  const canonical = canonicalEndpointCall({ ...call, pathTemplate: call.pathTemplate }).call;
+  call = { ...call, serviceId: canonical.serviceId, pathTemplate: canonical.pathTemplate };
   const isSupplierUpdate = call.serviceId === 'rest' && call.method === 'PUT' && call.pathTemplate === '/suppliers/{number}';
   if (!isSupplierUpdate) {
     const fields = bankFieldPaths(call.body);

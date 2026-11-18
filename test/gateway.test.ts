@@ -71,6 +71,7 @@ describe('e-conomic gateway export', () => {
     const fetchMock = vi.fn<typeof fetch>();
     const gateway = createEconomicGateway({
       contractMode: true,
+      enableWrites: true,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
@@ -95,7 +96,7 @@ describe('e-conomic gateway export', () => {
   });
 
   it('lists booked invoices in contract mode', async () => {
-    const gateway = createEconomicGateway({ contractMode: true });
+    const gateway = createEconomicGateway({ contractMode: true, enableWrites: true });
     const result = await gateway.callTool('invoice_overview', {});
     expect(result.isError).toBeUndefined();
     const sc = result.structuredContent as { mode: string; collection: Array<Record<string, unknown>> };
@@ -121,7 +122,7 @@ describe('e-conomic gateway export', () => {
   });
 
   it('creates a deterministic draft invoice in contract mode', async () => {
-    const gateway = createEconomicGateway({ contractMode: true });
+    const gateway = createEconomicGateway({ contractMode: true, enableWrites: true });
 
     const result = await gateway.callTool('create_draft_invoice', {
       customerNumber: 1001,
@@ -414,6 +415,7 @@ describe('e-conomic gateway export', () => {
     const fetchMock = vi.fn<typeof fetch>();
     const gateway = createEconomicGateway({
       contractMode: true,
+      enableWrites: true,
       fetchImpl: fetchMock as unknown as typeof fetch,
     });
 
@@ -536,7 +538,7 @@ describe('e-conomic gateway export', () => {
   });
 
   it('serves deterministic project fixtures in contract mode', async () => {
-    const gateway = createEconomicGateway({ contractMode: true });
+    const gateway = createEconomicGateway({ contractMode: true, enableWrites: true });
     const projects = await gateway.callTool('project_overview', {});
     const sc = projects.structuredContent as { mode: string; collection: Array<Record<string, unknown>> };
     expect(sc.mode).toBe('contract');
@@ -615,7 +617,7 @@ describe('e-conomic gateway export', () => {
   });
 
   it('serves deterministic supplier/employee upsert fixtures in contract mode', async () => {
-    const gateway = createEconomicGateway({ contractMode: true });
+    const gateway = createEconomicGateway({ contractMode: true, enableWrites: true });
     const supplier = await gateway.callTool('upsert_supplier', { name: 'Ny Leverandoer ApS', currency: 'DKK' });
     expect(supplier.structuredContent).toMatchObject({ mode: 'contract', action: 'created', supplierNumber: 2002 });
     const employee = await gateway.callTool('upsert_employee', { employeeNumber: 12, name: 'Rettet Navn' });
@@ -680,7 +682,7 @@ describe('e-conomic gateway export', () => {
   });
 
   it('keeps get_entity input validation in contract mode', async () => {
-    const gateway = createEconomicGateway({ contractMode: true });
+    const gateway = createEconomicGateway({ contractMode: true, enableWrites: true });
 
     await expect(gateway.callTool('get_entity')).resolves.toMatchObject({
       isError: true,

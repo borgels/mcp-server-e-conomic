@@ -367,10 +367,13 @@ The gateway exports:
   logging the target of a call.
 - `resolveEconomicChange(tool, input)`: what a write call will change, for a
   host that logs a change before it is sent: `{ tool, action, record,
-  booking, values }`. `values` holds the tool's `logFields` (numbers,
-  dates, amounts, short codes, lists of numbers; never names or free text)
-  and `lineCount` for tools with lines. Each write tool's catalog entry
-  carries the same `change: { action, record, logFields }` and `booking`.
+  booking, values }`. Each write tool's catalog entry carries
+  `change: { action, record, logFields }` and `booking`; every log field
+  has one type (`recordNumber`, `numberList`, `amount`, `quantity`,
+  `date`, `currency`, `accountingYear`, `enum`), and `values` holds
+  only the fields whose input has that type, plus `lineCount` for tools with
+  lines. A name or free text never reaches `values`; free-text identifiers
+  such as a supplier's own invoice number are not log fields.
 - `createEconomicGateway(options)`: a factory taking `appSecretToken`
   (required outside contract mode), an optional single-tenant
   `agreementGrantToken`, optional base URLs, timeout, `fetchImpl`,
@@ -443,7 +446,8 @@ const gateway = createEconomicGateway({
 
 Unknown tool names, an empty `allowedTools`, `allowBooking` without writes,
 and `enableWrites` given both as an option and in `policy` with different
-values all throw. `gateway.policy` is the resolved policy. The top-level
+values all throw. `gateway.policy` is the resolved policy. In contract mode
+write tools are refused unless writes are enabled, as in live mode. The top-level
 `enableWrites` option still works on its own.
 
 What no policy turns on:
