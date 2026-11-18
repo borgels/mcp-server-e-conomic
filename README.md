@@ -467,9 +467,13 @@ What no policy turns on:
   denied by the built-in write policy; the booking tools are allowed only on
   their exact endpoint.
 
-Every result has a short text (for example
-`search_entities: 25 of 112 records from rest:customers. More pages are available.`)
-next to `structuredContent`; the text never contains the data itself.
+Every successful result has one text block: a short summary line (for example
+`search_entities: 25 of 112 records from rest:customers. More pages are available.`),
+a blank line, and then `structuredContent` serialized as compact JSON, as the
+MCP specification recommends for tools that return structured content. Many
+clients, Claude among them, read only the text block. The JSON is exactly
+`structuredContent`: bank details, user data and other fields the gateway
+removes are absent from both. Error results have only the text.
 
 For review automation without live e-conomic credentials, set
 `contractMode: true` when creating the gateway:

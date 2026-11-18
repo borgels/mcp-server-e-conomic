@@ -9,6 +9,21 @@ import {
   type GatewayJsonObject,
 } from '../src/gateway.js';
 
+type CallResult = Awaited<ReturnType<ReturnType<typeof createEconomicGateway>['callTool']>>;
+
+/** The summary line of a successful result's text block. */
+function summaryLine(result: CallResult): string {
+  return result.content[0]!.text.split('\n\n')[0]!;
+}
+
+/** A successful result carries exactly its structured content as compact JSON after the summary. */
+function expectDataInText(result: CallResult, label?: string): void {
+  expect(result.structuredContent, label).toBeDefined();
+  expect(result.content, label).toHaveLength(1);
+  const text = result.content[0]!.text;
+  expect(text, label).toBe(`${summaryLine(result)}\n\n${JSON.stringify(result.structuredContent)}`);
+}
+
 const NARROW_READ_TOOLS = [
   'search_entities',
   'customer_overview',
@@ -271,6 +286,7 @@ describe('declared upstream requests', () => {
       for (const input of inputsFor(entry.name)) {
         const result = await gateway.callTool(entry.name, input, context('grant-token-for-tests'));
         expect(result.isError, `${entry.name} ${JSON.stringify(input)}: ${result.content[0]?.text}`).toBeUndefined();
+        expectDataInText(result, `${entry.name} ${JSON.stringify(input)}`);
       }
       expect(requests.length, entry.name).toBeGreaterThan(0);
       for (const request of requests) {
@@ -486,14 +502,29 @@ describe('defaults, answer text and company context', () => {
       Response.json({ collection: [{ customerNumber: 1 }, { customerNumber: 2 }], pagination: { results: 10 } }),
     );
     const list = await gateway.callTool('search_entities', {}, context('grant-token-for-tests'));
-    expect(list.content[0]?.text).toBe('search_entities: 2 of 10 records from rest:customers. More pages are available.');
+    expect(summaryLine(list)).toBe('search_entities: 2 of 10 records from rest:customers. More pages are available.');
     expect(list.structuredContent).toMatchObject({ collection: [{ customerNumber: 1 }, { customerNumber: 2 }] });
+    expectDataInText(list);
 
     const one = await gateway.callTool('customer_overview', { number: 1 }, context('grant-token-for-tests'));
-    expect(one.content[0]?.text).toBe('customer_overview: one record from customers:Customers.');
+    expect(summaryLine(one)).toBe('customer_overview: one record from customers:Customers.');
+    expectDataInText(one);
 
     const contract = await createEconomicGateway({ contractMode: true }).callTool('invoice_overview', {});
-    expect(contract.content[0]?.text).toBe('invoice_overview: 2 records from rest:invoices/booked.');
+    expect(summaryLine(contract)).toBe('invoice_overview: 2 records from rest:invoices/booked.');
+    expectDataInText(contract);
+  });
+
+  it('puts the data in the text block too, as compact JSON after the summary line', async () => {
+    const { gateway } = recordingGateway(() => Response.json({ collection: [{ customerNumber: 1, name: 'Kunde Et ApS' }], pagination: { results: 1 } }));
+    const result = await gateway.callTool('search_entities', {}, context('grant-token-for-tests'));
+    expect(result.content).toHaveLength(1);
+    const [summary, json, ...rest] = result.content[0]!.text.split('\n\n');
+    expect(summary).toBe('search_entities: 1 record from rest:customers.');
+    expect(rest).toEqual([]);
+    expect(json).toBe(JSON.stringify(result.structuredContent));
+    expect(json).not.toContain('\n');
+    expect(result.content[0]!.text).toContain('Kunde Et ApS');
   });
 
   it('returns only the promised company context from /self', async () => {
@@ -538,12 +569,16 @@ describe('defaults, answer text and company context', () => {
       modules: [{ moduleNumber: 7, name: 'Projekt' }],
       settings: { baseCurrency: 'DKK', internationalLedger: true },
     });
+    expectDataInText(result);
+    expect(result.content[0]?.text).toContain('"name":"Testfirma ApS"');
+    expect(result.content[0]?.text).toContain('11223344');
     const text = JSON.stringify(result);
     for (const leaked of ['Some Bank', '1234567890', 'Granting User', 'granting.user@example.test', 'granting-login', 'public-app-token', 'firma@example.test']) {
       expect(text).not.toContain(leaked);
     }
 
     const contract = await createEconomicGateway({ contractMode: true }).callTool('company_context', {});
+    expectDataInText(contract);
     expect(JSON.stringify(contract)).not.toMatch(/Demo Bank|user@example\.test|demo-public-token/);
   });
 });

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.10.1
+
+Embedded gateway: the data is now in the text block too. Fix for embedders
+whose AI client reads only the text.
+
+- Every successful `callTool` result has its `structuredContent` serialized
+  as compact JSON in the text block, after the summary line and a blank
+  line: `summary\n\n{...}`. Before, the text held only the summary, so a
+  client that reads the text (as Claude does) got no data, for example only
+  `company_context: company, agreement, modules and settings.`. The MCP
+  specification says a tool that returns structured content should also
+  return the serialized JSON in a text block.
+- The JSON is exactly `structuredContent`, so the existing removal of bank
+  details, user data and application tokens applies to the text as well.
+- `structuredContent` and error results are unchanged. The result still has
+  one text block. Code that compared the whole text with the summary should
+  compare the first line (`text.split('\n\n')[0]`).
+- The standalone server already returned the data as JSON text; unchanged.
+
 ## 0.10.0
 
 Embedded gateway: booking, payments and journal entries, a host policy, and a
