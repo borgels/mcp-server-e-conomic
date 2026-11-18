@@ -53,7 +53,12 @@ interface DraftEntry {
   account?: { accountNumber?: number };
 }
 
-const MAX_DRAFT_PAGES = 10;
+/**
+ * Hard cap on draft-entry pages read before booking. Reaching it with a
+ * cursor left refuses the booking: a partial list could book only part of a
+ * voucher, or miss that an entry belongs to another journal.
+ */
+export const MAX_DRAFT_PAGES = 200;
 
 /**
  * Prepares booking of EXPLICIT draft entries (journalsapi
@@ -334,10 +339,16 @@ async function fetchDraftEntries(client: EconomicClient): Promise<DraftEntry[]> 
     if (!response.cursor) {
       return all;
     }
+    if (response.cursor === cursor) {
+      throw new Error('Booking blocked: e-conomic returned the same draft-entry page cursor twice.');
+    }
     cursor = response.cursor;
   }
 
-  return all;
+  // Never book from a partial list of draft entries.
+  throw new Error(
+    `Booking blocked: the draft entries did not fit in ${MAX_DRAFT_PAGES} pages, so the full list could not be read. Book the entries in e-conomic, or empty the journal of old drafts first.`,
+  );
 }
 
 async function assertVoucherHasAttachment(client: EconomicClient, voucherNumber: number): Promise<void> {

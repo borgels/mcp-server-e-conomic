@@ -212,7 +212,7 @@ export interface EconomicChangeSpec {
  *   amount        a finite number with at most two decimals
  *   quantity      a finite number >= 0 (hours)
  *   date          an ISO date (YYYY-MM-DD) that exists
- *   currency      three letters, returned in capitals
+ *   currency      an ISO 4217 code written in capitals (DKK); lower case is refused
  *   accountingYear  e-conomic's year name: 2026 or 2025/2026
  *   enum          one of the input schema's enum values
  */
@@ -554,7 +554,7 @@ const createJournalEntriesInput = {
           contraAccountNumber: { type: 'integer', minimum: 1, description: 'Contra ledger account, e.g. the bank account in the chart of accounts.' },
           vatCode: { type: 'string', maxLength: 5, description: 'VAT code for the account.' },
           contraVatCode: { type: 'string', maxLength: 5, description: 'VAT code for the contra account.' },
-          currency: { type: 'string', pattern: '^[A-Za-z]{3}$', description: 'ISO currency code. Defaults to the base currency.' },
+          currency: { type: 'string', pattern: '^[A-Z]{3}$', description: 'ISO 4217 currency code in capitals, e.g. DKK. Defaults to the base currency.' },
           supplierNumber: { type: 'integer', minimum: 1, description: 'Supplier. Required for supplierInvoice.' },
           supplierInvoiceNumber: { type: 'string', maxLength: 30, description: 'The supplier’s invoice number (supplierInvoice).' },
           dueDate: { type: 'string', pattern: ISO_DATE, description: 'Due date (supplierInvoice).' },
@@ -586,7 +586,7 @@ const registerPaymentInput = {
     supplierNumber: { type: 'integer', minimum: 1, description: 'Supplier who is paid. Required for supplierPayment.' },
     supplierInvoiceNumber: { type: 'string', maxLength: 30, description: 'The supplier’s invoice number the payment settles (supplierPayment).' },
     contraAccountNumber: { type: 'integer', minimum: 1, description: 'Ledger account the money moves through, e.g. the bank account in the chart of accounts.' },
-    currency: { type: 'string', pattern: '^[A-Za-z]{3}$', description: 'ISO currency code. Defaults to the base currency.' },
+    currency: { type: 'string', pattern: '^[A-Z]{3}$', description: 'ISO 4217 currency code in capitals, e.g. DKK. Defaults to the base currency.' },
     text: { type: 'string', maxLength: 250, description: 'Entry text.' },
   },
   additionalProperties: false,
@@ -1334,7 +1334,7 @@ function logValue(spec: ToolSpec, field: EconomicLogField, value: GatewayJsonVal
     case 'date':
       return isoDateValue(value);
     case 'currency':
-      return typeof value === 'string' && /^[A-Za-z]{3}$/.test(value) ? value.toUpperCase() : undefined;
+      return isCurrencyCode(value) ? value : undefined;
     case 'accountingYear':
       return typeof value === 'string' && /^\d{4}(\/\d{4})?$/.test(value) ? value : undefined;
     case 'enum':
@@ -2532,9 +2532,21 @@ function amountValue(value: GatewayJsonValue | undefined): number | undefined {
   return Math.abs(value * 100 - Math.round(value * 100)) < 1e-6 ? value : undefined;
 }
 
+/**
+ * ISO 4217 codes, from the runtime's own list (Intl), written in capitals as
+ * ISO writes them. A three-letter word such as a first name is not a code, and
+ * lower case is refused rather than upper-cased, so a name like "Bob" never
+ * becomes "BOB".
+ */
+const CURRENCY_CODES: ReadonlySet<string> = new Set(Intl.supportedValuesOf('currency'));
+
+function isCurrencyCode(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Z]{3}$/.test(value) && CURRENCY_CODES.has(value);
+}
+
 function currencyValue(value: GatewayJsonValue | undefined): { ok: true; value?: string } | { ok: false } {
   if (value === undefined) return { ok: true };
-  return typeof value === 'string' && /^[A-Za-z]{3}$/.test(value) ? { ok: true, value: value.toUpperCase() } : { ok: false };
+  return isCurrencyCode(value) ? { ok: true, value } : { ok: false };
 }
 
 function shortText(value: GatewayJsonValue | undefined, max: number): { ok: true; value?: string } | { ok: false } {

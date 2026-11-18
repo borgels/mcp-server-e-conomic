@@ -38,6 +38,13 @@ bank-detail guard. Additive for embedders.
   The standalone server's `economic_call_endpoint` and
   `economic_commit_prepared_operation` apply the same guard. The built-in
   write policy denies writes to `/self`.
+- Booking reads the journal's draft entries to the end (at most
+  `MAX_DRAFT_PAGES`, 200 pages) and refuses to book when the list does not
+  end within the cap, in the gateway and the standalone server alike; it used
+  to stop silently after ten pages and could book part of a voucher.
+- Currency is an ISO 4217 code written in capitals (`DKK`), in the tool
+  input and in the log values; lower case and three-letter words that are not
+  codes are refused.
 - `validateBooking` takes the amount limit as an argument when called from
   the gateway, so the gateway never reads `ECONOMIC_POLICY_PATH`.
 - Catalog: `POST /journals/{journalNumber}/vouchers` (REST, draft) and

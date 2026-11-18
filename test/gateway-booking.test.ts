@@ -10,6 +10,7 @@ import { assertNoBankChange, bankFieldPaths, changedBankFields } from '../src/ec
 import { EconomicClient } from '../src/economic/client.js';
 import { basePolicy, checkPolicy } from '../src/economic/policy.js';
 import { canonicalEndpointCall } from '../src/economic/endpoints.js';
+import { MAX_DRAFT_PAGES, validateBooking } from '../src/economic/bookings.js';
 
 const BOOKING_TOOLS = ['book_journal_entries', 'book_invoice', 'match_open_items'];
 const context = { credentials: { agreementGrantToken: 'grant-token-for-tests' } };
@@ -193,7 +194,7 @@ describe('payments and journal entries', () => {
       supplierNumber: 2001,
       supplierInvoiceNumber: 'F-77',
       accountingYear: '2026',
-      currency: 'dkk',
+      currency: 'DKK',
     }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
     expect(writes()[0]?.body).toMatchObject({
@@ -544,7 +545,7 @@ describe('review regressions', () => {
       }
     }
     const ok = resolveEconomicChange('register_payment', {
-      journalNumber: 1, kind: 'supplierPayment', supplierNumber: 2001, supplierInvoiceNumber: 'F-77', amount: 250.5, currency: 'dkk', date: '2026-03-02',
+      journalNumber: 1, kind: 'supplierPayment', supplierNumber: 2001, supplierInvoiceNumber: 'F-77', amount: 250.5, currency: 'DKK', date: '2026-03-02',
     });
     expect(ok).toEqual({
       ok: true,
@@ -597,5 +598,97 @@ describe('review regressions', () => {
     expect((await off.callTool('customer_overview', {})).isError).toBeUndefined();
     const on = createEconomicGateway({ contractMode: true, policy: { enableWrites: true } });
     expect((await on.callTool('register_payment', payment())).isError).toBeUndefined();
+  });
+});
+
+describe('review round 2', () => {
+  it('refuses to book by voucher when the draft list does not end within the page cap, and books nothing', async () => {
+    let pages = 0;
+    const { gateway, writes } = fakeEconomic({ enableWrites: true, allowBooking: true }, (request) => {
+      const url = new URL(request.url);
+      if (request.method !== 'GET' || !url.pathname.endsWith('/draft-entries')) return undefined;
+      pages += 1;
+      // Voucher 501 has a line on the first page; its other line would come after the cap.
+      const items = pages === 1 ? [{ entryNumber: 1, journalNumber: 1, voucherNumber: 501, amount: 100 }] : [{ entryNumber: 100000 + pages, journalNumber: 1, voucherNumber: 900, amount: 1 }];
+      return Response.json({ items, cursor: `page-${pages + 1}` });
+    });
+    const result = await gateway.callTool('book_journal_entries', { journalNumber: 1, voucherNumbers: [501], requireVoucher: false }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('did not fit in');
+    expect(pages).toBe(MAX_DRAFT_PAGES);
+    expect(writes()).toEqual([]);
+
+    const byEntry = await gateway.callTool('book_journal_entries', { journalNumber: 1, entryNumbers: [1], requireVoucher: false }, context);
+    expect(byEntry.isError).toBe(true);
+    expect(writes()).toEqual([]);
+  });
+
+  it('reads every page before booking a voucher', async () => {
+    let pages = 0;
+    const { gateway, writes } = fakeEconomic({ enableWrites: true, allowBooking: true }, (request) => {
+      const url = new URL(request.url);
+      if (request.method !== 'GET' || !url.pathname.endsWith('/draft-entries')) return undefined;
+      pages += 1;
+      // The page number comes from the cursor, so every read of the list sees all 15 pages.
+      const page = Number(url.searchParams.get('cursor')?.replace('page-', '') ?? '1');
+      const last = page === 15;
+      const items = page === 1 || last
+        ? [{ entryNumber: last ? 10001 : 1, journalNumber: 1, voucherNumber: 501, amount: last ? -100 : 100 }]
+        : [{ entryNumber: 1000 + page, journalNumber: 1, voucherNumber: 900, amount: 1 }];
+      return Response.json({ items, cursor: last ? null : `page-${page + 1}` });
+    });
+    const result = await gateway.callTool('book_journal_entries', { journalNumber: 1, voucherNumbers: [501], requireVoucher: false }, context);
+    expect(result.isError, result.content[0]?.text).toBeUndefined();
+    expect(result.content[0]?.text).toBe('Booked 2 entries in journal 1.');
+    expect(writes()[0]?.body).toEqual({ entryNumbers: [1, 10001] });
+    expect(pages).toBe(30); // read in full when resolving the voucher, and again when validating
+  });
+
+  it('refuses the standalone server’s booking from a partial draft list too', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      return Response.json({ items: [{ entryNumber: 1, journalNumber: 1, voucherNumber: 501, amount: 1 }], cursor: `c${url.searchParams.get('cursor') ?? ''}x` });
+    });
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret-for-tests',
+      agreementGrantToken: 'grant-token-for-tests',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      credentialEnv: {},
+    });
+    await expect(validateBooking(client, { journalNumber: 1, entryNumbers: [1], requireVoucher: false }, {})).rejects.toThrow('did not fit in');
+  });
+
+  it('logs only real ISO 4217 codes written in capitals, never a three-letter name', () => {
+    for (const currency of ['Bob', 'bob', 'Ann', 'ANN', 'Eva', 'XYZ', 'dkk', 'DK', 'DKKK']) {
+      const resolved = resolveEconomicChange('register_payment', { journalNumber: 1, amount: 10, currency });
+      expect(resolved.ok).toBe(true);
+      if (resolved.ok) expect(resolved.change.values, currency).not.toHaveProperty('currency');
+    }
+    for (const currency of ['DKK', 'EUR', 'SEK', 'NOK', 'USD']) {
+      expect(resolveEconomicChange('create_draft_invoice', { customerNumber: 1, currency })).toMatchObject({ change: { values: { currency } } });
+    }
+  });
+
+  it('refuses a lower-case or unknown currency in the tools themselves', async () => {
+    const { gateway, requests } = fakeEconomic({ enableWrites: true });
+    for (const currency of ['dkk', 'Bob', 'ANN']) {
+      const result = await gateway.callTool('register_payment', payment({ currency }), context);
+      expect(result.isError, currency).toBe(true);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  it('logs enum and accounting-year fields only in their exact form', () => {
+    for (const kind of ['Anna Hansen', 'customerpayment', 'customerPayment ']) {
+      const resolved = resolveEconomicChange('register_payment', { kind });
+      if (resolved.ok) expect(resolved.change.values, kind).not.toHaveProperty('kind');
+    }
+    for (const accountingYear of ['Anna', '2026a', '2025/26', '20261', ' 2026']) {
+      const resolved = resolveEconomicChange('create_journal_entries', { journalNumber: 1, accountingYear });
+      if (resolved.ok) expect(resolved.change.values, accountingYear).not.toHaveProperty('accountingYear');
+    }
+    expect(resolveEconomicChange('create_journal_entries', { journalNumber: 1, accountingYear: '2025/2026' })).toMatchObject({
+      change: { values: { accountingYear: '2025/2026' } },
+    });
   });
 });
