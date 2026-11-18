@@ -2937,10 +2937,16 @@ function objectValue(value: GatewayJsonValue | undefined): GatewayJsonObject | u
   return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
 }
 
+/**
+ * A successful result: the summary line, then the same data as compact JSON in the
+ * text block, as the MCP spec asks of a tool that returns structured content. Many
+ * clients read only the text block. The text carries exactly `structuredContent`.
+ */
 function jsonResult(text: string, structuredContent: unknown): GatewayToolResult {
+  const data = toGatewayJson(structuredContent);
   return {
-    content: [{ type: 'text', text }],
-    structuredContent: toGatewayJson(structuredContent),
+    content: [{ type: 'text', text: `${text}\n\n${JSON.stringify(data)}` }],
+    structuredContent: data,
   };
 }
 

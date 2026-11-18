@@ -161,7 +161,8 @@ describe('payments and journal entries', () => {
     const { gateway, requests, writes } = fakeEconomic({ enableWrites: true });
     const result = await gateway.callTool('register_payment', payment(), context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
-    expect(result.content[0]?.text).toBe('Added 1 draft line to journal 1, voucher 777. Not booked.');
+    expect(result.content[0]?.text.split('\n\n')[0]).toBe('Added 1 draft line to journal 1, voucher 777. Not booked.');
+    expect(result.content[0]?.text).toBe(`Added 1 draft line to journal 1, voucher 777. Not booked.\n\n${JSON.stringify(result.structuredContent)}`);
     expect(requests.map(request => `${request.method} ${request.path}`)).toEqual([
       'GET /accounting-years',
       'POST /journals/1/vouchers',
@@ -281,7 +282,8 @@ describe('booking', () => {
     const { gateway, writes } = fakeEconomic(booking);
     const result = await gateway.callTool('book_journal_entries', { journalNumber: 1, voucherNumbers: [501], requireVoucher: false }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
-    expect(result.content[0]?.text).toBe('Booked 2 entries in journal 1.');
+    expect(result.content[0]?.text.split('\n\n')[0]).toBe('Booked 2 entries in journal 1.');
+    expect(result.content[0]?.text).toBe(`Booked 2 entries in journal 1.\n\n${JSON.stringify(result.structuredContent)}`);
     expect(writes()).toEqual([
       { method: 'POST', path: '/journalsapi/v15.0.0/journals/1/bookdraftentries', body: { entryNumbers: [11, 12] } },
     ]);
@@ -309,7 +311,8 @@ describe('booking', () => {
     const { gateway, requests, writes } = fakeEconomic(booking);
     const result = await gateway.callTool('book_invoice', { draftInvoiceNumber: 7 }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
-    expect(result.content[0]?.text).toBe('Booked draft invoice 7 as invoice 70002. Not sent electronically.');
+    expect(result.content[0]?.text.split('\n\n')[0]).toBe('Booked draft invoice 7 as invoice 70002. Not sent electronically.');
+    expect(result.content[0]?.text).toBe(`Booked draft invoice 7 as invoice 70002. Not sent electronically.\n\n${JSON.stringify(result.structuredContent)}`);
     expect(requests[0]).toMatchObject({ method: 'GET', path: '/invoices/drafts/7' });
     expect(writes()).toEqual([
       { method: 'POST', path: '/invoices/booked', body: { draftInvoice: { draftInvoiceNumber: 7 }, sendBy: 'none' } },
@@ -639,7 +642,8 @@ describe('review round 2', () => {
     });
     const result = await gateway.callTool('book_journal_entries', { journalNumber: 1, voucherNumbers: [501], requireVoucher: false }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
-    expect(result.content[0]?.text).toBe('Booked 2 entries in journal 1.');
+    expect(result.content[0]?.text.split('\n\n')[0]).toBe('Booked 2 entries in journal 1.');
+    expect(result.content[0]?.text).toBe(`Booked 2 entries in journal 1.\n\n${JSON.stringify(result.structuredContent)}`);
     expect(writes()[0]?.body).toEqual({ entryNumbers: [1, 10001] });
     expect(pages).toBe(30); // read in full when resolving the voucher, and again when validating
   });
