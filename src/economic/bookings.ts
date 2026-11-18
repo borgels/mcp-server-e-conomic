@@ -53,7 +53,12 @@ interface DraftEntry {
   account?: { accountNumber?: number };
 }
 
-const MAX_DRAFT_PAGES = 10;
+/**
+ * Hard cap on draft-entry pages read before booking. Reaching it with a
+ * cursor left refuses the booking: a partial list could book only part of a
+ * voucher, or miss that an entry belongs to another journal.
+ */
+export const MAX_DRAFT_PAGES = 200;
 
 /**
  * Prepares booking of EXPLICIT draft entries (journalsapi
@@ -103,6 +108,12 @@ export async function prepareBooking(
 export async function validateBooking(
   client: EconomicClient,
   input: { journalNumber: number; entryNumbers: number[]; requireVoucher: boolean },
+  /**
+   * Where the per-entry amount limit comes from. Omitted: the standalone
+   * server's policy (loadPolicy, which reads ECONOMIC_* settings). The embedded
+   * gateway passes its own value and never reads the environment.
+   */
+  limits?: { maxAmount?: number },
 ): Promise<BookingValidation> {
   if (!Number.isInteger(input.journalNumber) || input.journalNumber < 1) {
     throw new Error('journalNumber must be a positive integer.');
@@ -137,7 +148,7 @@ export async function validateBooking(
     );
   }
 
-  const policy = loadPolicy();
+  const maxAmount = limits ? limits.maxAmount : loadPolicy().maxAmount;
   const entries = entryNumbers.map(number => {
     const draft = wanted.get(number) as DraftEntry;
     return {
@@ -149,13 +160,13 @@ export async function validateBooking(
     };
   });
 
-  if (policy.maxAmount !== undefined) {
+  if (maxAmount !== undefined) {
     const over = entries.filter(
-      entry => typeof entry.amount === 'number' && Math.abs(entry.amount) > (policy.maxAmount as number),
+      entry => typeof entry.amount === 'number' && Math.abs(entry.amount) > maxAmount,
     );
     if (over.length > 0) {
       throw new Error(
-        `Booking blocked: entries exceed policy maxAmount ${policy.maxAmount}: ${over
+        `Booking blocked: entries exceed policy maxAmount ${maxAmount}: ${over
           .map(entry => `${entry.entryNumber} (${entry.amount})`)
           .join(', ')}`,
       );
@@ -277,6 +288,41 @@ export function prepareOpenItemMatch(input: PrepareOpenItemMatchInput): Prepared
   });
 }
 
+/**
+ * The draft entry numbers of the given vouchers in one journal, for booking a
+ * whole voucher (all its lines) at once. Throws when a voucher has no draft
+ * entries in that journal (already booked, deleted, or another journal).
+ */
+export async function draftEntryNumbersForVouchers(
+  client: EconomicClient,
+  journalNumber: number,
+  voucherNumbers: number[],
+): Promise<number[]> {
+  if (!Number.isInteger(journalNumber) || journalNumber < 1) {
+    throw new Error('journalNumber must be a positive integer.');
+  }
+  const wanted = [...new Set(voucherNumbers)];
+  if (wanted.length === 0 || !wanted.every(isPositiveInteger)) {
+    throw new Error('voucherNumbers must be positive integers.');
+  }
+  const drafts = await fetchDraftEntries(client);
+  const found = new Map<number, number[]>();
+  for (const draft of drafts) {
+    const voucher = draft.voucherNumber ?? draft.voucher?.voucherNumber;
+    const journal = draft.journalNumber ?? draft.journal?.journalNumber;
+    if (voucher === undefined || draft.entryNumber === undefined || journal !== journalNumber) continue;
+    if (!wanted.includes(voucher)) continue;
+    found.set(voucher, [...(found.get(voucher) ?? []), draft.entryNumber]);
+  }
+  const missing = wanted.filter(voucher => !found.has(voucher));
+  if (missing.length > 0) {
+    throw new Error(
+      `No draft entries in journal ${journalNumber} for voucher(s) ${missing.join(', ')} (already booked, deleted, or another journal?).`,
+    );
+  }
+  return wanted.flatMap(voucher => found.get(voucher) ?? []);
+}
+
 async function fetchDraftEntries(client: EconomicClient): Promise<DraftEntry[]> {
   const all: DraftEntry[] = [];
   let cursor: string | undefined;
@@ -293,10 +339,16 @@ async function fetchDraftEntries(client: EconomicClient): Promise<DraftEntry[]> 
     if (!response.cursor) {
       return all;
     }
+    if (response.cursor === cursor) {
+      throw new Error('Booking blocked: e-conomic returned the same draft-entry page cursor twice.');
+    }
     cursor = response.cursor;
   }
 
-  return all;
+  // Never book from a partial list of draft entries.
+  throw new Error(
+    `Booking blocked: the draft entries did not fit in ${MAX_DRAFT_PAGES} pages, so the full list could not be read. Book the entries in e-conomic, or empty the journal of old drafts first.`,
+  );
 }
 
 async function assertVoucherHasAttachment(client: EconomicClient, voucherNumber: number): Promise<void> {
@@ -316,7 +368,7 @@ async function assertVoucherHasAttachment(client: EconomicClient, voucherNumber:
   }
 }
 
-function assertMatchEntryIds(entryIds: unknown[]): void {
+export function assertMatchEntryIds(entryIds: unknown[]): void {
   if (
     entryIds.length < 2 ||
     entryIds.length > 100 ||

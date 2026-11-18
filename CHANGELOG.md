@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.10.0
+
+Embedded gateway: booking, payments and journal entries, a host policy, and a
+bank-detail guard. Additive for embedders.
+
+- New write tools in `economicToolCatalog`: `create_journal_entries`
+  (ledger lines and supplier invoices as one draft voucher in a journal),
+  `register_payment` (a customer or supplier payment as a draft journal
+  line), and the booking tools `book_journal_entries` (explicit draft
+  entries, by entry or voucher numbers, with the standalone server's booking
+  guardrails), `book_invoice` (`POST /invoices/booked` with
+  `sendBy: none`) and `match_open_items`. One call is one change; the host
+  logs before it calls, so there is no prepare/commit step in the embedding.
+- Host policy: `createEconomicGateway({ policy: { enableWrites, allowBooking,
+  disabledTools, allowedTools } })`. Booking is off unless `allowBooking`
+  is set (and needs writes). Disabled or not-allowed tools are left out of
+  `gateway.tools` and refused by `callTool`, also in contract mode.
+  Unknown tool names and contradictions throw at creation.
+  `gateway.policy` is the resolved policy.
+- Catalog entries gain `booking` and, for write tools,
+  `change: { action, record, logFields }`, where each log field has one
+  type (record number, number list, amount, quantity, date, currency,
+  accounting year, enum). New `resolveEconomicChange(tool, input)` returns
+  only values of the right type, so names and free text never reach a log.
+- Contract mode refuses write tools while writes are off, as live mode does
+  (it used to answer with a fixture). Contract-mode hosts that write pass
+  `enableWrites`.
+- Raw endpoint calls in the standalone server are canonicalised against the
+  catalog before any policy or bank check (a template without the leading
+  `/` named the same endpoint but slipped past slash-led patterns), and
+  `checkPolicy` adds a missing leading `/` itself.
+- Bank details are never changed: bank fields (`bankAccount`,
+  `remittanceAdvice`, `paymentDetails`, `bankInformation`, IBAN,
+  SWIFT/BIC, giro, registration number) are refused in gateway write input and
+  bodies, and a supplier update is refused if its bank details would change.
+  The standalone server's `economic_call_endpoint` and
+  `economic_commit_prepared_operation` apply the same guard. The built-in
+  write policy denies writes to `/self`.
+- Booking reads the journal's draft entries to the end (at most
+  `MAX_DRAFT_PAGES`, 200 pages) and refuses to book when the list does not
+  end within the cap, in the gateway and the standalone server alike; it used
+  to stop silently after ten pages and could book part of a voucher.
+- Currency is an ISO 4217 code written in capitals (`DKK`), in the tool
+  input and in the log values; lower case and three-letter words that are not
+  codes are refused.
+- `validateBooking` takes the amount limit as an argument when called from
+  the gateway, so the gateway never reads `ECONOMIC_POLICY_PATH`.
+- Catalog: `POST /journals/{journalNumber}/vouchers` (REST, draft) and
+  `POST /invoices/booked` (REST, dangerous).
+
 ## 0.9.0
 
 Embedded gateway (`mcp-server-e-conomic/gateway`): fixed read targets per tool,

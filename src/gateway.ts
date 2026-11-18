@@ -11,6 +11,8 @@ import {
 import { callEndpoint, resolveSelfUrl } from './economic/endpoints.js';
 import { encodePathParam } from './economic/path-params.js';
 import { basePolicy, checkPolicy, type EconomicPolicy } from './economic/policy.js';
+import { assertMatchEntryIds, draftEntryNumbersForVouchers, validateBooking } from './economic/bookings.js';
+import { BANK_FIELDS_REFUSED, bankFieldPaths, changedBankFields } from './economic/bank-fields.js';
 import { EconomicHttpError, SecretRedactor, formatUnknownError } from './errors.js';
 import {
   economicGatewayContractEntity,
@@ -25,9 +27,10 @@ import {
  *
  * The embedded surface never reads ECONOMIC_* environment variables: the app
  * secret token and addresses come from the factory options, the agreement
- * grant token from the call context (or the options), and writes are enabled
- * only by `enableWrites`. Token values are redacted by a redactor owned by the
- * gateway instance, not by process-wide state.
+ * grant token from the call context (or the options), and writes and booking
+ * are enabled only by the host policy (`policy`, or `enableWrites`). Token
+ * values are redacted by a redactor owned by the gateway instance, not by
+ * process-wide state.
  */
 
 export type GatewayRiskLevel = 'read' | 'write' | 'destructive';
@@ -89,8 +92,43 @@ export interface EconomicGatewayOptions {
    * its own write governance (roles, approvals, audit) passes `true`. The
    * built-in write policy (denied paths such as booking) still applies on top.
    * The ECONOMIC_ENABLE_WRITES environment flag does not apply here.
+   * Same as `policy.enableWrites`; give one or the other (both must agree).
    */
   enableWrites?: boolean;
+  /**
+   * The host's policy for this instance: writes, booking, and which tools are
+   * offered at all. Checked at creation (unknown tool names and contradictions
+   * throw). Applies in contract mode too.
+   */
+  policy?: EconomicHostPolicy;
+}
+
+/**
+ * Policy given by an embedding host for one gateway instance. Every field is
+ * optional; the defaults are the safe ones (no writes, no booking, every tool
+ * offered).
+ *
+ * What no policy can turn on: changes to bank details (supplier bank account,
+ * payment details, the company's own record), deletion (no gateway tool sends
+ * DELETE), and the paths the built-in write policy denies outside the booking
+ * tools (journal booking without explicit entries, VAT, webhooks).
+ */
+export interface EconomicHostPolicy {
+  /** Allow the write-risk tools. Default false. */
+  enableWrites?: boolean;
+  /**
+   * Allow the booking tools (book_journal_entries, book_invoice,
+   * match_open_items). They are irreversible in e-conomic. Default false.
+   * Requires enableWrites.
+   */
+  allowBooking?: boolean;
+  /** Tools turned off on this instance: not listed in `tools`, refused by callTool. Must name known tools. */
+  disabledTools?: readonly string[];
+  /**
+   * Allow-list: when set, only these tools are offered (reads included).
+   * Must name known tools and must not be empty.
+   */
+  allowedTools?: readonly string[];
 }
 
 /** One e-conomic service and resource, as named in the service catalog. */
@@ -143,7 +181,76 @@ export interface GatewayToolCatalogEntry {
   readonly broad: boolean;
   /** e-conomic addition: what a narrow read tool reads when the input names no service or resource. */
   readonly defaultRead?: EconomicResourceRef;
+  /**
+   * e-conomic addition: true for the booking tools (irreversible in
+   * e-conomic). They run only when the host policy sets allowBooking.
+   */
+  readonly booking: boolean;
+  /**
+   * e-conomic addition, write tools only: what the change does, for a host
+   * that logs a change before it is sent. `logFields` are the input fields
+   * that identify the change, each with the one type its value must have
+   * (record numbers, dates, amounts, currency codes; never names or free
+   * text); `resolveEconomicChange` returns their values for a call.
+   */
+  readonly change?: EconomicChangeSpec;
 }
+
+export type EconomicChangeAction = 'create' | 'upsert' | 'register' | 'book' | 'match';
+
+export interface EconomicChangeSpec {
+  readonly action: EconomicChangeAction;
+  /** The kind of record the change creates or touches, e.g. 'payment', 'journal-entry', 'invoice'. */
+  readonly record: string;
+  readonly logFields: readonly EconomicLogField[];
+}
+
+/**
+ * The type a logged value must have; anything else is left out of the values.
+ *   recordNumber  a whole number >= 0, or a string of 1-15 digits
+ *   numberList    1-100 whole numbers >= 1
+ *   amount        a finite number with at most two decimals
+ *   quantity      a finite number >= 0 (hours)
+ *   date          an ISO date (YYYY-MM-DD) that exists
+ *   currency      an ISO 4217 code written in capitals (DKK); lower case is refused
+ *   accountingYear  e-conomic's year name: 2026 or 2025/2026
+ *   enum          one of the input schema's enum values
+ */
+export type EconomicLogFieldType =
+  | 'recordNumber'
+  | 'numberList'
+  | 'amount'
+  | 'quantity'
+  | 'date'
+  | 'currency'
+  | 'accountingYear'
+  | 'enum';
+
+export interface EconomicLogField {
+  readonly name: string;
+  readonly type: EconomicLogFieldType;
+}
+
+export type EconomicLogValue = string | number | readonly number[];
+
+/** What a write tool call will change, resolved from its input before anything is sent. */
+export interface EconomicChange {
+  readonly tool: string;
+  readonly action: EconomicChangeAction;
+  readonly record: string;
+  readonly booking: boolean;
+  /**
+   * The values of the tool's `logFields` that are present and have their
+   * field's type (see EconomicLogFieldType), plus `lineCount` for tools that
+   * take lines. A value of the wrong type is left out, so a name or a free
+   * text can never reach the values.
+   */
+  readonly values: Readonly<Record<string, EconomicLogValue>>;
+}
+
+export type EconomicChangeResolution =
+  | { readonly ok: true; readonly change: EconomicChange }
+  | { readonly ok: false; readonly reason: string };
 
 export interface EconomicServiceCatalogEntry {
   readonly id: string;
@@ -342,7 +449,7 @@ const upsertSupplierInput = {
     corporateIdentificationNumber: { type: 'string', description: 'Company registration number (e.g. CVR).' },
     additionalFields: {
       type: 'object',
-      description: 'Optional additional supplier fields to set (passthrough).',
+      description: 'Optional additional supplier fields to set (passthrough). Bank fields (bankAccount, remittanceAdvice, IBAN, SWIFT/BIC, registration number, payment details) are refused.',
       additionalProperties: true,
     },
   },
@@ -395,6 +502,144 @@ const upsertAccountInput = {
     },
   },
   required: ['accountNumber'],
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+// Journal (kassekladde) lines on classic REST: POST /journals/{n}/vouchers
+// creates one voucher with draft lines. Nothing is booked. Payment details
+// (FI/giro numbers) on supplier invoices are not accepted: they come from the
+// supplier record, and bank details are not changed through this server.
+const MAX_JOURNAL_LINES = 50;
+const ISO_DATE = String.raw`^\d{4}-\d{2}-\d{2}$`;
+
+const journalVoucherFields = {
+  journalNumber: { type: 'integer', minimum: 1, description: 'Journal (kassekladde) number.' },
+  accountingYear: {
+    type: 'string',
+    description: 'Accounting year as e-conomic names it, e.g. 2026 or 2025/2026. Defaults to the year that contains the date.',
+  },
+  voucherNumber: {
+    type: 'integer',
+    minimum: 1,
+    description: 'Voucher (bilag) number. Defaults to the next number in the journal.',
+  },
+} satisfies GatewayJsonObject;
+
+const createJournalEntriesInput = {
+  type: 'object',
+  required: ['journalNumber', 'entries'],
+  properties: {
+    ...journalVoucherFields,
+    entries: {
+      type: 'array',
+      minItems: 1,
+      maxItems: MAX_JOURNAL_LINES,
+      description: 'The voucher’s lines. Payments are registered with register_payment.',
+      items: {
+        type: 'object',
+        required: ['type', 'date', 'amount'],
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['financeVoucher', 'supplierInvoice'],
+            description: 'financeVoucher: a ledger line (account against contra account). supplierInvoice: a purchase invoice from a supplier.',
+          },
+          date: { type: 'string', pattern: ISO_DATE, description: 'Entry date (YYYY-MM-DD).' },
+          amount: {
+            type: 'number',
+            description: 'Amount with at most two decimals. The sign decides debit or credit, as in the e-conomic journal.',
+          },
+          text: { type: 'string', maxLength: 250, description: 'Entry text.' },
+          accountNumber: { type: 'integer', minimum: 1, description: 'Ledger account. Required for financeVoucher.' },
+          contraAccountNumber: { type: 'integer', minimum: 1, description: 'Contra ledger account, e.g. the bank account in the chart of accounts.' },
+          vatCode: { type: 'string', maxLength: 5, description: 'VAT code for the account.' },
+          contraVatCode: { type: 'string', maxLength: 5, description: 'VAT code for the contra account.' },
+          currency: { type: 'string', pattern: '^[A-Z]{3}$', description: 'ISO 4217 currency code in capitals, e.g. DKK. Defaults to the base currency.' },
+          supplierNumber: { type: 'integer', minimum: 1, description: 'Supplier. Required for supplierInvoice.' },
+          supplierInvoiceNumber: { type: 'string', maxLength: 30, description: 'The supplier’s invoice number (supplierInvoice).' },
+          dueDate: { type: 'string', pattern: ISO_DATE, description: 'Due date (supplierInvoice).' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const registerPaymentInput = {
+  type: 'object',
+  required: ['journalNumber', 'kind', 'date', 'amount'],
+  properties: {
+    ...journalVoucherFields,
+    kind: {
+      type: 'string',
+      enum: ['customerPayment', 'supplierPayment'],
+      description: 'customerPayment: money received from a customer. supplierPayment: money paid to a supplier.',
+    },
+    date: { type: 'string', pattern: ISO_DATE, description: 'Payment date (YYYY-MM-DD).' },
+    amount: {
+      type: 'number',
+      description: 'Amount with at most two decimals. The sign decides debit or credit, as in the e-conomic journal.',
+    },
+    customerNumber: { type: 'integer', minimum: 1, description: 'Customer who paid. Required for customerPayment.' },
+    customerInvoiceNumber: { type: 'integer', minimum: 1, description: 'The booked invoice the payment settles (customerPayment).' },
+    supplierNumber: { type: 'integer', minimum: 1, description: 'Supplier who is paid. Required for supplierPayment.' },
+    supplierInvoiceNumber: { type: 'string', maxLength: 30, description: 'The supplier’s invoice number the payment settles (supplierPayment).' },
+    contraAccountNumber: { type: 'integer', minimum: 1, description: 'Ledger account the money moves through, e.g. the bank account in the chart of accounts.' },
+    currency: { type: 'string', pattern: '^[A-Z]{3}$', description: 'ISO 4217 currency code in capitals, e.g. DKK. Defaults to the base currency.' },
+    text: { type: 'string', maxLength: 250, description: 'Entry text.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const bookJournalEntriesInput = {
+  type: 'object',
+  required: ['journalNumber'],
+  properties: {
+    journalNumber: { type: 'integer', minimum: 1, description: 'Journal (kassekladde) holding the draft entries.' },
+    entryNumbers: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 25,
+      items: { type: 'integer', minimum: 1 },
+      description: 'Draft entry numbers to book (read them with accounting_entries, journals:draft-entries). Give entryNumbers or voucherNumbers.',
+    },
+    voucherNumbers: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 25,
+      items: { type: 'integer', minimum: 1 },
+      description: 'Book every draft line of these vouchers in the journal. Give entryNumbers or voucherNumbers.',
+    },
+    requireVoucher: {
+      type: 'boolean',
+      description: 'Require an attached document on every voucher (default true). Set false for lines without a document, e.g. bank payments.',
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const bookInvoiceInput = {
+  type: 'object',
+  required: ['draftInvoiceNumber'],
+  properties: {
+    draftInvoiceNumber: { type: 'integer', minimum: 1, description: 'The draft invoice to book.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const matchOpenItemsInput = {
+  type: 'object',
+  required: ['entryIds'],
+  properties: {
+    entryIds: {
+      type: 'array',
+      minItems: 2,
+      maxItems: 100,
+      items: { type: 'integer', minimum: 1 },
+      description: 'Booked entry numbers to match against each other (same customer or supplier), e.g. a payment and the invoice it settles.',
+    },
+  },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
@@ -537,6 +782,10 @@ interface ToolSpec extends GatewayToolDefinition {
   reads: readonly EconomicResourceRef[];
   /** Write tools: the requests the tool makes. Read tools derive theirs from `reads`. */
   upstream?: readonly GatewayUpstreamOperation[];
+  /** Booking tools: irreversible, run only when the host policy allows booking. */
+  booking: boolean;
+  /** Write tools: what the change does, for the host's log. */
+  change?: EconomicChangeSpec;
 }
 
 function operation(
@@ -593,17 +842,42 @@ function narrowReadTool(name: string, title: string, description: string): ToolS
     inputSchema: narrowReadInput(reads),
     broad: false,
     reads,
+    booking: false,
   };
 }
 
 function writeTool(
-  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads'> & { riskLevel?: GatewayRiskLevel },
+  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads' | 'booking' | 'change'> & {
+    riskLevel?: GatewayRiskLevel;
+    booking?: boolean;
+    change: EconomicChangeSpec;
+  },
 ): ToolSpec {
-  return { ...spec, riskLevel: spec.riskLevel ?? 'write', enabledByDefault: false, broad: false, reads: [] };
+  return {
+    ...spec,
+    riskLevel: spec.riskLevel ?? 'write',
+    enabledByDefault: false,
+    broad: false,
+    reads: [],
+    booking: spec.booking === true,
+  };
 }
+
+const change = (
+  action: EconomicChangeAction,
+  record: string,
+  logFields: Record<string, EconomicLogFieldType>,
+): EconomicChangeSpec => ({
+  action,
+  record,
+  logFields: Object.entries(logFields).map(([name, type]) => ({ name, type })),
+});
 
 const WRITE_NOTE =
   'Write — disabled by default; enable via the gateway’s enableWrites option (standalone server: ECONOMIC_ENABLE_WRITES).';
+
+const BOOKING_NOTE =
+  'Booking — disabled by default; runs only when the host policy sets enableWrites and allowBooking.';
 
 const TOOL_SPECS: ToolSpec[] = [
   {
@@ -615,6 +889,7 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: emptyInput,
     broad: false,
     reads: [SELF],
+    booking: false,
   },
   {
     name: 'company_context',
@@ -626,6 +901,7 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: emptyInput,
     broad: false,
     reads: [SELF],
+    booking: false,
   },
   narrowReadTool(
     'search_entities',
@@ -642,6 +918,7 @@ const TOOL_SPECS: ToolSpec[] = [
     inputSchema: getEntityInput,
     broad: true,
     reads: ALL_READ_TARGETS,
+    booking: false,
   },
   narrowReadTool(
     'customer_overview',
@@ -683,6 +960,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create e-conomic draft invoice',
     description: `Create a draft (unbooked, unsent) sales invoice for a customer. Drafts can be reviewed or deleted and are not booked or sent; this does not post anything to the customer. ${WRITE_NOTE}`,
     inputSchema: createDraftInvoiceInput,
+    change: change('create', 'draft-invoice', { customerNumber: 'recordNumber', currency: 'currency', date: 'date' }),
     upstream: [
       operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
       operation('read', 'GET', 'rest', 'layouts', '/layouts'),
@@ -694,6 +972,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic customer',
     description: `Create a customer, or update an existing one by customerNumber (reads the current customer and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertCustomerInput,
+    change: change('upsert', 'customer', { customerNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
       operation('write', 'POST', 'rest', 'customers', '/customers'),
@@ -705,6 +984,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic product',
     description: `Create a product, or update it when the productNumber already exists (reads the current product and merges the provided fields). ${WRITE_NOTE}`,
     inputSchema: upsertProductInput,
+    change: change('upsert', 'product', { productNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'products', '/products/{number}'),
       operation('write', 'POST', 'rest', 'products', '/products'),
@@ -716,6 +996,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic project',
     description: `Create a project in the Projects add-on, or update an existing one by projectNumber (reads the current project and merges the provided fields; upserts via the collection PUT). ${WRITE_NOTE}`,
     inputSchema: upsertProjectInput,
+    change: change('upsert', 'project', { projectNumber: 'recordNumber', customerNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'projects', 'Projects', '/Projects/{number}'),
       operation('write', 'POST', 'projects', 'Projects', '/Projects'),
@@ -727,13 +1008,21 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Register e-conomic project time',
     description: `Register a project time entry (hours on a project + activity for an employee, on a date). Create only; deletion is a separate operation. ${WRITE_NOTE}`,
     inputSchema: createTimeEntryInput,
+    change: change('create', 'time-entry', {
+      projectNumber: 'recordNumber',
+      activityNumber: 'recordNumber',
+      employeeNumber: 'recordNumber',
+      date: 'date',
+      hours: 'quantity',
+    }),
     upstream: [operation('write', 'POST', 'projects', 'TimeEntries', '/TimeEntries')],
   }),
   writeTool({
     name: 'upsert_supplier',
     title: 'Create or update e-conomic supplier',
-    description: `Create a supplier, or update an existing one by supplierNumber (reads the current supplier and merges the provided fields). ${WRITE_NOTE}`,
+    description: `Create a supplier, or update an existing one by supplierNumber (reads the current supplier and merges the provided fields). Bank details (bank account, remittance advice, payment details) are never changed: such fields are refused. ${WRITE_NOTE}`,
     inputSchema: upsertSupplierInput,
+    change: change('upsert', 'supplier', { supplierNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'suppliers', '/suppliers/{number}'),
       operation('write', 'POST', 'rest', 'suppliers', '/suppliers'),
@@ -745,6 +1034,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create or update e-conomic project employee',
     description: `Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). ${WRITE_NOTE}`,
     inputSchema: upsertEmployeeInput,
+    change: change('upsert', 'project-employee', { employeeNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'projects', 'Employees', '/Employees/{number}'),
       operation('write', 'POST', 'projects', 'Employees', '/Employees'),
@@ -757,11 +1047,78 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Create a general-ledger account, or update an existing one by accountNumber (read-merge-write). Editing the chart of accounts is a structural change (risk destructive); a hosting control plane should gate it behind approval. ${WRITE_NOTE}`,
     riskLevel: 'destructive',
     inputSchema: upsertAccountInput,
+    change: change('upsert', 'account', { accountNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'rest', 'accounts', '/accounts/{number}'),
       operation('write', 'POST', 'rest', 'accounts', '/accounts'),
       operation('write', 'PUT', 'rest', 'accounts', '/accounts/{number}'),
     ],
+  }),
+  writeTool({
+    name: 'create_journal_entries',
+    title: 'Create e-conomic journal entries',
+    description: `Add one voucher with draft lines to a journal (kassekladde): ledger lines (account against contra account) or supplier invoices. The lines are not booked; book them with book_journal_entries. Payments are registered with register_payment. ${WRITE_NOTE}`,
+    inputSchema: createJournalEntriesInput,
+    change: change('create', 'journal-entry', { journalNumber: 'recordNumber', voucherNumber: 'recordNumber', accountingYear: 'accountingYear' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years'),
+      operation('write', 'POST', 'rest', 'journals', '/journals/{journalNumber}/vouchers'),
+    ],
+  }),
+  writeTool({
+    name: 'register_payment',
+    title: 'Register e-conomic payment',
+    description: `Register a payment as a draft line in a journal (kassekladde): money received from a customer, or money paid to a supplier, against an invoice. The line is not booked; book it with book_journal_entries. This records the payment in the accounts; it does not move money in the bank. ${WRITE_NOTE}`,
+    inputSchema: registerPaymentInput,
+    // supplierInvoiceNumber is the supplier's own free text: never logged.
+    change: change('register', 'payment', {
+      journalNumber: 'recordNumber',
+      kind: 'enum',
+      customerNumber: 'recordNumber',
+      customerInvoiceNumber: 'recordNumber',
+      supplierNumber: 'recordNumber',
+      amount: 'amount',
+      currency: 'currency',
+      date: 'date',
+    }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years'),
+      operation('write', 'POST', 'rest', 'journals', '/journals/{journalNumber}/vouchers'),
+    ],
+  }),
+  writeTool({
+    name: 'book_journal_entries',
+    title: 'Book e-conomic journal entries',
+    description: `Book explicit draft entries of a journal (kassekladde), by entry numbers or by voucher numbers; never a whole journal. Every entry must exist in the journal, and every voucher must have an attached document unless requireVoucher is false. Booking is irreversible: corrections are made with counter-entries. ${BOOKING_NOTE}`,
+    inputSchema: bookJournalEntriesInput,
+    booking: true,
+    change: change('book', 'journal-entry', { journalNumber: 'recordNumber', entryNumbers: 'numberList', voucherNumbers: 'numberList' }),
+    upstream: [
+      operation('read', 'GET', 'journals', 'draft-entries', '/draft-entries'),
+      operation('read', 'GET', 'documents', 'AttachedDocuments', '/AttachedDocuments/{number}'),
+      operation('write', 'POST', 'journals', 'journals', '/journals/{journalNumber}/bookdraftentries'),
+    ],
+  }),
+  writeTool({
+    name: 'book_invoice',
+    title: 'Book e-conomic draft invoice',
+    description: `Book a draft sales invoice, so it becomes a booked invoice with its own number and is posted to the ledger. It is not sent electronically (sendBy none). Booking is irreversible: corrections are made with a credit note. ${BOOKING_NOTE}`,
+    inputSchema: bookInvoiceInput,
+    booking: true,
+    change: change('book', 'invoice', { draftInvoiceNumber: 'recordNumber' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'invoices/drafts', '/invoices/drafts/{number}'),
+      operation('write', 'POST', 'rest', 'invoices/booked', '/invoices/booked'),
+    ],
+  }),
+  writeTool({
+    name: 'match_open_items',
+    title: 'Match e-conomic open items',
+    description: `Match (udligne) booked open items of one customer or supplier against each other, e.g. a payment against the invoice it settles. e-conomic has no way to undo a match through its API. ${BOOKING_NOTE}`,
+    inputSchema: matchOpenItemsInput,
+    booking: true,
+    change: change('match', 'booked-entry', { entryIds: 'numberList' }),
+    upstream: [operation('write', 'POST', 'booked-entries', 'booked-entries', '/booked-entries/match')],
   }),
 ];
 
@@ -805,6 +1162,8 @@ export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreez
       upstream: upstreamOf(spec),
       broad: spec.broad,
       ...(defaultRead ? { defaultRead: { ...defaultRead } } : {}),
+      booking: spec.booking,
+      ...(spec.change ? { change: { ...spec.change, logFields: spec.change.logFields.map(field => ({ ...field })) } } : {}),
     };
     return entry;
   }),
@@ -948,6 +1307,144 @@ export function resolveEconomicReadTarget(
   }
 }
 
+const MAX_LOGGED_NUMBERS = 100;
+
+/** The schema enum of an input field, for 'enum' log fields. */
+function schemaEnum(spec: ToolSpec, field: string): readonly unknown[] {
+  const properties = asObject(spec.inputSchema.properties);
+  const values = asObject(properties[field]).enum;
+  return Array.isArray(values) ? values : [];
+}
+
+/** A log field's value when it has exactly the field's type; otherwise nothing. */
+function logValue(spec: ToolSpec, field: EconomicLogField, value: GatewayJsonValue | undefined): EconomicLogValue | undefined {
+  switch (field.type) {
+    case 'recordNumber':
+      if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+      return typeof value === 'string' && /^\d{1,15}$/.test(value) ? value : undefined;
+    case 'numberList': {
+      if (!Array.isArray(value) || value.length === 0 || value.length > MAX_LOGGED_NUMBERS) return undefined;
+      const numbers = value.filter((item): item is number => typeof item === 'number' && Number.isSafeInteger(item) && item >= 1);
+      return numbers.length === value.length ? numbers : undefined;
+    }
+    case 'amount':
+      return typeof value === 'number' ? amountValue(value) : undefined;
+    case 'quantity':
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+    case 'date':
+      return isoDateValue(value);
+    case 'currency':
+      return isCurrencyCode(value) ? value : undefined;
+    case 'accountingYear':
+      return typeof value === 'string' && /^\d{4}(\/\d{4})?$/.test(value) ? value : undefined;
+    case 'enum':
+      return typeof value === 'string' && schemaEnum(spec, field.name).includes(value) ? value : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Resolves what a write tool call will change, for a host that logs the
+ * change before it is sent: the tool's action and record kind, and the values
+ * of its `logFields` that are present and well-formed (see EconomicChange).
+ * Refuses read tools, unknown tools and unknown input fields, as callTool does.
+ * It does not validate the input further; callTool does that before sending.
+ */
+export function resolveEconomicChange(
+  toolName: string,
+  input: GatewayJsonObject = {},
+): EconomicChangeResolution {
+  const spec = typeof toolName === 'string' ? SPEC_BY_NAME.get(toolName) : undefined;
+  if (!spec) return { ok: false, reason: `Unsupported e-conomic gateway tool: ${String(toolName).slice(0, 100)}` };
+  if (!spec.change) return { ok: false, reason: `${spec.name} is not a write tool.` };
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { ok: false, reason: 'Input must be an object.' };
+  const unknown = unknownInputFields(spec, input);
+  if (unknown.length > 0) {
+    return { ok: false, reason: `Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.` };
+  }
+  const values: Record<string, EconomicLogValue> = {};
+  for (const field of spec.change.logFields) {
+    const value = logValue(spec, field, input[field.name]);
+    if (value !== undefined) values[field.name] = value;
+  }
+  const lines = spec.name === 'create_draft_invoice' ? input.lines : spec.name === 'create_journal_entries' ? input.entries : undefined;
+  if (Array.isArray(lines)) values.lineCount = lines.length;
+  return {
+    ok: true,
+    change: { tool: spec.name, action: spec.change.action, record: spec.change.record, booking: spec.booking, values },
+  };
+}
+
+/** The host policy of one gateway instance, checked and normalised. */
+export interface ResolvedEconomicHostPolicy {
+  readonly enableWrites: boolean;
+  readonly allowBooking: boolean;
+  readonly disabledTools: readonly string[];
+  readonly allowedTools?: readonly string[];
+}
+
+function toolList(value: unknown, name: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) {
+    throw new Error(`createEconomicGateway: policy.${name} must be an array of tool names.`);
+  }
+  const names = value.map(entry => (entry as string).trim()).filter(Boolean);
+  for (const entry of names) {
+    if (!SPEC_BY_NAME.has(entry)) {
+      // The value is not echoed: configuration values are never quoted back.
+      throw new Error(`createEconomicGateway: policy.${name} names an unknown tool.`);
+    }
+  }
+  return [...new Set(names)];
+}
+
+function resolveHostPolicy(options: EconomicGatewayOptions): ResolvedEconomicHostPolicy {
+  const policy = options.policy ?? {};
+  if (policy === null || typeof policy !== 'object' || Array.isArray(policy)) {
+    throw new Error('createEconomicGateway: policy must be an object.');
+  }
+  for (const key of ['enableWrites', 'allowBooking'] as const) {
+    if (policy[key] !== undefined && typeof policy[key] !== 'boolean') {
+      throw new Error(`createEconomicGateway: policy.${key} must be a boolean.`);
+    }
+  }
+  if (options.enableWrites !== undefined && typeof options.enableWrites !== 'boolean') {
+    throw new Error('createEconomicGateway: enableWrites must be a boolean.');
+  }
+  if (options.enableWrites !== undefined && policy.enableWrites !== undefined && options.enableWrites !== policy.enableWrites) {
+    throw new Error('createEconomicGateway: enableWrites and policy.enableWrites disagree; give one of them.');
+  }
+  const enableWrites = (policy.enableWrites ?? options.enableWrites) === true;
+  const allowBooking = policy.allowBooking === true;
+  if (allowBooking && !enableWrites) {
+    throw new Error('createEconomicGateway: policy.allowBooking requires enableWrites.');
+  }
+  const disabledTools = toolList(policy.disabledTools, 'disabledTools') ?? [];
+  const allowedTools = toolList(policy.allowedTools, 'allowedTools');
+  if (allowedTools !== undefined && allowedTools.length === 0) {
+    // An empty allow-list would read as "no allow-list"; refuse it so a mistake cannot turn it off.
+    throw new Error('createEconomicGateway: policy.allowedTools is empty; leave it out or list at least one tool.');
+  }
+  return Object.freeze({
+    enableWrites,
+    allowBooking,
+    disabledTools: Object.freeze(disabledTools),
+    ...(allowedTools ? { allowedTools: Object.freeze(allowedTools) } : {}),
+  });
+}
+
+/** Why the host policy refuses a tool, or undefined when it is offered. */
+function hostRefusal(policy: ResolvedEconomicHostPolicy, toolName: string): string | undefined {
+  if (policy.disabledTools.includes(toolName) || (policy.allowedTools && !policy.allowedTools.includes(toolName))) {
+    return `${toolName} is turned off by the host policy.`;
+  }
+  if (SPEC_BY_NAME.get(toolName)?.booking && !policy.allowBooking) {
+    return `Write blocked by policy: booking disabled (${toolName} needs the host policy allowBooking).`;
+  }
+  return undefined;
+}
+
 /**
  * The parts of GET /self that company_context promises. Everything else (bank
  * details, the granting user, the app's tokens, contact data) is dropped.
@@ -1042,10 +1539,17 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
   // Validates the base URLs at creation.
   new EconomicClient({ ...clientOptions, redactor: redactor.fork() });
 
-  const writePolicy: EconomicPolicy = { ...basePolicy(), writesEnabled: options.enableWrites === true };
+  const hostPolicy = resolveHostPolicy(options);
+  const writePolicy: EconomicPolicy = {
+    ...basePolicy(),
+    writesEnabled: hostPolicy.enableWrites,
+    bookingEnabled: hostPolicy.allowBooking,
+  };
 
   return {
-    tools: economicGatewayTools,
+    tools: economicGatewayTools.filter(tool => hostRefusal(hostPolicy, tool.name) === undefined),
+    /** The host policy this instance runs under, as resolved at creation. */
+    policy: hostPolicy,
     async callTool(
       toolName: string,
       input: GatewayJsonObject = {},
@@ -1062,6 +1566,13 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           return errorResult('Input must be an object.');
         }
 
+        // The host's choice of tools and booking applies before anything else,
+        // in contract mode too.
+        const refused = hostRefusal(hostPolicy, spec.name);
+        if (refused) {
+          return errorResult(refused);
+        }
+
         let target: EconomicReadTarget | undefined;
         if (spec.riskLevel === 'read') {
           const resolution = resolveEconomicReadTarget(spec.name, args);
@@ -1074,16 +1585,23 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           if (unknown.length > 0) {
             return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
           }
+          // Bank details are never changed, whatever the policy (also in contract mode).
+          const bankFields = bankFieldPaths(args);
+          if (bankFields.length > 0) {
+            return errorResult(`Write blocked: ${BANK_FIELDS_REFUSED} Fields: ${bankFields.slice(0, 10).join(', ')}.`);
+          }
+        }
+
+        // Refuse writes before any preparatory read (customer, layout, existing
+        // record), and before a contract fixture: contract mode answers only
+        // what live mode would allow. The full policy check still runs on the
+        // built request.
+        if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
+          return errorResult('Write blocked by policy: writes disabled');
         }
 
         if (contractMode) {
           return contractToolResult(spec.name, args, target);
-        }
-
-        // Refuse writes before any preparatory read (customer, layout, existing
-        // record). The full policy check still runs on the built request.
-        if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
-          return errorResult('Write blocked by policy: writes disabled');
         }
 
         const grant = callGrantToken(context, options.agreementGrantToken);
@@ -1177,6 +1695,16 @@ async function writeResult(
       return upsertEmployee(client, input, writePolicy);
     case 'upsert_account':
       return upsertAccount(client, input, writePolicy);
+    case 'create_journal_entries':
+      return createJournalEntries(client, input, writePolicy);
+    case 'register_payment':
+      return registerPayment(client, input, writePolicy);
+    case 'book_journal_entries':
+      return bookJournalEntries(client, input, writePolicy);
+    case 'book_invoice':
+      return bookInvoice(client, input, writePolicy);
+    case 'match_open_items':
+      return matchOpenItems(client, input, writePolicy);
     default:
       return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
   }
@@ -1412,6 +1940,7 @@ async function upsertCustomer(
     method: 'PUT',
     path: `/customers/${customerNumber}`,
     body,
+    current: existing,
   });
   if (denied) {
     return denied;
@@ -1512,6 +2041,7 @@ async function upsertProduct(
     method: 'PUT',
     path: `/products/${productNumber}`,
     body,
+    current: existing,
   });
   if (denied) {
     return denied;
@@ -1610,6 +2140,7 @@ async function upsertSupplier(
     method: 'PUT',
     path: `/suppliers/${supplierNumber}`,
     body,
+    current: existing,
   });
   if (denied) {
     return denied;
@@ -1688,6 +2219,7 @@ async function upsertEmployee(
     method: 'PUT',
     path: '/Employees',
     body,
+    current: existing,
   });
   if (denied) {
     return denied;
@@ -1766,6 +2298,7 @@ async function upsertAccount(
     method: 'PUT',
     path: `/accounts/${accountNumber}`,
     body,
+    current: existing,
   });
   if (denied) {
     return denied;
@@ -1780,9 +2313,23 @@ async function upsertAccount(
   }));
 }
 
+/**
+ * The checks every gateway write passes right before it is sent: the built-in
+ * write policy (with the host's writes and booking settings), and the bank
+ * guard. `current` is the record a read-merge-write update replaces: then only
+ * a bank field that would change is refused; without it, any bank field in
+ * the body is.
+ */
 function writePolicyDenial(
   policy: EconomicPolicy,
-  input: { capability: string; method: 'POST' | 'PUT'; path: string; body?: unknown; serviceId?: string },
+  input: {
+    capability: string;
+    method: 'POST' | 'PUT';
+    path: string;
+    body?: unknown;
+    serviceId?: string;
+    current?: unknown;
+  },
 ): GatewayToolResult | undefined {
   const decision = checkPolicy({
     capability: input.capability,
@@ -1791,8 +2338,17 @@ function writePolicyDenial(
     path: input.path,
     body: input.body,
   }, policy);
+  if (!decision.allowed) {
+    return errorResult(`Write blocked by policy: ${decision.reason}`);
+  }
 
-  return decision.allowed ? undefined : errorResult(`Write blocked by policy: ${decision.reason}`);
+  const bankFields = input.current === undefined
+    ? bankFieldPaths(input.body)
+    : changedBankFields(input.current, input.body);
+  if (bankFields.length > 0) {
+    return errorResult(`Write blocked: ${BANK_FIELDS_REFUSED} Fields: ${bankFields.slice(0, 10).join(', ')}.`);
+  }
+  return undefined;
 }
 
 // Projects add-on upsert: create is POST /Projects, update is the collection
@@ -1887,6 +2443,7 @@ async function upsertProject(
     method: 'PUT',
     path: '/Projects',
     body,
+    current: existing,
   });
   if (denied) {
     return denied;
@@ -1949,6 +2506,377 @@ async function createTimeEntry(
     pathTemplate: '/TimeEntries',
     body,
   }));
+}
+
+type JournalEntryKind = 'financeVouchers' | 'supplierInvoices' | 'customerPayments' | 'supplierPayments';
+
+function positiveInteger(value: GatewayJsonValue | undefined): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : undefined;
+}
+
+function positiveIntegerList(value: GatewayJsonValue | undefined, max: number): number[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > max) return undefined;
+  const numbers = value.map(item => positiveInteger(item));
+  return numbers.every((item): item is number => item !== undefined) ? [...new Set(numbers)] : undefined;
+}
+
+function isoDateValue(value: GatewayJsonValue | undefined): string | undefined {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : undefined;
+}
+
+/** An amount with at most two decimals, not zero. */
+function amountValue(value: GatewayJsonValue | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return undefined;
+  return Math.abs(value * 100 - Math.round(value * 100)) < 1e-6 ? value : undefined;
+}
+
+/**
+ * ISO 4217 codes, from the runtime's own list (Intl), written in capitals as
+ * ISO writes them. A three-letter word such as a first name is not a code, and
+ * lower case is refused rather than upper-cased, so a name like "Bob" never
+ * becomes "BOB".
+ */
+const CURRENCY_CODES: ReadonlySet<string> = new Set(Intl.supportedValuesOf('currency'));
+
+function isCurrencyCode(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Z]{3}$/.test(value) && CURRENCY_CODES.has(value);
+}
+
+function currencyValue(value: GatewayJsonValue | undefined): { ok: true; value?: string } | { ok: false } {
+  if (value === undefined) return { ok: true };
+  return isCurrencyCode(value) ? { ok: true, value } : { ok: false };
+}
+
+function shortText(value: GatewayJsonValue | undefined, max: number): { ok: true; value?: string } | { ok: false } {
+  if (value === undefined) return { ok: true };
+  if (typeof value !== 'string' || value.length > max) return { ok: false };
+  const trimmed = value.trim();
+  return trimmed ? { ok: true, value: trimmed } : { ok: true };
+}
+
+/** The fields every journal line shares: date, amount, text, contra account, currency. */
+function commonJournalFields(source: GatewayJsonObject, label: string): { line: GatewayJsonObject } | { error: string } {
+  const date = isoDateValue(source.date);
+  if (!date) return { error: `${label} needs a date (YYYY-MM-DD).` };
+  const amount = amountValue(source.amount);
+  if (amount === undefined) return { error: `${label} needs a non-zero amount with at most two decimals.` };
+  const text = shortText(source.text, 250);
+  if (!text.ok) return { error: `${label}: text must be at most 250 characters.` };
+  const currency = currencyValue(source.currency);
+  if (!currency.ok) return { error: `${label}: currency must be a three-letter code.` };
+  const line: GatewayJsonObject = { date, amount };
+  if (text.value) line.text = text.value;
+  if (currency.value) line.currency = { code: currency.value };
+  if (source.contraAccountNumber !== undefined) {
+    const contra = positiveInteger(source.contraAccountNumber);
+    if (contra === undefined) return { error: `${label}: contraAccountNumber must be a positive whole number.` };
+    line.contraAccount = { accountNumber: contra };
+  }
+  return { line };
+}
+
+function journalLine(source: GatewayJsonObject, index: number): { kind: JournalEntryKind; line: GatewayJsonObject } | { error: string } {
+  const label = `Line ${index + 1}`;
+  const known = Object.keys(createJournalEntriesInput.properties.entries.items.properties);
+  const unknown = Object.keys(source).filter(key => !known.includes(key));
+  if (unknown.length > 0) {
+    return { error: `${label}: unknown field(s) ${unknown.map(key => key.slice(0, 40)).join(', ')}.` };
+  }
+  const common = commonJournalFields(source, label);
+  if ('error' in common) return common;
+  const line = common.line;
+  if (source.type === 'financeVoucher') {
+    for (const field of ['supplierNumber', 'supplierInvoiceNumber', 'dueDate'] as const) {
+      if (source[field] !== undefined) return { error: `${label}: ${field} belongs on a supplierInvoice line.` };
+    }
+    const account = positiveInteger(source.accountNumber);
+    if (account === undefined) return { error: `${label}: a financeVoucher line needs accountNumber.` };
+    line.account = { accountNumber: account };
+    for (const [field, target] of [['vatCode', 'vatAccount'], ['contraVatCode', 'contraVatAccount']] as const) {
+      const code = shortText(source[field], 5);
+      if (!code.ok) return { error: `${label}: ${field} must be at most 5 characters.` };
+      if (code.value) line[target] = { vatCode: code.value };
+    }
+    return { kind: 'financeVouchers', line };
+  }
+  if (source.type === 'supplierInvoice') {
+    for (const field of ['accountNumber', 'vatCode'] as const) {
+      if (source[field] !== undefined) return { error: `${label}: ${field} belongs on a financeVoucher line.` };
+    }
+    const supplier = positiveInteger(source.supplierNumber);
+    if (supplier === undefined) return { error: `${label}: a supplierInvoice line needs supplierNumber.` };
+    line.supplier = { supplierNumber: supplier };
+    const invoice = shortText(source.supplierInvoiceNumber, 30);
+    if (!invoice.ok) return { error: `${label}: supplierInvoiceNumber must be at most 30 characters.` };
+    if (invoice.value) line.supplierInvoiceNumber = invoice.value;
+    if (source.dueDate !== undefined) {
+      const due = isoDateValue(source.dueDate);
+      if (!due) return { error: `${label}: dueDate must be a date (YYYY-MM-DD).` };
+      line.dueDate = due;
+    }
+    const contraVat = shortText(source.contraVatCode, 5);
+    if (!contraVat.ok) return { error: `${label}: contraVatCode must be at most 5 characters.` };
+    if (contraVat.value) line.contraVatAccount = { vatCode: contraVat.value };
+    return { kind: 'supplierInvoices', line };
+  }
+  return { error: `${label}: type must be financeVoucher or supplierInvoice.` };
+}
+
+interface AccountingYear {
+  year?: string;
+  fromDate?: string;
+  toDate?: string;
+}
+
+/** The accounting year that holds every date, from GET /accounting-years. */
+async function accountingYearFor(client: EconomicClient, dates: string[]): Promise<string | { error: string }> {
+  const response = (await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'GET',
+    pathTemplate: '/accounting-years',
+    query: { pagesize: 1000 },
+  })) as { collection?: AccountingYear[] };
+  const years = Array.isArray(response?.collection) ? response.collection : [];
+  const yearOf = (date: string) =>
+    years.find(year => typeof year.fromDate === 'string' && typeof year.toDate === 'string'
+      && year.fromDate.slice(0, 10) <= date && date <= year.toDate.slice(0, 10))?.year;
+  const found = new Set(dates.map(yearOf));
+  if (found.has(undefined)) return { error: 'No accounting year in e-conomic holds the date; give accountingYear or create the year first.' };
+  if (found.size > 1) return { error: 'The lines fall in more than one accounting year; add them as separate vouchers.' };
+  return [...found][0] as string;
+}
+
+/** Posts one voucher with draft lines to a journal (classic REST). Nothing is booked. */
+async function postJournalVoucher(
+  client: EconomicClient,
+  policy: EconomicPolicy,
+  capability: string,
+  input: GatewayJsonObject,
+  lines: Array<{ kind: JournalEntryKind; line: GatewayJsonObject }>,
+): Promise<GatewayToolResult> {
+  const journalNumber = positiveInteger(input.journalNumber);
+  if (journalNumber === undefined) return errorResult(`${capability} needs journalNumber (a positive whole number).`);
+  const voucherNumber = input.voucherNumber === undefined ? undefined : positiveInteger(input.voucherNumber);
+  if (input.voucherNumber !== undefined && voucherNumber === undefined) {
+    return errorResult('voucherNumber must be a positive whole number.');
+  }
+  const givenYear = shortText(input.accountingYear, 20);
+  if (!givenYear.ok || (givenYear.value !== undefined && !/^\d{4}(\/\d{4})?[a-z]?$/.test(givenYear.value))) {
+    return errorResult('accountingYear must be written as e-conomic names it, e.g. 2026 or 2025/2026.');
+  }
+
+  // Check policy before the preparatory read, so a refused write reads nothing.
+  const path = `/journals/${journalNumber}/vouchers`;
+  const early = writePolicyDenial(policy, { capability, method: 'POST', path, body: {} });
+  if (early) return early;
+
+  let year = givenYear.value;
+  if (year === undefined) {
+    const resolved = await accountingYearFor(client, lines.map(item => String(item.line.date)));
+    if (typeof resolved !== 'string') return errorResult(resolved.error);
+    year = resolved;
+  }
+
+  const entries: Record<string, GatewayJsonObject[]> = {};
+  for (const { kind, line } of lines) {
+    (entries[kind] ??= []).push(line);
+  }
+  const body: GatewayJsonObject = {
+    accountingYear: { year },
+    journal: { journalNumber },
+    entries,
+    ...(voucherNumber === undefined ? {} : { voucherNumber }),
+  };
+  const denied = writePolicyDenial(policy, { capability, method: 'POST', path, body });
+  if (denied) return denied;
+
+  const created = await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'POST',
+    pathTemplate: '/journals/{journalNumber}/vouchers',
+    pathParams: { journalNumber },
+    body,
+  });
+  const first = Array.isArray(created) ? created[0] : created;
+  const number = asObject(first).voucherNumber;
+  const where = `journal ${journalNumber}${typeof number === 'number' ? `, voucher ${number}` : ''}`;
+  const count = lines.length === 1 ? '1 draft line' : `${lines.length} draft lines`;
+  return jsonResult(`Added ${count} to ${where}. Not booked.`, created);
+}
+
+async function createJournalEntries(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const raw = Array.isArray(input.entries) ? input.entries : [];
+  if (raw.length === 0 || raw.length > MAX_JOURNAL_LINES) {
+    return errorResult(`create_journal_entries needs 1-${MAX_JOURNAL_LINES} entries.`);
+  }
+  const lines: Array<{ kind: JournalEntryKind; line: GatewayJsonObject }> = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const source = objectValue(raw[index]);
+    if (!source) return errorResult(`Line ${index + 1} must be an object.`);
+    const built = journalLine(source, index);
+    if ('error' in built) return errorResult(built.error);
+    lines.push(built);
+  }
+  return postJournalVoucher(client, policy, 'create_journal_entries', input, lines);
+}
+
+async function registerPayment(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const common = commonJournalFields(input, 'The payment');
+  if ('error' in common) return errorResult(common.error);
+  const line = common.line;
+  if (input.kind === 'customerPayment') {
+    if (input.supplierNumber !== undefined || input.supplierInvoiceNumber !== undefined) {
+      return errorResult('A customerPayment takes customerNumber and customerInvoiceNumber, not supplier fields.');
+    }
+    const customer = positiveInteger(input.customerNumber);
+    if (customer === undefined) return errorResult('A customerPayment needs customerNumber.');
+    line.customer = { customerNumber: customer };
+    if (input.customerInvoiceNumber !== undefined) {
+      const invoice = positiveInteger(input.customerInvoiceNumber);
+      if (invoice === undefined) return errorResult('customerInvoiceNumber must be a positive whole number.');
+      line.customerInvoice = invoice;
+    }
+    return postJournalVoucher(client, policy, 'register_payment', input, [{ kind: 'customerPayments', line }]);
+  }
+  if (input.kind === 'supplierPayment') {
+    if (input.customerNumber !== undefined || input.customerInvoiceNumber !== undefined) {
+      return errorResult('A supplierPayment takes supplierNumber and supplierInvoiceNumber, not customer fields.');
+    }
+    const supplier = positiveInteger(input.supplierNumber);
+    if (supplier === undefined) return errorResult('A supplierPayment needs supplierNumber.');
+    line.supplier = { supplierNumber: supplier };
+    const invoice = shortText(input.supplierInvoiceNumber, 30);
+    if (!invoice.ok) return errorResult('supplierInvoiceNumber must be at most 30 characters.');
+    if (invoice.value) line.supplierInvoiceNumber = invoice.value;
+    return postJournalVoucher(client, policy, 'register_payment', input, [{ kind: 'supplierPayments', line }]);
+  }
+  return errorResult('kind must be customerPayment or supplierPayment.');
+}
+
+/**
+ * Books explicit draft entries (journalsapi POST /journals/{n}/bookdraftentries)
+ * with the same guardrails as the standalone server's booking: every entry
+ * exists in the journal, and every voucher has an attached document unless
+ * requireVoucher is false.
+ */
+async function bookJournalEntries(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const journalNumber = positiveInteger(input.journalNumber);
+  if (journalNumber === undefined) return errorResult('book_journal_entries needs journalNumber (a positive whole number).');
+  const hasEntries = input.entryNumbers !== undefined;
+  const hasVouchers = input.voucherNumbers !== undefined;
+  if (hasEntries === hasVouchers) return errorResult('Give entryNumbers or voucherNumbers (one of them).');
+  const listed = positiveIntegerList(hasEntries ? input.entryNumbers : input.voucherNumbers, 25);
+  if (!listed) return errorResult(`${hasEntries ? 'entryNumbers' : 'voucherNumbers'} must be 1-25 positive whole numbers.`);
+  if (input.requireVoucher !== undefined && typeof input.requireVoucher !== 'boolean') {
+    return errorResult('requireVoucher must be true or false.');
+  }
+  const requireVoucher = input.requireVoucher !== false;
+
+  const path = `/journals/${journalNumber}/bookdraftentries`;
+  // Booking must be allowed before anything is read.
+  const early = writePolicyDenial(policy, { capability: 'book_journal_entries', serviceId: 'journals', method: 'POST', path, body: {} });
+  if (early) return early;
+
+  const entryNumbers = hasEntries ? listed : await draftEntryNumbersForVouchers(client, journalNumber, listed);
+  const validation = await validateBooking(client, { journalNumber, entryNumbers, requireVoucher }, {});
+  const body: GatewayJsonObject = { entryNumbers: validation.entries.map(entry => entry.entryNumber) };
+  const denied = writePolicyDenial(policy, { capability: 'book_journal_entries', serviceId: 'journals', method: 'POST', path, body });
+  if (denied) return denied;
+
+  const booked = await callEndpoint(client, {
+    serviceId: 'journals',
+    method: 'POST',
+    pathTemplate: '/journals/{journalNumber}/bookdraftentries',
+    pathParams: { journalNumber },
+    body,
+  });
+  const count = validation.entries.length === 1 ? '1 entry' : `${validation.entries.length} entries`;
+  return jsonResult(`Booked ${count} in journal ${journalNumber}.`, { validation, result: booked ?? null });
+}
+
+/** Books a draft invoice (REST POST /invoices/booked). Never sent electronically from here. */
+async function bookInvoice(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const draftInvoiceNumber = positiveInteger(input.draftInvoiceNumber);
+  if (draftInvoiceNumber === undefined) return errorResult('book_invoice needs draftInvoiceNumber (a positive whole number).');
+  const body: GatewayJsonObject = { draftInvoice: { draftInvoiceNumber }, sendBy: 'none' };
+  // Booking must be allowed before anything is read.
+  const denied = writePolicyDenial(policy, { capability: 'book_invoice', method: 'POST', path: '/invoices/booked', body });
+  if (denied) return denied;
+
+  try {
+    await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'GET',
+      pathTemplate: '/invoices/drafts/{number}',
+      pathParams: { number: draftInvoiceNumber },
+    });
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Draft invoice ${draftInvoiceNumber} does not exist (already booked or deleted?).`);
+    }
+    throw error;
+  }
+
+  const booked = await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'POST',
+    pathTemplate: '/invoices/booked',
+    body,
+  });
+  const number = asObject(booked).bookedInvoiceNumber;
+  return jsonResult(
+    `Booked draft invoice ${draftInvoiceNumber}${typeof number === 'number' ? ` as invoice ${number}` : ''}. Not sent electronically.`,
+    booked,
+  );
+}
+
+/** Matches booked open items (bookedEntriesapi POST /booked-entries/match). No API undo exists. */
+async function matchOpenItems(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const raw = Array.isArray(input.entryIds) ? input.entryIds : [];
+  const entryIds = positiveIntegerList(raw, 100);
+  if (!entryIds || entryIds.length !== raw.length) {
+    return errorResult('entryIds must contain 2-100 unique booked entry numbers.');
+  }
+  assertMatchEntryIds(entryIds);
+  const body: GatewayJsonObject = { entryIds };
+  const denied = writePolicyDenial(policy, {
+    capability: 'match_open_items',
+    serviceId: 'booked-entries',
+    method: 'POST',
+    path: '/booked-entries/match',
+    body,
+  });
+  if (denied) return denied;
+
+  const matched = await callEndpoint(client, {
+    serviceId: 'booked-entries',
+    method: 'POST',
+    pathTemplate: '/booked-entries/match',
+    body,
+  });
+  return jsonResult(`Matched ${entryIds.length} booked entries.`, matched ?? null);
 }
 
 async function firstLayoutNumber(client: EconomicClient): Promise<number | undefined> {

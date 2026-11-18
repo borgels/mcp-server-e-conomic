@@ -186,6 +186,18 @@ describe('declared upstream requests', () => {
       return Response.json({ name: 'C', currency: 'DKK', paymentTerms: { paymentTermsNumber: 1 }, vatZone: { vatZoneNumber: 1 } });
     }
     if (request.method === 'GET' && /^\/(products\/NEW|accounts\/2000)$/.test(path)) return new Response('', { status: 404 });
+    if (request.method === 'GET' && path === '/accounting-years') {
+      return Response.json({ collection: [{ year: '2026', fromDate: '2026-01-01', toDate: '2026-12-31' }] });
+    }
+    if (request.method === 'GET' && path.endsWith('/draft-entries')) {
+      return Response.json({
+        items: [
+          { entryNumber: 11, journalNumber: 1, voucherNumber: 501, amount: 100 },
+          { entryNumber: 12, journalNumber: 1, voucherNumber: 501, amount: -100 },
+        ],
+      });
+    }
+    if (request.method === 'GET' && path.startsWith('/invoices/drafts/')) return Response.json({ draftInvoiceNumber: 7 });
     return Response.json({ collection: [] });
   }
 
@@ -207,6 +219,26 @@ describe('declared upstream requests', () => {
     ],
     upsert_employee: [{ name: 'E' }, { employeeNumber: 1, name: 'E' }],
     upsert_account: [{ accountNumber: 2000, name: 'A', accountType: 'status' }, { accountNumber: 1000, name: 'A' }],
+    create_journal_entries: [
+      {
+        journalNumber: 1,
+        entries: [
+          { type: 'financeVoucher', date: '2026-03-02', amount: 100, accountNumber: 1010, contraAccountNumber: 5820 },
+          { type: 'supplierInvoice', date: '2026-03-02', amount: -250.5, supplierNumber: 2001, supplierInvoiceNumber: 'F-77' },
+        ],
+      },
+      { journalNumber: 1, accountingYear: '2026', entries: [{ type: 'financeVoucher', date: '2026-03-02', amount: 1, accountNumber: 1010 }] },
+    ],
+    register_payment: [
+      { journalNumber: 1, kind: 'customerPayment', date: '2026-03-02', amount: -1250, customerNumber: 1001, customerInvoiceNumber: 70001, contraAccountNumber: 5820 },
+      { journalNumber: 1, kind: 'supplierPayment', date: '2026-03-02', amount: 250.5, supplierNumber: 2001, supplierInvoiceNumber: 'F-77', contraAccountNumber: 5820 },
+    ],
+    book_journal_entries: [
+      { journalNumber: 1, entryNumbers: [11, 12] },
+      { journalNumber: 1, voucherNumbers: [501] },
+    ],
+    book_invoice: [{ draftInvoiceNumber: 7 }],
+    match_open_items: [{ entryIds: [800001, 800002] }],
   };
 
   function inputsFor(name: string): GatewayJsonObject[] {
@@ -229,7 +261,7 @@ describe('declared upstream requests', () => {
       const requests: Request[] = [];
       const gateway = createEconomicGateway({
         appSecretToken: 'app-secret-for-tests',
-        enableWrites: true,
+        policy: { enableWrites: true, allowBooking: true },
         fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
           const request = new Request(input, init);
           requests.push(request);
