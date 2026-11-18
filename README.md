@@ -365,10 +365,16 @@ The gateway exports:
 - `resolveEconomicReadTarget(tool, input)`: what a read call will read, with
   the same checks `callTool` applies before sending anything. Useful for
   logging the target of a call.
+- `resolveEconomicChange(tool, input)`: what a write call will change, for a
+  host that logs a change before it is sent: `{ tool, action, record,
+  booking, values }`. `values` holds the tool's `logFields` (numbers,
+  dates, amounts, short codes, lists of numbers; never names or free text)
+  and `lineCount` for tools with lines. Each write tool's catalog entry
+  carries the same `change: { action, record, logFields }` and `booking`.
 - `createEconomicGateway(options)`: a factory taking `appSecretToken`
   (required outside contract mode), an optional single-tenant
   `agreementGrantToken`, optional base URLs, timeout, `fetchImpl`,
-  `contractMode` and `enableWrites`.
+  `contractMode`, `enableWrites` and `policy` (the host policy, below).
 - `gateway.callTool(name, input, context?)` with
   `context = { caller?, requestId?, credentials?: { agreementGrantToken } }`.
   A multi-tenant host passes each company's agreement grant token per call.
@@ -400,17 +406,62 @@ is the default. Anything else is refused before a request is sent.
 | `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
 | `get_entity` | **Broad** (`broad: true`): one record from any read endpoint in the service catalog, by `serviceId`/`resource`/`number` or a self URL. Give it only to callers that may read all of the agreement's data. |
 
-Write gateway tools (risk `write`, `upsert_account` risk `destructive`,
-disabled by default, policy-gated): `create_draft_invoice`, `upsert_customer`,
-`upsert_product`, `upsert_project`, `create_time_entry`, `upsert_supplier`,
-`upsert_employee`, `upsert_account`.
+Write gateway tools, disabled by default:
 
-Write tools execute only when the embedder passes `enableWrites: true` (for
-control planes that apply their own write governance: roles, approvals, audit).
-The built-in write policy (denied paths such as booking) still applies on top.
-Booking, sending, payments, and deletes are not exposed through the gateway;
-the generic prepare and commit tools remain available only on the full MCP
-server surface.
+| Tool | Risk | What it does |
+| --- | --- | --- |
+| `create_draft_invoice` | write | Draft sales invoice (not booked, not sent) |
+| `upsert_customer`, `upsert_product`, `upsert_project` | write | Master data, read-merge-write |
+| `create_time_entry` | write | Project time |
+| `upsert_supplier` | write | Supplier master data; bank fields are refused |
+| `upsert_employee` | write | Projects add-on employee |
+| `upsert_account` | destructive | Chart of accounts |
+| `create_journal_entries` | write | One voucher with draft lines in a journal (kassekladde): ledger lines and supplier invoices. Not booked |
+| `register_payment` | write | A customer or supplier payment as a draft journal line. Not booked; records the payment, does not move money |
+| `book_journal_entries` | write, booking | Books explicit draft entries (by entry or voucher numbers, max 25) with the booking guardrails: entries must exist in the journal; vouchers need an attached document unless `requireVoucher: false` |
+| `book_invoice` | write, booking | Books a draft invoice (`POST /invoices/booked`, `sendBy: none`: never sent electronically) |
+| `match_open_items` | write, booking | Matches booked open items (no API undo) |
+
+In the embedding, one call is one change: there is no prepare/commit step,
+because the host logs the change (`resolveEconomicChange`) before it calls.
+The prepare and commit tools remain on the full MCP server surface.
+
+Host policy (`policy` option, `EconomicHostPolicy`; every field optional,
+checked at creation, applies in contract mode too):
+
+```ts
+const gateway = createEconomicGateway({
+  appSecretToken,
+  policy: {
+    enableWrites: true,               // write tools may run (default false)
+    allowBooking: true,               // booking tools may run (default false; needs enableWrites)
+    disabledTools: ['upsert_account'],// not listed in gateway.tools, refused by callTool
+    // allowedTools: [...],           // allow-list: only these tools are offered
+  },
+});
+```
+
+Unknown tool names, an empty `allowedTools`, `allowBooking` without writes,
+and `enableWrites` given both as an option and in `policy` with different
+values all throw. `gateway.policy` is the resolved policy. The top-level
+`enableWrites` option still works on its own.
+
+What no policy turns on:
+
+- **Bank details.** A write whose input or body carries a bank field is
+  refused before anything is sent: `bankAccount`, `remittanceAdvice`
+  (creditor id, payment type), `paymentDetails` (FI/giro numbers, OCR lines),
+  `bankInformation`, and keys naming IBAN, SWIFT/BIC, giro, sort code or
+  registration number. A supplier update keeps the current bank details
+  unchanged (read-merge-write) and is refused if any would change. Writes to
+  the company record (`/self`) are denied by the built-in policy. The
+  standalone server's `economic_call_endpoint` and
+  `economic_commit_prepared_operation` apply the same guard.
+- **Deletion.** No gateway tool sends `DELETE`; the built-in policy allows
+  only POST, PUT and PATCH.
+- **Other booking paths.** Booking a whole journal, VAT and webhooks stay
+  denied by the built-in write policy; the booking tools are allowed only on
+  their exact endpoint.
 
 Every result has a short text (for example
 `search_entities: 25 of 112 records from rest:customers. More pages are available.`)

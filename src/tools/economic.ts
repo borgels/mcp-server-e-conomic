@@ -13,6 +13,7 @@ import {
 } from '../economic/bookings.js';
 import { encodePathParam } from '../economic/path-params.js';
 import { writeAuditEvent } from '../economic/audit.js';
+import { assertNoBankChange } from '../economic/bank-fields.js';
 import { formatUnknownError } from '../errors.js';
 
 const serviceIds = ECONOMIC_SERVICES.map(service => service.id) as [string, ...string[]];
@@ -431,6 +432,10 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
         throw new Error(`Write blocked by policy: ${decision.reason}`);
       }
 
+      // Bank details are never changed through this server (supplier bank
+      // account, payment details); refused before anything is written.
+      await assertNoBankChange(client, operation);
+
       try {
         const result = await callEndpoint(client, {
           serviceId: operation.serviceId,
@@ -749,6 +754,10 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
       if (endpointInput.method !== 'GET' && !endpointInput.idempotencyKey) {
         throw new Error('Mutating endpoint calls require idempotencyKey.');
       }
+
+      // Bank details are never changed through this server (supplier bank
+      // account, payment details); refused before anything is written.
+      await assertNoBankChange(client, endpointInput);
 
       return jsonToolResult(await callEndpoint(client, endpointInput));
     },

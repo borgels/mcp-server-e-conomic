@@ -5,7 +5,8 @@ export interface EconomicPolicy {
   writesEnabled: boolean;
   /**
    * Gates the curated booking capabilities (economic_prepare_booking /
-   * economic_prepare_open_item_match + economic_commit_booking). Booking and
+   * economic_prepare_open_item_match + economic_commit_booking, and the
+   * gateway's book_journal_entries, book_invoice and match_open_items). Booking and
    * matching are irreversible in e-conomic; the raw endpoint paths stay
    * denied for every other capability regardless of this flag.
    */
@@ -49,6 +50,8 @@ export function basePolicy(): EconomicPolicy {
       '/webhooks',
       '/vat',
       '/payment',
+      // The company's own record (name, address, bank details) is never written.
+      '^/self(/|$)',
     ],
   };
 }
@@ -83,10 +86,18 @@ export function isMutation(method: HttpMethod): boolean {
   return method !== 'GET';
 }
 
-/** Exact endpoints each booking capability may target — nothing else. */
+/**
+ * Exact endpoints each booking capability may target — nothing else. The
+ * economic_prepare_* names are the standalone server's; the others are the
+ * embedded gateway's booking tools (see gateway.ts), whose `bookingEnabled`
+ * comes from the host policy's `allowBooking`.
+ */
 const BOOKING_CAPABILITY_PATHS: Record<string, RegExp> = {
   economic_prepare_booking: /^\/journals\/(\{journalNumber\}|\d+)\/bookdraftentries$/,
   economic_prepare_open_item_match: /^\/booked-entries\/match$/,
+  book_journal_entries: /^\/journals\/(\{journalNumber\}|\d+)\/bookdraftentries$/,
+  match_open_items: /^\/booked-entries\/match$/,
+  book_invoice: /^\/invoices\/booked$/,
 };
 
 export function isBookingCapability(capability: string): boolean {
@@ -115,7 +126,7 @@ export function checkPolicy(input: PolicyCheckInput, policy = loadPolicy()): Pol
       return { allowed: false, reason: `booking capability used outside its endpoint: ${input.path}`, policy };
     }
     if (!policy.bookingEnabled) {
-      return { allowed: false, reason: 'booking disabled (ECONOMIC_ENABLE_BOOKING)', policy };
+      return { allowed: false, reason: 'booking disabled (ECONOMIC_ENABLE_BOOKING, or the gateway host policy allowBooking)', policy };
     }
     return { allowed: true, reason: 'booking capability enabled by policy', policy };
   }

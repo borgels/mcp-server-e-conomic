@@ -195,6 +195,39 @@ export function economicGatewayContractFixture(
     case 'upsert_account':
       return upsertAccountFixture(input);
 
+    case 'create_journal_entries':
+    case 'register_payment':
+      return journalVoucherFixture(toolName, input);
+
+    case 'book_journal_entries':
+      return {
+        text: 'Booked e-conomic contract journal entries.',
+        structuredContent: {
+          mode: 'contract',
+          action: 'booked',
+          journalNumber: numberOr(input.journalNumber, 1),
+          entryNumbers: numberList(input.entryNumbers),
+          voucherNumbers: numberList(input.voucherNumbers),
+        },
+      };
+
+    case 'book_invoice':
+      return {
+        text: 'Booked e-conomic contract draft invoice.',
+        structuredContent: {
+          mode: 'contract',
+          action: 'booked',
+          draftInvoiceNumber: numberOr(input.draftInvoiceNumber, 0),
+          bookedInvoiceNumber: 70002,
+        },
+      };
+
+    case 'match_open_items':
+      return {
+        text: 'Matched e-conomic contract open items.',
+        structuredContent: { mode: 'contract', action: 'matched', entryIds: numberList(input.entryIds) },
+      };
+
     default:
       return undefined;
   }
@@ -413,4 +446,28 @@ function entityFor(serviceId: string | undefined, number: string | number | unde
   }
 
   return customers.find(customer => customer.customerNumber === number) ?? customers[0] ?? {};
+}
+
+function numberOr(value: GatewayJsonValue | undefined, fallback: number): number {
+  return typeof value === 'number' ? value : fallback;
+}
+
+function numberList(value: GatewayJsonValue | undefined): number[] {
+  return Array.isArray(value) ? value.filter((item): item is number => typeof item === 'number') : [];
+}
+
+function journalVoucherFixture(toolName: string, input: GatewayJsonObject): GatewayContractFixture {
+  const lines = toolName === 'register_payment' ? 1 : Array.isArray(input.entries) ? input.entries.length : 0;
+  return {
+    text: toolName === 'register_payment'
+      ? 'Registered e-conomic contract payment as a draft journal line. Not booked.'
+      : 'Added e-conomic contract draft journal lines. Not booked.',
+    structuredContent: {
+      mode: 'contract',
+      action: 'created',
+      journalNumber: numberOr(input.journalNumber, 1),
+      voucherNumber: numberOr(input.voucherNumber, 1001),
+      lines,
+    },
+  };
 }

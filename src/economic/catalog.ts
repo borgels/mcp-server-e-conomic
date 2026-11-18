@@ -449,6 +449,12 @@ function buildEndpointOperations(): EndpointOperation[] {
     // Suppliers are classic REST master data (no OpenAPI supplier record).
     customEndpoint('rest', 'POST', '/suppliers', 'Create a supplier.', 'commit'),
     customEndpoint('rest', 'PUT', '/suppliers/{number}', 'Update a supplier (full object).', 'commit'),
+    // Classic REST journal vouchers: draft lines (finance, supplier invoice,
+    // customer and supplier payment) in a journal (kassekladde). Not booked.
+    customEndpoint('rest', 'POST', '/journals/{journalNumber}/vouchers', 'Create journal vouchers (draft entries, not booked).', 'draft'),
+    // Booking a draft invoice is irreversible; the base policy denies the path
+    // except for the gateway's book_invoice tool when the host allows booking.
+    customEndpoint('rest', 'POST', '/invoices/booked', 'Book a draft invoice (irreversible).', 'dangerous'),
     customEndpoint('journals', 'POST', '/journals/{number}/book', 'Book a journal.', 'dangerous'),
     customEndpoint('journals', 'POST', '/entries/draft/{journalNumber}/book', 'Book draft entries.', 'dangerous'),
     customEndpoint('journals', 'POST', '/journals/{journalNumber}/bookdraftentries', 'Book specific draft entries (irreversible).', 'dangerous'),
