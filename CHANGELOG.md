@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.20.0
+
+Deleting drafts and booking a whole journal in the embedded gateway (#88).
+Additive for embedders; the fence is narrower for `DELETE` only.
+
+- Delete tools (write, not booking): `delete_journal_entry` (a draft entry of
+  a journal, journalsapi `DELETE /draft-entries/{n}`), `delete_draft_invoice`,
+  `delete_draft_quote`, `delete_draft_order` (REST `DELETE /…/drafts/{n}`)
+  and `delete_time_entry` (projectsapi `DELETE /TimeEntries/{n}`). Each reads
+  the record's status right before the `DELETE`: it must be found as a draft
+  (a quote or order also not sent or archived; a time entry with `isApproved`
+  and `isReconciled` both false). A 404, any other error, or an answer
+  without a body deletes nothing. Change action `delete`; log values are
+  numbers only.
+- `book_journal` (booking): books every draft entry of one journal, up to
+  100. The caller gives `entryCount`; when the journal holds another number,
+  nothing is booked. Exactly the entries read and checked are booked through
+  `bookdraftentries`, with the guardrails of `book_journal_entries` (vouchers
+  need a document unless `requireVoucher: false`). Log values: `journalNumber`
+  and `entryCount`.
+- The fence (`GATEWAY_FENCE`) refuses `DELETE` on every path but the five in
+  the new export `GATEWAY_DELETABLE`. Still fenced: `deletebulk` and
+  `/draft-entries/delete/{n}`, booked invoices and entries, customers,
+  suppliers, products, accounts, projects, attached documents, the
+  whole-journal booking paths (`/book`, `bookWithDateInterval`), bank
+  information, accounting years, the chart of accounts, users and settings.
+
 ## 0.17.0
 
 Dimensions in the embedded gateway (#69). Additive for embedders.

@@ -12,7 +12,7 @@ import { basePolicy, checkPolicy } from '../src/economic/policy.js';
 import { canonicalEndpointCall } from '../src/economic/endpoints.js';
 import { MAX_DRAFT_PAGES, validateBooking } from '../src/economic/bookings.js';
 
-const BOOKING_TOOLS = ['book_journal_entries', 'book_invoice', 'match_open_items', 'approve_time_entries'];
+const BOOKING_TOOLS = ['book_journal', 'book_journal_entries', 'book_invoice', 'match_open_items', 'approve_time_entries'];
 const context = { credentials: { agreementGrantToken: 'grant-token-for-tests' } };
 
 type Responder = (request: Request, body: unknown) => Response | undefined;

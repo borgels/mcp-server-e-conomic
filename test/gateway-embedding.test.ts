@@ -239,6 +239,12 @@ describe('declared upstream requests', () => {
       return Response.json({ items: [{ number: 6001, voucherNumber: 501, accountingYear: '2026' }] });
     }
     if (request.method === 'GET' && path.startsWith('/invoices/drafts/')) return Response.json({ draftInvoiceNumber: 7 });
+    if (request.method === 'GET' && /\/draft-entries\/11$/.test(path)) return Response.json({ entryNumber: 11, journalNumber: 1, voucherNumber: 501 });
+    if (request.method === 'GET' && /^\/(quotes|orders)\/drafts\/\d+$/.test(path)) return Response.json({ quoteNumber: 3, orderNumber: 4 });
+    if (request.method === 'GET' && /^\/(quotes|orders)\/(sent|archived)\/(3|4)$/.test(path)) return new Response('', { status: 404 });
+    if (request.method === 'GET' && /\/TimeEntries\/\d+$/.test(path)) {
+      return Response.json({ number: 5, projectNumber: 1, activityNumber: 1, employeeNumber: 1, isApproved: false, isReconciled: false });
+    }
     if (request.method === 'GET' && path.endsWith('/upgrade-instructions/order')) return Response.json({ order: { customer: { customerNumber: 1 } } });
     if (request.method === 'GET' && path.endsWith('/upgrade-instructions/draftInvoice')) {
       return Response.json({ draftInvoice: { customer: { customerNumber: 1 } } });
@@ -299,8 +305,14 @@ describe('declared upstream requests', () => {
       { journalNumber: 1, entryNumbers: [11, 12] },
       { journalNumber: 1, voucherNumbers: [501] },
     ],
+    book_journal: [{ journalNumber: 1, entryCount: 2 }, { journalNumber: 1, entryCount: 2, requireVoucher: false }],
     book_invoice: [{ draftInvoiceNumber: 7 }],
     match_open_items: [{ entryIds: [800001, 800002] }],
+    delete_journal_entry: [{ journalNumber: 1, entryNumber: 11 }],
+    delete_draft_invoice: [{ draftInvoiceNumber: 7 }],
+    delete_draft_quote: [{ quoteNumber: 3 }],
+    delete_draft_order: [{ orderNumber: 4 }],
+    delete_time_entry: [{ timeEntryNumber: 5 }],
   };
 
   function inputsFor(name: string): GatewayJsonObject[] {
