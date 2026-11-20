@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.11.2
+
+Backport to the 0.11 line of deleting drafts and booking a whole journal in
+the embedded gateway (#88, 0.20.0 on main), for hosts still on 0.11
+(borgels/letmcp#619). Additive for embedders; the fence is narrower for
+`DELETE` only.
+
+- Delete tools (write, not booking): `delete_journal_entry` (a draft entry of
+  a journal, journalsapi `DELETE /draft-entries/{n}`), `delete_draft_invoice`
+  (REST `DELETE /invoices/drafts/{n}`) and `delete_time_entry` (projectsapi
+  `DELETE /TimeEntries/{n}`). Each reads the record's status right before the
+  `DELETE`: it must be found as a draft (a time entry with `isApproved` and
+  `isReconciled` both false). A 404, any other error, or an answer without a
+  body deletes nothing. Change action `delete`; log values are numbers only.
+  The 0.11 line has no quotes or orders, so there is nothing to delete there.
+- `book_journal` (booking): books every draft entry of one journal, up to
+  100. The caller gives `entryCount`; when the journal holds another number,
+  nothing is booked. Exactly the entries read and checked are booked through
+  `bookdraftentries`, with the guardrails of `book_journal_entries`. Log
+  values: `journalNumber` and `entryCount`.
+- The fence (`GATEWAY_FENCE`) refuses `DELETE` on every path but the three in
+  the new export `GATEWAY_DELETABLE`. Still fenced: everything else, as in
+  0.11.0, including `/journals/{n}/book` and `bookWithDateInterval`.
+
 ## 0.11.1
 
 Backport to the 0.11 line of the fixes in 0.14.1 and 0.14.2 (#81, #82), for

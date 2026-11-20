@@ -25,9 +25,13 @@ describe('e-conomic gateway export', () => {
       ['upsert_account', 'destructive', false],
       ['create_journal_entries', 'write', false],
       ['register_payment', 'write', false],
+      ['book_journal', 'write', false],
       ['book_journal_entries', 'write', false],
       ['book_invoice', 'write', false],
       ['match_open_items', 'write', false],
+      ['delete_journal_entry', 'write', false],
+      ['delete_draft_invoice', 'write', false],
+      ['delete_time_entry', 'write', false],
     ]);
     // Write tools must never be enabled by default.
     const writeTools = economicGatewayTools.filter(tool => tool.riskLevel !== 'read');
@@ -42,9 +46,13 @@ describe('e-conomic gateway export', () => {
       'upsert_account',
       'create_journal_entries',
       'register_payment',
+      'book_journal',
       'book_journal_entries',
       'book_invoice',
       'match_open_items',
+      'delete_journal_entry',
+      'delete_draft_invoice',
+      'delete_time_entry',
     ]);
     expect(writeTools.every(tool => tool.enabledByDefault === false)).toBe(true);
   });

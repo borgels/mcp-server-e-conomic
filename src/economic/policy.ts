@@ -6,7 +6,8 @@ export interface EconomicPolicy {
   /**
    * Gates the curated booking capabilities (economic_prepare_booking /
    * economic_prepare_open_item_match + economic_commit_booking, and the
-   * gateway's book_journal_entries, book_invoice and match_open_items). Booking and
+   * gateway's book_journal, book_journal_entries, book_invoice, approve_time_entries
+   * and match_open_items). Booking and
    * matching are irreversible in e-conomic; the raw endpoint paths stay
    * denied for every other capability regardless of this flag.
    */
@@ -96,6 +97,7 @@ const BOOKING_CAPABILITY_PATHS: Record<string, RegExp> = {
   economic_prepare_booking: /^\/journals\/(\{journalNumber\}|\d+)\/bookdraftentries$/,
   economic_prepare_open_item_match: /^\/booked-entries\/match$/,
   book_journal_entries: /^\/journals\/(\{journalNumber\}|\d+)\/bookdraftentries$/,
+  book_journal: /^\/journals\/(\{journalNumber\}|\d+)\/bookdraftentries$/,
   match_open_items: /^\/booked-entries\/match$/,
   book_invoice: /^\/invoices\/booked$/,
 };
@@ -103,6 +105,20 @@ const BOOKING_CAPABILITY_PATHS: Record<string, RegExp> = {
 export function isBookingCapability(capability: string): boolean {
   return capability in BOOKING_CAPABILITY_PATHS;
 }
+
+/**
+ * The embedded gateway's delete tools and the one endpoint each may target.
+ * They delete a record that has had no effect outside e-conomic (a draft, or a
+ * time entry that is neither approved nor reconciled); the tool reads its
+ * status right before the DELETE. Any other DELETE goes through the ordinary
+ * checks (DELETE is not in the default allowedMethods), and the gateway's fixed
+ * fence refuses every other DELETE path whatever the policy says.
+ */
+const DELETE_CAPABILITY_PATHS: Record<string, RegExp> = {
+  delete_journal_entry: /^\/draft-entries\/(\{number\}|\d+)$/,
+  delete_draft_invoice: /^\/invoices\/drafts\/(\{number\}|\d+)$/,
+  delete_time_entry: /^\/TimeEntries\/(\{number\}|\d+)$/,
+};
 
 export function checkPolicy(rawInput: PolicyCheckInput, policy = loadPolicy()): PolicyDecision {
   // Defence in depth: callers pass the catalog's spelling, but a path without
@@ -115,6 +131,15 @@ export function checkPolicy(rawInput: PolicyCheckInput, policy = loadPolicy()): 
 
   if (!policy.writesEnabled) {
     return { allowed: false, reason: 'writes disabled', policy };
+  }
+
+  // The gateway's delete tools: DELETE on their one endpoint, nothing else.
+  const deletePattern = DELETE_CAPABILITY_PATHS[input.capability];
+  if (deletePattern) {
+    if (input.method !== 'DELETE' || !deletePattern.test(input.path)) {
+      return { allowed: false, reason: `deletion not allowed: ${input.method} ${input.path}`, policy };
+    }
+    return { allowed: true, reason: 'deletion of a draft allowed by its tool', policy };
   }
 
   // Curated booking capabilities: allowed only on their exact endpoint and
