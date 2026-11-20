@@ -402,7 +402,7 @@ is the default. Anything else is refused before a request is sent.
 | `search_entities` | `rest:customers`, `rest:suppliers`, `rest:products`, `rest:accounts`, `projects:Projects` |
 | `customer_overview` | `customers:Customers`, `customers:Contacts`, `customers:DeliveryLocations`, `rest:customers`, `rest:customer-groups` |
 | `supplier_overview` | `rest:suppliers`, `rest:supplier-groups`, `suppliers:Contacts`, `suppliers:Groups` |
-| `product_overview` | `products:products`, `products:productgroups`, `products:pricegroups`, `products:salespriceincurrencies`, `products:specialprices`, `rest:products`, `rest:product-groups`, `rest:units` |
+| `product_overview` | `products:products`, `products:productgroups`, `products:pricegroups`, `products:salespriceincurrencies`, `rest:products`, `rest:product-groups`, `rest:units` |
 | `report_data` | `accounts:Accounts`, `accounts:KeyFigureCodes`, `accounts:TotalIntervals`, `rest:accounts`, `rest:accounting-years`, `accounting-years:AccountingYears`, `accounting-years:accountingYears/periods`, `budgets:budget-figures` |
 | `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |
 | `project_overview` | `projects:Projects`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
@@ -531,6 +531,14 @@ Run the optional live GET smoke test with demo or real credentials:
 
 ```sh
 ECONOMIC_APP_SECRET_TOKEN="demo" ECONOMIC_AGREEMENT_GRANT_TOKEN="demo" npm run smoke:live
+```
+
+Call every read tool of `./gateway` on every target it may read against
+e-conomic's public demo agreement (both tokens `demo`; the demo agreement has
+the SuperUser role). It prints one line per call and never the data:
+
+```sh
+npm run check:demo
 ```
 
 ## API Sources

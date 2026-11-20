@@ -1,6 +1,6 @@
 {
   "name": "mcp-server-e-conomic",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Policy-aware MCP server for Visma e-conomic APIs.",
   "type": "module",
   "main": "./dist/transports/stdio.js",
@@ -30,7 +30,8 @@
     "test": "vitest run",
     "prepare": "npm run build",
     "prepack": "npm run typecheck && npm test && npm run build",
-    "smoke:live": "tsx test/live-smoke.ts"
+    "smoke:live": "tsx test/live-smoke.ts",
+    "check:demo": "tsx test/demo-check.ts"
   },
   "repository": {
     "type": "git",

@@ -684,7 +684,6 @@ const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
     ref('products', 'productgroups'),
     ref('products', 'pricegroups'),
     ref('products', 'salespriceincurrencies'),
-    ref('products', 'specialprices'),
     ref('rest', 'products'),
     ref('rest', 'product-groups'),
     ref('rest', 'units'),
@@ -810,7 +809,7 @@ function targetOperations(target: EconomicResourceRef): GatewayUpstreamOperation
   const service = findService(target.serviceId);
   const templates = service.surface === 'rest'
     ? [base, `${base}/{number}`]
-    : [pagedPathTemplate(service, target.resource), base, `${base}/{number}`];
+    : [pagedPathTemplate(service, target.resource), base, `${base}/{number}`].filter((template): template is string => template !== undefined);
   return templates.map(template => operation('read', 'GET', target.serviceId, target.resource, template));
 }
 
@@ -935,7 +934,7 @@ const TOOL_SPECS: ToolSpec[] = [
   narrowReadTool(
     'product_overview',
     'Get e-conomic product overview',
-    'Read products (default), product groups, price groups, prices in currencies, special prices, or units. Reads product resources only.',
+    'Read products (default), product groups, price groups, prices in currencies, or units. Reads product resources only.',
   ),
   narrowReadTool(
     'report_data',

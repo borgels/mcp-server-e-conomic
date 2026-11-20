@@ -32,6 +32,31 @@ describe('e-conomic catalog', () => {
     );
   });
 
+  it('pins the OpenAPI versions e-conomic publishes (apis.e-conomic.com, read 20.11.2026)', () => {
+    const pinned = Object.fromEntries(
+      ECONOMIC_SERVICES.filter(service => service.surface === 'openapi').map(service => [service.id, service.servicePath]),
+    );
+    expect(pinned).toEqual({
+      customers: 'customersapi/v3.1.0',
+      products: 'productsapi/v2.1.0',
+      accounts: 'accountsapi/v7.0.1',
+      projects: 'projectsapi/v1.1.1',
+      journals: 'journalsapi/v16.0.1',
+      q2c: 'q2capi/v7.0.0',
+      suppliers: 'suppliersapi/v2.0.0',
+      subscriptions: 'subscriptionsapi/v6.0.3',
+      dimensions: 'dimensionsapi/v5.3.1',
+      documents: 'documentsapi/v4.0.2',
+      'booked-entries': 'bookedEntriesapi/v7.0.0',
+      'accounting-years': 'accountingyearsapi/v2.0.1',
+      budgets: 'budgetsapi/v2.0.0',
+      webhooks: 'webhooksapi/v1.0.0',
+    });
+    for (const service of ECONOMIC_SERVICES.filter(item => item.surface === 'openapi')) {
+      expect(service.servicePath.endsWith(`/v${service.version}`)).toBe(true);
+    }
+  });
+
   it('searches curated tools and endpoint capabilities', () => {
     const results = searchCapabilities('customer');
 

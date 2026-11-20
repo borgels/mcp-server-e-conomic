@@ -442,7 +442,29 @@ describe('e-conomic gateway export', () => {
     // TimeEntries resource selects a different projects resource on the OpenAPI surface.
     const result = await gateway.callTool('project_overview', { resource: 'TimeEntries' });
     expect(result.isError).toBeUndefined();
-    expect(requests[0]?.url).toContain('apis.e-conomic.com/projectsapi/v1.1.0/TimeEntries/paged');
+    expect(requests[0]?.url).toContain('apis.e-conomic.com/projectsapi/v1.1.1/TimeEntries/paged');
+  });
+
+  it('reads matched pairs at the collection path, which has no /paged endpoint (#72)', async () => {
+    const requests: Request[] = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      fetchImpl: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json({ items: [] });
+      },
+    });
+
+    const result = await gateway.callTool('accounting_entries', { resource: 'booked-entries/matched-pairs' });
+    expect(result.isError).toBeUndefined();
+    expect(new URL(requests[0]!.url).pathname).toBe('/bookedEntriesapi/v7.0.0/booked-entries/matched-pairs');
+    const upstream = economicToolCatalog.find(tool => tool.name === 'accounting_entries')?.upstream ?? [];
+    expect(upstream.map(op => op.path)).not.toContain('/bookedEntriesapi/v7.0.0/booked-entries/matched-pairs/paged');
+  });
+
+  it('does not offer special prices as a top-level product resource (#63)', async () => {
+    expect(resolveEconomicReadTarget('product_overview', { resource: 'specialprices' })).toMatchObject({ ok: false });
   });
 
   it('pages products via /productspaged/paged in product_overview (#61)', async () => {
@@ -458,14 +480,14 @@ describe('e-conomic gateway export', () => {
 
     const result = await gateway.callTool('product_overview', {});
     expect(result.isError).toBeUndefined();
-    expect(new URL(requests[0]!.url).pathname).toBe('/productsapi/v2.0.0/productspaged/paged');
+    expect(new URL(requests[0]!.url).pathname).toBe('/productsapi/v2.1.0/productspaged/paged');
     expect(resolveEconomicReadTarget('product_overview', {})).toMatchObject({
       ok: true,
       target: { serviceId: 'products', resource: 'products', pathTemplate: '/productspaged/paged' },
     });
     const upstream = economicToolCatalog.find(tool => tool.name === 'product_overview')?.upstream ?? [];
-    expect(upstream.map(op => op.path)).toContain('/productsapi/v2.0.0/productspaged/paged');
-    expect(upstream.map(op => op.path)).not.toContain('/productsapi/v2.0.0/products/paged');
+    expect(upstream.map(op => op.path)).toContain('/productsapi/v2.1.0/productspaged/paged');
+    expect(upstream.map(op => op.path)).not.toContain('/productsapi/v2.1.0/products/paged');
   });
 
   it('registers a project time entry via POST /TimeEntries when writes are enabled', async () => {
@@ -492,7 +514,7 @@ describe('e-conomic gateway export', () => {
 
     expect(result.isError).toBeUndefined();
     const post = calls.find(call => call.method === 'POST');
-    expect(post?.url).toContain('/projectsapi/v1.1.0/TimeEntries');
+    expect(post?.url).toContain('/projectsapi/v1.1.1/TimeEntries');
     expect(post?.body).toMatchObject({
       date: '2026-05-02',
       hours: 4,
@@ -542,7 +564,7 @@ describe('e-conomic gateway export', () => {
     const result = await gateway.callTool('upsert_project', { projectNumber: 5001, description: 'Ny beskrivelse' });
     expect(result.isError).toBeUndefined();
     const put = calls.find(call => call.method === 'PUT');
-    expect(put?.url).toContain('/projectsapi/v1.1.0/Projects');
+    expect(put?.url).toContain('/projectsapi/v1.1.1/Projects');
     // Read-merge-write keeps objectVersion + existing refs while applying the change.
     expect(put?.body).toMatchObject({
       projectNumber: 5001,
@@ -635,7 +657,7 @@ describe('e-conomic gateway export', () => {
     const result = await gateway.callTool('upsert_employee', { name: 'Ny Medarbejder' });
     expect(result.isError).toBeUndefined();
     const post = calls.find(call => call.method === 'POST');
-    expect(post?.url).toContain('/projectsapi/v1.1.0/Employees');
+    expect(post?.url).toContain('/projectsapi/v1.1.1/Employees');
     expect(post?.body).toMatchObject({ name: 'Ny Medarbejder' });
   });
 

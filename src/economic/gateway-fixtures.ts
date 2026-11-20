@@ -281,7 +281,7 @@ function upsertEmployeeFixture(input: GatewayJsonObject): GatewayContractFixture
       action,
       employeeNumber: resolvedNumber,
       name: typeof input.name === 'string' ? input.name : 'Demo Medarbejder',
-      self: `https://apis.e-conomic.com/projectsapi/v1.1.0/Employees/${resolvedNumber}`,
+      self: `https://apis.e-conomic.com/projectsapi/v1.1.1/Employees/${resolvedNumber}`,
     },
   };
 }
@@ -298,7 +298,7 @@ function upsertProjectFixture(input: GatewayJsonObject): GatewayContractFixture 
       action,
       projectNumber: resolvedNumber,
       name: typeof input.name === 'string' ? input.name : 'Servicekontrakt Nord',
-      self: `https://apis.e-conomic.com/projectsapi/v1.1.0/Projects/${resolvedNumber}`,
+      self: `https://apis.e-conomic.com/projectsapi/v1.1.1/Projects/${resolvedNumber}`,
     },
   };
 }
