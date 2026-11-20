@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.14.0
+
+Key figures in the embedded gateway (#66). Additive for embedders.
+
+- Read tool `key_figures`: for an accounting year (default: the year that
+  holds today) or one of its periods, with the same figures for the year
+  before (`compare`, default true): turnover, gross profit, contribution
+  margin, result before depreciation, operating result, result before tax and
+  result. They are summed per key figure code (accountsapi `KeyFigureCodes`
+  and each account's `keyFigureCodeNumber`) from the totals per account
+  (`/accounting-years/{year}/totals`, or `/periods/{period}/totals`), so they
+  do not depend on a company's account numbers. Also, from the current
+  balances: cash, receivables, supplier debt and VAT owed (the VAT accounts in
+  `/vat-accounts`); and from `/invoices/totals`: unpaid and overdue invoices.
+  The answer has sums only: no account, entry, customer or supplier. Income
+  is shown positive.
+- `report_data`: with `rest:accounting-years`, `number` (the year) and
+  `totals: true`, the totals per account for the year, or for one `period`.
+- The catalog has `/accounting-years/{number}/totals`,
+  `/accounting-years/{number}/periods/{period}/totals` and `/invoices/totals`.
+- Checked against the demo agreement: `key_figures` for 2022 and the totals
+  of a period answer.
+
 ## 0.13.0
 
 Attached documents (bilag) and PDFs in the embedded gateway (#65). Additive

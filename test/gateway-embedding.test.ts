@@ -211,7 +211,12 @@ describe('declared upstream requests', () => {
     }
     if (request.method === 'GET' && /^\/(products\/NEW|accounts\/2000)$/.test(path)) return new Response('', { status: 404 });
     if (request.method === 'GET' && path === '/accounting-years') {
-      return Response.json({ collection: [{ year: '2026', fromDate: '2026-01-01', toDate: '2026-12-31' }] });
+      return Response.json({
+        collection: [
+          { year: '2025', fromDate: '2025-01-01', toDate: '2025-12-31', self: 'https://restapi.e-conomic.com/accounting-years/2025' },
+          { year: '2026', fromDate: '2026-01-01', toDate: '2026-12-31', self: 'https://restapi.e-conomic.com/accounting-years/2026' },
+        ],
+      });
     }
     if (request.method === 'GET' && path.endsWith('/draft-entries')) {
       return Response.json({
@@ -286,6 +291,7 @@ describe('declared upstream requests', () => {
   function inputsFor(name: string): GatewayJsonObject[] {
     if (writeInputs[name]) return writeInputs[name]!;
     if (name === 'check_connection' || name === 'company_context') return [{}];
+    if (name === 'key_figures') return [{}, { accountingYear: '2026', period: 3 }, { accountingYear: '2025', compare: false }];
     if (name === 'get_entity') {
       return [
         ...allResources.map(target => ({ ...target, number: 1 })),
