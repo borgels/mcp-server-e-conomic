@@ -294,6 +294,23 @@ export function economicGatewayContractFixture(
     case 'create_draft_order':
       return salesDraftFixture(toolName, input);
 
+    case 'update_draft_invoice':
+      return {
+        text: 'Changed the contract draft invoice.',
+        structuredContent: { mode: 'contract', draftInvoiceNumber: numberOr(input.draftInvoiceNumber, 0) },
+      };
+
+    case 'create_credit_note_draft':
+      return {
+        text: 'Created a contract credit note as a draft invoice.',
+        structuredContent: {
+          mode: 'contract',
+          draftInvoiceNumber: 90200,
+          references: { other: String(numberOr(input.bookedInvoiceNumber, 0)) },
+          netAmount: -8000,
+        },
+      };
+
     case 'upgrade_quote':
     case 'upgrade_order': {
       const toOrder = toolName === 'upgrade_quote' && input.to === 'order';

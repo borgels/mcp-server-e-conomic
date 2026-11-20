@@ -356,6 +356,58 @@ const createDraftInvoiceInput = salesDraftInput('Invoice');
 const createDraftQuoteInput = salesDraftInput('Quote');
 const createDraftOrderInput = salesDraftInput('Order');
 
+const updateDraftInvoiceInput = {
+  type: 'object',
+  required: ['draftInvoiceNumber'],
+  properties: {
+    draftInvoiceNumber: { type: 'integer', minimum: 1, description: 'The draft invoice to change.' },
+    date: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'New invoice date (YYYY-MM-DD).' },
+    dueDate: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'New due date (YYYY-MM-DD).' },
+    paymentTermsNumber: { type: 'integer', minimum: 1, description: 'New payment terms.' },
+    layoutNumber: { type: 'integer', minimum: 1, description: 'New layout.' },
+    reference: { type: 'string', maxLength: 250, description: 'New free-text reference on the draft.' },
+    notes: {
+      type: 'object',
+      properties: {
+        heading: { type: 'string', maxLength: 250 },
+        textLine1: { type: 'string', maxLength: 1000 },
+      },
+      additionalProperties: false,
+    },
+    lines: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 200,
+      description: 'The new lines; they replace all lines of the draft. Same shape as create_draft_invoice.',
+      items: createDraftInvoiceInput.properties.lines.items,
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const createCreditNoteDraftInput = {
+  type: 'object',
+  required: ['bookedInvoiceNumber'],
+  properties: {
+    bookedInvoiceNumber: { type: 'integer', minimum: 1, description: 'The booked invoice to credit.' },
+    lineNumbers: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 200,
+      items: { type: 'integer', minimum: 1 },
+      description: 'Credit only these lines of the invoice (their full quantity). Default: every line.',
+    },
+    date: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'Date of the credit note (YYYY-MM-DD). Default: today.' },
+    dueDate: {
+      type: 'string',
+      pattern: String.raw`^\d{4}-\d{2}-\d{2}$`,
+      description: 'Due date (YYYY-MM-DD), sent when the invoice\'s payment terms are of the type dueDate. Default: the date of the credit note.',
+    },
+    reference: { type: 'string', maxLength: 250, description: 'Reference on the draft. Default: the number of the credited invoice.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const upgradeQuoteInput = {
   type: 'object',
   required: ['quoteNumber', 'to'],
@@ -1332,6 +1384,28 @@ const TOOL_SPECS: ToolSpec[] = [
     ],
   }),
   writeTool({
+    name: 'update_draft_invoice',
+    title: 'Change an e-conomic draft invoice',
+    description: `Change a draft invoice: date, due date, payment terms, layout, reference, notes, or all its lines (reads the draft and merges the change). Nothing is booked or sent. ${WRITE_NOTE}`,
+    inputSchema: updateDraftInvoiceInput,
+    change: change('upsert', 'draft-invoice', { draftInvoiceNumber: 'recordNumber', date: 'date', dueDate: 'date' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'invoices/drafts', '/invoices/drafts/{number}'),
+      operation('write', 'PUT', 'rest', 'invoices/drafts', '/invoices/drafts/{number}'),
+    ],
+  }),
+  writeTool({
+    name: 'create_credit_note_draft',
+    title: 'Create an e-conomic credit note as a draft',
+    description: `Create a draft invoice that credits a booked invoice: the same customer, recipient, currency, terms and layout, with the invoice's lines (or the chosen ones) at negative quantities. It is a draft: nothing is booked or sent; book it with book_invoice. ${WRITE_NOTE}`,
+    inputSchema: createCreditNoteDraftInput,
+    change: change('create', 'credit-note-draft', { bookedInvoiceNumber: 'recordNumber', date: 'date', dueDate: 'date' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'invoices/booked', '/invoices/booked/{number}'),
+      operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
+    ],
+  }),
+  writeTool({
     name: 'create_draft_quote',
     title: 'Create e-conomic draft quote',
     description: `Create a draft quote for a customer. The quote is not sent to the customer. ${WRITE_NOTE}`,
@@ -2006,7 +2080,13 @@ export function resolveEconomicChange(
     const value = logValue(spec, field, input[field.name]);
     if (value !== undefined) values[field.name] = value;
   }
-  const lines = SALES_DRAFTS[spec.name] ? input.lines : spec.name === 'create_journal_entries' ? input.entries : undefined;
+  const lines = SALES_DRAFTS[spec.name] || spec.name === 'update_draft_invoice'
+    ? input.lines
+    : spec.name === 'create_journal_entries'
+      ? input.entries
+      : spec.name === 'create_credit_note_draft'
+        ? input.lineNumbers
+        : undefined;
   if (Array.isArray(lines)) values.lineCount = lines.length;
   return {
     ok: true,
@@ -2371,6 +2451,10 @@ async function writeResult(
     case 'upgrade_quote':
     case 'upgrade_order':
       return upgradeSalesDocument(client, toolName, input, writePolicy);
+    case 'update_draft_invoice':
+      return updateDraftInvoice(client, input, writePolicy);
+    case 'create_credit_note_draft':
+      return createCreditNoteDraft(client, input, writePolicy);
     case 'attach_voucher_file':
       return attachVoucherFile(client, input, writePolicy);
     case 'set_entry_dimensions':
@@ -2456,6 +2540,285 @@ interface DraftCustomer {
   vatZone?: { vatZoneNumber?: number };
 }
 
+/** The lines of a sales document draft, from the tools' line input. */
+function draftLines(rawLines: GatewayJsonValue[]): { lines: GatewayJsonObject[] } | { error: string } {
+  const lines: GatewayJsonObject[] = [];
+  for (let index = 0; index < rawLines.length; index += 1) {
+    const source = rawLines[index];
+    const line = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
+    const productNumber = stringOrNumberValue(line.productNumber);
+    const quantity = numberValue(line.quantity);
+    if (productNumber === undefined) {
+      return { error: `Line ${index + 1} requires a productNumber; e-conomic requires a product reference on each line.` };
+    }
+    if (quantity === undefined) {
+      return { error: `Line ${index + 1} requires a numeric quantity.` };
+    }
+
+    const built: GatewayJsonObject = { lineNumber: index + 1, product: { productNumber }, quantity };
+    const description = stringValue(line.description);
+    if (description) {
+      built.description = description;
+    }
+    const unitNetPrice = numberValue(line.unitNetPrice);
+    if (unitNetPrice !== undefined) {
+      built.unitNetPrice = unitNetPrice;
+    }
+    lines.push(built);
+  }
+  return { lines };
+}
+
+/**
+ * The writable shape of a REST draft invoice on PUT (invoices.drafts.draftInvoiceNumber.put): `true` keeps a value,
+ * an object keeps only those fields of a nested object, and `lines` is applied to each line. Everything else (links,
+ * names of referenced records, amounts, margins, payment terms' type and days) is computed or read only.
+ */
+type Shape = { readonly [field: string]: true | Shape };
+const refShape = (field: string): Shape => ({ [field]: true });
+const DRAFT_LINE_SHAPE: Shape = {
+  lineNumber: true,
+  sortKey: true,
+  description: true,
+  accrual: { startDate: true, endDate: true },
+  unit: refShape('unitNumber'),
+  product: refShape('productNumber'),
+  quantity: true,
+  unitNetPrice: true,
+  discountPercentage: true,
+  unitCostPrice: true,
+  departmentalDistribution: refShape('departmentalDistributionNumber'),
+};
+const DRAFT_INVOICE_SHAPE: Shape = {
+  date: true,
+  dueDate: true,
+  currency: true,
+  exchangeRate: true,
+  paymentTerms: refShape('paymentTermsNumber'),
+  customer: refShape('customerNumber'),
+  recipient: {
+    name: true,
+    address: true,
+    zip: true,
+    city: true,
+    country: true,
+    ean: true,
+    publicEntryNumber: true,
+    cvr: true,
+    nemHandelType: true,
+    attention: refShape('customerContactNumber'),
+    vatZone: refShape('vatZoneNumber'),
+  },
+  deliveryLocation: refShape('deliveryLocationNumber'),
+  delivery: { address: true, zip: true, city: true, country: true, deliveryTerms: true, deliveryDate: true },
+  notes: { heading: true, textLine1: true, textLine2: true },
+  references: {
+    other: true,
+    customerContact: refShape('customerContactNumber'),
+    salesPerson: refShape('employeeNumber'),
+    vendorReference: refShape('employeeNumber'),
+  },
+  layout: refShape('layoutNumber'),
+  project: refShape('projectNumber'),
+  lines: DRAFT_LINE_SHAPE,
+};
+
+/** Only the fields a shape names, at every depth; arrays apply the shape to each item. */
+function pickShape(value: GatewayJsonValue | undefined, shape: Shape): GatewayJsonValue | undefined {
+  if (Array.isArray(value)) return value.map(item => pickShape(item, shape) ?? {});
+  if (!value || typeof value !== 'object') return undefined;
+  const picked: GatewayJsonObject = {};
+  for (const [field, inner] of Object.entries(shape)) {
+    const source = (value as GatewayJsonObject)[field];
+    if (source === undefined) continue;
+    const kept = inner === true ? (source && typeof source === 'object' ? undefined : source) : pickShape(source, inner);
+    if (kept !== undefined) picked[field] = kept;
+  }
+  return picked;
+}
+
+/** What of a draft invoice read with GET can go back in a PUT: its writable fields only. */
+function writableDraft(existing: GatewayJsonObject): GatewayJsonObject {
+  return (pickShape(existing, DRAFT_INVOICE_SHAPE) ?? {}) as GatewayJsonObject;
+}
+
+/** Changes a draft invoice (REST read-merge-write: GET then PUT /invoices/drafts/{n}). */
+async function updateDraftInvoice(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const number = positiveInteger(input.draftInvoiceNumber);
+  if (number === undefined) return errorResult('update_draft_invoice needs draftInvoiceNumber (a positive whole number).');
+  const changes: GatewayJsonObject = {};
+  for (const field of ['date', 'dueDate'] as const) {
+    if (input[field] !== undefined) {
+      const value = isoDateValue(input[field]);
+      if (!value) return errorResult(`${field} must be a date (YYYY-MM-DD).`);
+      changes[field] = value;
+    }
+  }
+  if (input.paymentTermsNumber !== undefined) {
+    const value = positiveInteger(input.paymentTermsNumber);
+    if (value === undefined) return errorResult('paymentTermsNumber must be a positive whole number.');
+    changes.paymentTerms = { paymentTermsNumber: value };
+  }
+  if (input.layoutNumber !== undefined) {
+    const value = positiveInteger(input.layoutNumber);
+    if (value === undefined) return errorResult('layoutNumber must be a positive whole number.');
+    changes.layout = { layoutNumber: value };
+  }
+  const reference = shortText(input.reference, 250);
+  if (!reference.ok) return errorResult('reference must be at most 250 characters.');
+  if (input.notes !== undefined) {
+    const notes = notesObject(input.notes);
+    if (!notes) return errorResult('notes needs heading or textLine1.');
+    changes.notes = notes;
+  }
+  if (input.lines !== undefined) {
+    const raw = Array.isArray(input.lines) ? input.lines : [];
+    if (raw.length === 0 || raw.length > 200) return errorResult('lines must hold 1-200 lines.');
+    const built = draftLines(raw);
+    if ('error' in built) return errorResult(built.error);
+    changes.lines = built.lines;
+  }
+  if (Object.keys(changes).length === 0 && reference.value === undefined) return errorResult('Give at least one field to change.');
+
+  const path = `/invoices/drafts/${number}`;
+  const early = writePolicyDenial(policy, { capability: 'update_draft_invoice', method: 'PUT', path, body: {} });
+  if (early) return early;
+
+  let existing: GatewayJsonObject;
+  try {
+    existing = (await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'GET',
+      pathTemplate: '/invoices/drafts/{number}',
+      pathParams: { number },
+    })) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Draft invoice ${number} does not exist (already booked or deleted?).`);
+    }
+    throw error;
+  }
+  const body: GatewayJsonObject = { ...writableDraft(existing), ...changes };
+  // Notes given are merged into the draft's notes: a new heading keeps the text lines.
+  if (changes.notes) body.notes = { ...asObject(writableDraft(existing).notes), ...asObject(changes.notes) } as GatewayJsonObject;
+  if (reference.value !== undefined) body.references = { ...asObject(writableDraft(existing).references), other: reference.value } as GatewayJsonObject;
+
+  const denied = writePolicyDenial(policy, { capability: 'update_draft_invoice', method: 'PUT', path, body, current: existing });
+  if (denied) return denied;
+  const updated = await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'PUT',
+    pathTemplate: '/invoices/drafts/{number}',
+    pathParams: { number },
+    body,
+  });
+  return jsonResult(`Changed draft invoice ${number}. Not booked or sent.`, updated);
+}
+
+/**
+ * A draft invoice that credits a booked invoice: the invoice's customer,
+ * recipient, currency, terms and layout, and its lines (or the chosen ones)
+ * at negative quantities. Lines without a product (text lines) are left out.
+ */
+async function createCreditNoteDraft(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const number = positiveInteger(input.bookedInvoiceNumber);
+  if (number === undefined) return errorResult('create_credit_note_draft needs bookedInvoiceNumber (a positive whole number).');
+  let wanted: number[] | undefined;
+  if (input.lineNumbers !== undefined) {
+    const raw = Array.isArray(input.lineNumbers) ? input.lineNumbers : [];
+    wanted = positiveIntegerList(raw, 200);
+    if (!wanted || wanted.length !== raw.length) return errorResult('lineNumbers must be 1-200 unique line numbers.');
+  }
+  const date = input.date === undefined ? new Date().toISOString().slice(0, 10) : isoDateValue(input.date);
+  if (!date) return errorResult('date must be a date (YYYY-MM-DD).');
+  const dueDate = input.dueDate === undefined ? undefined : isoDateValue(input.dueDate);
+  if (input.dueDate !== undefined && !dueDate) return errorResult('dueDate must be a date (YYYY-MM-DD).');
+  const reference = shortText(input.reference, 250);
+  if (!reference.ok) return errorResult('reference must be at most 250 characters.');
+
+  const early = writePolicyDenial(policy, { capability: 'create_credit_note_draft', method: 'POST', path: '/invoices/drafts', body: {} });
+  if (early) return early;
+
+  let invoice: GatewayJsonObject;
+  try {
+    invoice = (await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'GET',
+      pathTemplate: '/invoices/booked/{number}',
+      pathParams: { number },
+    })) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Booked invoice ${number} does not exist.`);
+    throw error;
+  }
+
+  const sourceLines = (Array.isArray(invoice.lines) ? invoice.lines : []).map(line => asObject(line));
+  const chosen = wanted ? sourceLines.filter(line => typeof line.lineNumber === 'number' && wanted.includes(line.lineNumber)) : sourceLines;
+  if (wanted && chosen.length !== wanted.length) {
+    return errorResult(`Booked invoice ${number} has no line ${wanted.filter(n => !chosen.some(line => line.lineNumber === n)).join(', ')}.`);
+  }
+  const lines: GatewayJsonObject[] = [];
+  for (const line of chosen) {
+    const productNumber = asObject(line.product).productNumber;
+    if ((typeof productNumber !== 'string' && typeof productNumber !== 'number') || typeof line.quantity !== 'number') continue;
+    const credited: GatewayJsonObject = { lineNumber: lines.length + 1, product: { productNumber }, quantity: -line.quantity };
+    if (typeof line.description === 'string' && line.description) credited.description = line.description;
+    if (typeof line.unitNetPrice === 'number') credited.unitNetPrice = line.unitNetPrice;
+    if (typeof line.discountPercentage === 'number') credited.discountPercentage = line.discountPercentage;
+    const unitNumber = asObject(line.unit).unitNumber;
+    if (typeof unitNumber === 'number') credited.unit = { unitNumber };
+    lines.push(credited);
+  }
+  if (lines.length === 0) return errorResult(`Booked invoice ${number} has no product lines to credit.`);
+
+  const customerNumber = asObject(invoice.customer).customerNumber;
+  const paymentTermsNumber = asObject(invoice.paymentTerms).paymentTermsNumber;
+  const layoutNumber = asObject(invoice.layout).layoutNumber;
+  const recipient = asObject(invoice.recipient);
+  const vatZoneNumber = asObject(recipient.vatZone).vatZoneNumber;
+  if (typeof customerNumber !== 'number' || typeof paymentTermsNumber !== 'number' || typeof layoutNumber !== 'number'
+    || typeof recipient.name !== 'string' || typeof vatZoneNumber !== 'number' || typeof invoice.currency !== 'string') {
+    return errorResult(`Booked invoice ${number} lacks the customer, terms, layout, recipient or currency a draft needs.`);
+  }
+  // Payment terms of the type dueDate need a due date on the draft (e-conomic's schema).
+  const needsDueDate = asObject(invoice.paymentTerms).paymentTermsType === 'dueDate';
+  const body: GatewayJsonObject = {
+    date,
+    ...(dueDate || needsDueDate ? { dueDate: dueDate ?? date } : {}),
+    currency: invoice.currency,
+    paymentTerms: { paymentTermsNumber },
+    customer: { customerNumber },
+    recipient: {
+      name: recipient.name,
+      vatZone: { vatZoneNumber },
+      ...Object.fromEntries(
+        ['address', 'zip', 'city', 'country', 'ean', 'publicEntryNumber']
+          .filter(field => typeof recipient[field] === 'string' && recipient[field])
+          .map(field => [field, recipient[field] as string]),
+      ),
+    },
+    layout: { layoutNumber },
+    references: { other: reference.value ?? String(number) },
+    lines,
+  };
+  const denied = writePolicyDenial(policy, { capability: 'create_credit_note_draft', method: 'POST', path: '/invoices/drafts', body });
+  if (denied) return denied;
+  const created = await callEndpoint(client, { serviceId: 'rest', method: 'POST', pathTemplate: '/invoices/drafts', body });
+  const draftNumber = asObject(created).draftInvoiceNumber;
+  return jsonResult(
+    `Created a credit note for invoice ${number} as draft invoice${typeof draftNumber === 'number' ? ` ${draftNumber}` : ''}. Not booked or sent.`,
+    created,
+  );
+}
+
 /** The sales document drafts the gateway creates, by tool: the REST path and the answer's noun. */
 const SALES_DRAFTS: Record<string, { path: '/invoices/drafts' | '/quotes/drafts' | '/orders/drafts'; noun: string }> = {
   create_draft_invoice: { path: '/invoices/drafts', noun: 'draft invoice' },
@@ -2483,30 +2846,9 @@ async function createSalesDraft(
     return errorResult(`${toolName} requires at least one line.`);
   }
 
-  const lines: GatewayJsonObject[] = [];
-  for (let index = 0; index < rawLines.length; index += 1) {
-    const source = rawLines[index];
-    const line = source && typeof source === 'object' && !Array.isArray(source) ? source : {};
-    const productNumber = stringOrNumberValue(line.productNumber);
-    const quantity = numberValue(line.quantity);
-    if (productNumber === undefined) {
-      return errorResult(`Line ${index + 1} requires a productNumber; e-conomic requires a product reference on each line.`);
-    }
-    if (quantity === undefined) {
-      return errorResult(`Line ${index + 1} requires a numeric quantity.`);
-    }
-
-    const built: GatewayJsonObject = { lineNumber: index + 1, product: { productNumber }, quantity };
-    const description = stringValue(line.description);
-    if (description) {
-      built.description = description;
-    }
-    const unitNetPrice = numberValue(line.unitNetPrice);
-    if (unitNetPrice !== undefined) {
-      built.unitNetPrice = unitNetPrice;
-    }
-    lines.push(built);
-  }
+  const builtLines = draftLines(rawLines);
+  if ('error' in builtLines) return errorResult(builtLines.error);
+  const lines = builtLines.lines;
 
   let customer: DraftCustomer = {};
   try {
@@ -3800,12 +4142,16 @@ async function setEntryDimensions(
   const current = items.find(item =>
     item.dimensionNumber === dimensionNumber && Object.entries(keys).every(([field, value]) => item[field] === value));
 
+  // A PUT needs the version read; without one nothing is sent (e-conomic would refuse it anyway).
+  if (current && (typeof current.objectVersion !== 'string' || current.objectVersion === '')) {
+    return errorResult(`e-conomic did not give the version of dimension ${dimensionNumber} on ${where}, so it was not changed. Try again.`);
+  }
   const body: GatewayJsonObject = {
     ...keys,
     dimensionNumber,
     dimensionKey,
     isDistribution: input.isDistribution === true,
-    ...(current && typeof current.objectVersion === 'string' ? { objectVersion: current.objectVersion } : {}),
+    ...(current ? { objectVersion: current.objectVersion as string } : {}),
   };
   const method = current ? 'PUT' : 'POST';
   const denied = writePolicyDenial(policy, { capability: 'set_entry_dimensions', serviceId: 'dimensions', method, path, body });

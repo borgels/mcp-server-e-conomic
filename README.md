@@ -424,6 +424,8 @@ Write gateway tools, disabled by default:
 | Tool | Risk | What it does |
 | --- | --- | --- |
 | `create_draft_invoice` | write | Draft sales invoice (not booked, not sent) |
+| `update_draft_invoice` | write | Changes a draft invoice: dates, terms, layout, reference, notes, or all its lines (read-merge-write; not booked, not sent) |
+| `create_credit_note_draft` | write | A draft invoice that credits a booked invoice (all lines or the chosen ones, at negative quantities); book it with `book_invoice` |
 | `create_draft_quote`, `create_draft_order` | write | Draft quote or draft order, built like a draft invoice (not sent) |
 | `upgrade_quote`, `upgrade_order` | write | Turns a draft quote into a draft order or draft invoice, or a draft order into a draft invoice, with e-conomic's upgrade template (not booked, not sent) |
 | `attach_voucher_file` | write | Attaches a PDF, JPEG or PNG (at most 9 MB, type checked by its first bytes) to a voucher by voucher number and accounting year (documentsapi). Fails when the voucher already has a document, unless `onConflict: merge`. The file is never logged |

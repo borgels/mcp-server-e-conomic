@@ -72,6 +72,38 @@ describe('set_entry_dimensions', () => {
     });
   });
 
+  it('sends a distribution as one, and refuses a change when the version is missing', async () => {
+    const added = fakeEconomic();
+    await added.gateway.callTool('set_entry_dimensions', { target: 'draftEntry', journalNumber: 3, entryNumber: 27, dimensionNumber: 1, dimensionKey: 2, isDistribution: true }, context);
+    expect(added.requests.at(-1)).toMatchObject({ method: 'POST', body: { isDistribution: true } });
+
+    const noVersion = fakeEconomic(request =>
+      request.method === 'GET'
+        ? Response.json({ items: [{ documentNumber: 7, lineNumber: 1, dimensionNumber: 1, dimensionKey: 1 }] })
+        : undefined);
+    const input = { target: 'salesDocumentLine', documentNumber: 7, lineNumber: 1, dimensionNumber: 1, dimensionKey: 4 };
+    const result = await noVersion.gateway.callTool('set_entry_dimensions', input, context);
+    expect(result.isError).toBe(true);
+    expect(noVersion.requests.map(request => request.method)).toEqual(['GET']);
+  });
+
+  it('says plainly that the dimension module is off, and keeps e-conomic’s own error when it is on', async () => {
+    const off = fakeEconomic(request =>
+      new URL(request.url).pathname === '/self'
+        ? Response.json({ modules: [{ moduleNumber: 4, name: 'Projektstyring' }] })
+        : new Response('{"message":"Forbidden"}', { status: 403 }));
+    const result = await off.gateway.callTool('dimension_overview', {}, context);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toMatch(/module is not enabled/);
+
+    const on = fakeEconomic(request =>
+      new URL(request.url).pathname === '/self'
+        ? Response.json({ modules: [{ moduleNumber: 30, name: 'Dimension' }] })
+        : new Response('{"message":"Something else"}', { status: 400, headers: { 'content-type': 'application/json' } }));
+    const kept = await on.gateway.callTool('dimension_overview', {}, context);
+    expect(kept.content[0]?.text).toContain('HTTP 400');
+  });
+
   it('refuses mixed or missing keys before anything is read', async () => {
     const { gateway, requests } = fakeEconomic();
     for (const input of [

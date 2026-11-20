@@ -22,6 +22,8 @@ describe('e-conomic gateway export', () => {
       ['get_document', 'read', true],
       ['accounting_entries', 'read', true],
       ['create_draft_invoice', 'write', false],
+      ['update_draft_invoice', 'write', false],
+      ['create_credit_note_draft', 'write', false],
       ['create_draft_quote', 'write', false],
       ['create_draft_order', 'write', false],
       ['upgrade_quote', 'write', false],
@@ -56,6 +58,8 @@ describe('e-conomic gateway export', () => {
     const writeTools = economicGatewayTools.filter(tool => tool.riskLevel !== 'read');
     expect(writeTools.map(tool => tool.name)).toEqual([
       'create_draft_invoice',
+      'update_draft_invoice',
+      'create_credit_note_draft',
       'create_draft_quote',
       'create_draft_order',
       'upgrade_quote',

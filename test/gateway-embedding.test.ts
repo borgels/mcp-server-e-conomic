@@ -245,6 +245,17 @@ describe('declared upstream requests', () => {
     if (request.method === 'GET' && /\/TimeEntries\/\d+$/.test(path)) {
       return Response.json({ number: 5, projectNumber: 1, activityNumber: 1, employeeNumber: 1, isApproved: false, isReconciled: false });
     }
+    if (request.method === 'GET' && path.startsWith('/invoices/booked/')) {
+      return Response.json({
+        bookedInvoiceNumber: 70001,
+        currency: 'DKK',
+        customer: { customerNumber: 1 },
+        paymentTerms: { paymentTermsNumber: 1 },
+        layout: { layoutNumber: 19 },
+        recipient: { name: 'C', vatZone: { vatZoneNumber: 1 } },
+        lines: [{ lineNumber: 1, product: { productNumber: 'P1' }, quantity: 2, unitNetPrice: 100 }],
+      });
+    }
     if (request.method === 'GET' && path.endsWith('/upgrade-instructions/order')) return Response.json({ order: { customer: { customerNumber: 1 } } });
     if (request.method === 'GET' && path.endsWith('/upgrade-instructions/draftInvoice')) {
       return Response.json({ draftInvoice: { customer: { customerNumber: 1 } } });
@@ -254,6 +265,8 @@ describe('declared upstream requests', () => {
 
   const writeInputs: Record<string, GatewayJsonObject[]> = {
     create_draft_invoice: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+    update_draft_invoice: [{ draftInvoiceNumber: 7, date: '2026-03-02', lines: [{ productNumber: 'P1', quantity: 2 }] }, { draftInvoiceNumber: 7, reference: 'PO 12' }],
+    create_credit_note_draft: [{ bookedInvoiceNumber: 70001 }, { bookedInvoiceNumber: 70001, lineNumbers: [1], date: '2026-03-02' }],
     create_draft_quote: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
