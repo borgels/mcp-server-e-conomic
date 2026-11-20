@@ -183,6 +183,28 @@ export function economicGatewayContractFixture(
     case 'product_overview':
       return collectionFixture('Fetched e-conomic contract products.', input, products);
 
+    case 'key_figures':
+      return {
+        text: 'Fetched e-conomic contract key figures.',
+        structuredContent: {
+          mode: 'contract',
+          accountingYear: typeof input.accountingYear === 'string' ? input.accountingYear : '2026',
+          fromDate: '2026-01-01',
+          toDate: '2026-12-31',
+          figures: {
+            turnover: 12000,
+            grossProfit: 7600,
+            contributionMargin: 5200,
+            resultBeforeDepreciation: 2100,
+            operatingResult: 1900,
+            resultBeforeTax: 1800,
+            result: 1404,
+          },
+          balancesNow: { cash: 5935.5, receivables: 10000, supplierDebt: 2500, vatOwed: 1250 },
+          invoicesNow: { unpaidGross: 10000, unpaidCount: 1, overdueGross: 0, overdueCount: 0 },
+        },
+      };
+
     case 'report_data':
       return collectionFixture('Fetched e-conomic contract report data.', input, accounts);
 

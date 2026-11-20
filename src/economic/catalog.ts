@@ -507,6 +507,11 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('documents', 'GET', '/AttachedDocuments/{number}/pdf', 'Fetch attached document PDF.', 'read'),
     // PDFs of draft and booked invoices (classic REST).
     customEndpoint('rest', 'GET', '/invoices/booked/{number}/pdf', 'Fetch the PDF of a booked invoice.', 'read'),
+    // Totals per account for an accounting year or one of its periods, and
+    // the totals of invoices (classic REST). Read by key_figures and report_data.
+    customEndpoint('rest', 'GET', '/accounting-years/{number}/totals', 'Totals per account for an accounting year.', 'read'),
+    customEndpoint('rest', 'GET', '/accounting-years/{number}/periods/{period}/totals', 'Totals per account for a period of an accounting year.', 'read'),
+    customEndpoint('rest', 'GET', '/invoices/totals', 'Totals of draft and booked invoices (unpaid, overdue, paid).', 'read'),
     customEndpoint('rest', 'GET', '/invoices/drafts/{number}/pdf', 'Fetch the PDF of a draft invoice.', 'read'),
     customEndpoint('booked-entries', 'POST', '/booked-entries/match', 'Match booked entries.', 'dangerous'),
   );

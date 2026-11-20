@@ -403,7 +403,8 @@ is the default. Anything else is refused before a request is sent.
 | `customer_overview` | `customers:Customers`, `customers:Contacts`, `customers:DeliveryLocations`, `rest:customers`, `rest:customer-groups` |
 | `supplier_overview` | `rest:suppliers`, `rest:supplier-groups`, `suppliers:Contacts`, `suppliers:Groups` |
 | `product_overview` | `products:products`, `products:productgroups`, `products:pricegroups`, `products:salespriceincurrencies`, `rest:products`, `rest:product-groups`, `rest:units` |
-| `report_data` | `accounts:Accounts`, `accounts:KeyFigureCodes`, `accounts:TotalIntervals`, `rest:accounts`, `rest:accounting-years`, `accounting-years:AccountingYears`, `accounting-years:accountingYears/periods`, `budgets:budget-figures` |
+| `key_figures` | Sums only, for an accounting year or a period, with the year before: turnover, gross profit, contribution margin, result before depreciation, operating result, result before tax and result (summed per key figure code from the totals per account); cash, receivables, supplier debt and VAT owed (current balances); unpaid and overdue invoices. No account, entry, customer or supplier |
+| `report_data` | `accounts:Accounts`, `accounts:KeyFigureCodes`, `accounts:TotalIntervals`, `rest:accounts`, `rest:accounting-years`, `accounting-years:AccountingYears`, `accounting-years:accountingYears/periods`, `budgets:budget-figures`; with `rest:accounting-years`, `number` (the year) and `totals: true`, the totals per account for the year or a `period` |
 | `quote_overview` | `rest:quotes/drafts`, `rest:quotes/sent`, `rest:quotes/archived` (one quote by `number` includes its lines) |
 | `order_overview` | `rest:orders/drafts`, `rest:orders/sent`, `rest:orders/archived` (one order by `number` includes its lines) |
 | `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |

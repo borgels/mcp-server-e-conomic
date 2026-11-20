@@ -687,6 +687,19 @@ const attachVoucherFileInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+const keyFiguresInput = {
+  type: 'object',
+  properties: {
+    accountingYear: {
+      type: 'string',
+      description: 'The accounting year as e-conomic names it, e.g. 2026 or 2025/2026. Default: the year that holds today, else the latest.',
+    },
+    period: { type: 'integer', minimum: 1, maximum: 99, description: 'A period number within the year (e.g. a month). Default: the whole year.' },
+    compare: { type: 'boolean', description: 'Also give the same figures for the year before (default true).' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const DEFAULT_REST_BASE_URL = 'https://restapi.e-conomic.com';
 const DEFAULT_OPENAPI_BASE_URL = 'https://apis.e-conomic.com';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -797,12 +810,24 @@ function pairList(targets: readonly EconomicResourceRef[]): string {
 
 /** Narrow read tools that can fetch the PDF of one record (`pdf: true`). */
 const PDF_TOOLS = new Set(['get_document']);
+/** Narrow read tools that can read the totals of an accounting year or period (`totals: true`). */
+const TOTALS_TOOLS = new Set(['report_data']);
+const TOTALS = ref('rest', 'accounting-years');
 
-function narrowReadInput(targets: readonly EconomicResourceRef[], pdf = false): GatewayJsonObject {
+function narrowReadInput(targets: readonly EconomicResourceRef[], pdf = false, totals = false): GatewayJsonObject {
   const [first] = targets;
   return {
     type: 'object',
     properties: {
+      ...(totals
+        ? {
+            totals: {
+              type: 'boolean',
+              description: 'rest:accounting-years with number (the year as in its self URL, e.g. 2026): the totals per account for the year, or for one period with period.',
+            },
+            period: { type: 'integer', minimum: 1, maximum: 99, description: 'With totals: the period number within the year.' },
+          }
+        : {}),
       ...(pdf
         ? {
             pdf: {
@@ -899,6 +924,12 @@ function upstreamOf(spec: ToolSpec): GatewayUpstreamOperation[] {
       );
   }
   const reads = spec.reads.flatMap(targetOperations);
+  if (TOTALS_TOOLS.has(spec.name)) {
+    reads.push(
+      operation('read', 'GET', TOTALS.serviceId, TOTALS.resource, '/accounting-years/{number}/totals'),
+      operation('read', 'GET', TOTALS.serviceId, TOTALS.resource, '/accounting-years/{number}/periods/{period}/totals'),
+    );
+  }
   if (!PDF_TOOLS.has(spec.name)) return reads;
   return [
     ...reads,
@@ -914,7 +945,7 @@ function narrowReadTool(name: string, title: string, description: string): ToolS
     description,
     riskLevel: 'read',
     enabledByDefault: true,
-    inputSchema: narrowReadInput(reads, PDF_TOOLS.has(name)),
+    inputSchema: narrowReadInput(reads, PDF_TOOLS.has(name), TOTALS_TOOLS.has(name)),
     broad: false,
     reads,
     booking: false,
@@ -1010,10 +1041,32 @@ const TOOL_SPECS: ToolSpec[] = [
     'Get e-conomic product overview',
     'Read products (default), product groups, price groups, prices in currencies, or units. Reads product resources only.',
   ),
+  {
+    name: 'key_figures',
+    title: 'Get e-conomic key figures',
+    description:
+      'Key figures for an accounting year (default: the year that holds today) or one of its periods, with the same figures for the year before: turnover, gross profit, result before depreciation, operating result, result before tax and result, from the totals per key figure code; cash, receivables, supplier debt and VAT owed from the current balances; unpaid and overdue invoices. Only sums: no account, entry, customer or supplier.',
+    riskLevel: 'read',
+    enabledByDefault: true,
+    inputSchema: keyFiguresInput,
+    broad: false,
+    reads: [],
+    booking: false,
+    upstream: [
+      operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years'),
+      operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years/{number}/totals'),
+      operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years/{number}/periods/{period}/totals'),
+      operation('read', 'GET', 'accounts', 'Accounts', '/Accounts'),
+      operation('read', 'GET', 'accounts', 'KeyFigureCodes', '/KeyFigureCodes'),
+      operation('read', 'GET', 'rest', 'accounts', '/accounts'),
+      operation('read', 'GET', 'rest', 'vat-accounts', '/vat-accounts'),
+      operation('read', 'GET', 'rest', 'invoices', '/invoices/totals'),
+    ],
+  },
   narrowReadTool(
     'report_data',
     'Get e-conomic report data',
-    'Read the chart of accounts (default), key figure codes, total intervals, accounting years and periods, and budget figures for reporting. Booked entries are read with accounting_entries.',
+    'Read the chart of accounts (default), key figure codes, total intervals, accounting years and periods, and budget figures for reporting. With rest:accounting-years, number (the year) and totals: true, the totals per account for the year, or for one period with period. Booked entries are read with accounting_entries.',
   ),
   narrowReadTool(
     'invoice_overview',
@@ -1399,6 +1452,13 @@ export function resolveEconomicReadTarget(
   if (spec.name === 'check_connection' || spec.name === 'company_context') {
     return { ok: true, target: { serviceId: SELF.serviceId, resource: SELF.resource, method: 'GET', pathTemplate: '/self' } };
   }
+  if (spec.name === 'key_figures') {
+    // The year's id in the path comes from its self URL, read during the call (2025_6_2026 for
+    // the year 2025/2026), so the target names only what is read first: the accounting years.
+    const checked = keyFiguresArgs(input);
+    if ('error' in checked) return refuse(checked.error);
+    return { ok: true, target: { serviceId: 'rest', resource: 'accounting-years', method: 'GET', pathTemplate: '/accounting-years' } };
+  }
 
   const serviceId = optionalString(input, 'serviceId');
   const resource = optionalString(input, 'resource');
@@ -1412,6 +1472,15 @@ export function resolveEconomicReadTarget(
   if (input.pdf !== undefined && typeof input.pdf !== 'boolean') return refuse('pdf must be true or false.');
   const pdf = input.pdf === true;
   if (pdf && numberValue === undefined) return refuse('pdf needs the number of the record.');
+  if (input.totals !== undefined && typeof input.totals !== 'boolean') return refuse('totals must be true or false.');
+  const totals = input.totals === true;
+  const period = input.period;
+  if (period !== undefined && (!totals || typeof period !== 'number' || !Number.isSafeInteger(period) || period < 1 || period > 99)) {
+    return refuse('period is a whole number 1-99 and needs totals.');
+  }
+  if (totals && numberValue === undefined) {
+    return refuse('totals needs number: the accounting year as in its self URL, e.g. 2026.');
+  }
 
   try {
     if (spec.broad) {
@@ -1453,6 +1522,25 @@ export function resolveEconomicReadTarget(
     );
     if (!target) {
       return refuse(`${spec.name} reads only these serviceId:resource pairs: ${pairList(spec.reads)}.`);
+    }
+    if (totals) {
+      if (target.serviceId !== TOTALS.serviceId || target.resource !== TOTALS.resource) {
+        return refuse('totals reads rest:accounting-years only.');
+      }
+      encodePathParam(numberValue as string | number, 'number');
+      const year = numberValue as string | number;
+      const pathTemplate = period === undefined ? '/accounting-years/{number}/totals' : '/accounting-years/{number}/periods/{period}/totals';
+      findEndpoint(target.serviceId, 'GET', pathTemplate);
+      return {
+        ok: true,
+        target: {
+          serviceId: target.serviceId,
+          resource: target.resource,
+          method: 'GET',
+          pathTemplate,
+          pathParams: period === undefined ? { number: year } : { number: year, period: period as number },
+        },
+      };
     }
     if (numberValue !== undefined) encodePathParam(numberValue, 'number');
     const pathTemplate = pdf
@@ -1660,7 +1748,7 @@ function scalar(value: unknown): string | number | boolean | null {
 /** A short answer text for a read result: what was read and how many records, never the data itself. */
 function readSummary(toolName: string, target: EconomicReadTarget, data: unknown): string {
   const where = `${target.serviceId}:${target.resource}`;
-  if (target.pathParams && Object.keys(target.pathParams).length > 0) {
+  if (target.pathParams && Object.keys(target.pathParams).length > 0 && !target.pathTemplate.endsWith('/totals')) {
     return `${toolName}: one record from ${where}.`;
   }
   const source = asObject(data);
@@ -1846,6 +1934,9 @@ async function readResult(
       'company_context: company, agreement, modules and settings.',
       companyContextFromSelf(await client.rest('/self')),
     );
+  }
+  if (toolName === 'key_figures') {
+    return keyFigures(client, input);
   }
 
   const selfUrl = typeof input.selfUrl === 'string' && input.selfUrl.trim() ? input.selfUrl.trim() : undefined;
@@ -2125,6 +2216,228 @@ async function upgradeSalesDocument(
     `Turned draft ${sourceNoun} ${number} into ${what}${typeof createdNumber === 'number' ? ` ${createdNumber}` : ''}. Not booked or sent.`,
     created,
   );
+}
+
+/** The checked input of key_figures. */
+function keyFiguresArgs(input: GatewayJsonObject): { year?: string; period?: number; compare: boolean } | { error: string } {
+  const year = input.accountingYear;
+  if (year !== undefined && (typeof year !== 'string' || !/^\d{4}(\/\d{4})?$/.test(year.trim()))) {
+    return { error: 'accountingYear must be written as e-conomic names it, e.g. 2026 or 2025/2026.' };
+  }
+  const period = input.period;
+  if (period !== undefined && (typeof period !== 'number' || !Number.isSafeInteger(period) || period < 1 || period > 99)) {
+    return { error: 'period must be a whole number 1-99.' };
+  }
+  if (input.compare !== undefined && typeof input.compare !== 'boolean') return { error: 'compare must be true or false.' };
+  return {
+    ...(typeof year === 'string' ? { year: year.trim() } : {}),
+    ...(typeof period === 'number' ? { period } : {}),
+    compare: input.compare !== false,
+  };
+}
+
+interface YearRef {
+  year: string;
+  /** The year's id in REST paths, from its self URL (2026, or 2025_6_2026 for a split year). */
+  id: string;
+  fromDate: string;
+  toDate: string;
+}
+
+const KEY_FIGURE_PAGES = 50;
+
+/** Every item of an OpenAPI collection read with its cursor (GET /{resource}), at most KEY_FIGURE_PAGES pages. */
+async function allOpenApiItems(client: EconomicClient, serviceId: string, pathTemplate: string): Promise<Record<string, unknown>[]> {
+  const items: Record<string, unknown>[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < KEY_FIGURE_PAGES; page += 1) {
+    const response = asObject(await callEndpoint(client, { serviceId, method: 'GET', pathTemplate, query: cursor ? { cursor } : undefined }));
+    for (const item of Array.isArray(response.items) ? response.items : []) items.push(asObject(item));
+    const next = typeof response.cursor === 'string' && response.cursor ? response.cursor : undefined;
+    // No cursor ends the list. The same cursor again would leave the sums incomplete: an error, not a result.
+    if (!next) return items;
+    if (next === cursor) throw new Error(`key_figures: ${pathTemplate} returned the same cursor twice.`);
+    cursor = next;
+  }
+  throw new Error(`key_figures: ${pathTemplate} did not fit in ${KEY_FIGURE_PAGES} pages.`);
+}
+
+/** Every item of a classic REST collection (skippages/pagesize), at most KEY_FIGURE_PAGES pages of 1000. */
+async function allRestItems(
+  client: EconomicClient,
+  pathTemplate: string,
+  pathParams?: Record<string, string | number>,
+): Promise<Record<string, unknown>[]> {
+  const items: Record<string, unknown>[] = [];
+  for (let page = 0; page < KEY_FIGURE_PAGES; page += 1) {
+    const response = asObject(await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'GET',
+      pathTemplate,
+      ...(pathParams ? { pathParams } : {}),
+      query: { skippages: page, pagesize: 1000 },
+    }));
+    const collection = Array.isArray(response.collection) ? response.collection : [];
+    for (const item of collection) items.push(asObject(item));
+    const results = asObject(response.pagination).results;
+    if (collection.length < 1000 || (typeof results === 'number' && items.length >= results)) return items;
+  }
+  throw new Error(`key_figures: ${pathTemplate} did not fit in ${KEY_FIGURE_PAGES} pages.`);
+}
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+/** Sum per key figure code of the given amounts per account. */
+function sumByCode(codeOf: Map<number, number>, amounts: Iterable<[number, number]>): Map<number, number> {
+  const sums = new Map<number, number>();
+  for (const [account, amount] of amounts) {
+    const code = codeOf.get(account);
+    if (code === undefined || !Number.isFinite(amount)) continue;
+    sums.set(code, (sums.get(code) ?? 0) + amount);
+  }
+  return sums;
+}
+
+/**
+ * The result figures from the sums per key figure code. e-conomic's standard
+ * codes 1-9 are the profit and loss lines (turnover, variable costs, direct
+ * pay, other direct costs, overheads, depreciation, financial items,
+ * extraordinary items, company tax). Income is booked as credit (negative),
+ * so the figures are turned to read as income positive.
+ */
+function resultFigures(sums: Map<number, number>): GatewayJsonObject {
+  const upTo = (last: number) => {
+    let total = 0;
+    for (let code = 1; code <= last; code += 1) total += sums.get(code) ?? 0;
+    return round2(-total);
+  };
+  return {
+    turnover: upTo(1),
+    grossProfit: upTo(2),
+    contributionMargin: upTo(4),
+    resultBeforeDepreciation: upTo(5),
+    operatingResult: upTo(6),
+    resultBeforeTax: upTo(8),
+    result: upTo(9),
+  };
+}
+
+/** The totals per account of a year or one of its periods, as [accountNumber, amount]. */
+async function totalsPerAccount(client: EconomicClient, year: YearRef, period: number | undefined): Promise<{
+  amounts: Array<[number, number]>;
+  fromDate?: string;
+  toDate?: string;
+}> {
+  const rows = period === undefined
+    ? await allRestItems(client, '/accounting-years/{number}/totals', { number: year.id })
+    : await allRestItems(client, '/accounting-years/{number}/periods/{period}/totals', { number: year.id, period });
+  const amounts: Array<[number, number]> = [];
+  for (const row of rows) {
+    const account = asObject(row.account).accountNumber;
+    const amount = row.totalInBaseCurrency;
+    if (typeof account === 'number' && typeof amount === 'number') amounts.push([account, amount]);
+  }
+  const first = rows[0];
+  return {
+    amounts,
+    ...(first && typeof first.fromDate === 'string' ? { fromDate: first.fromDate.slice(0, 10) } : {}),
+    ...(first && typeof first.toDate === 'string' ? { toDate: first.toDate.slice(0, 10) } : {}),
+  };
+}
+
+/** The dates the totals cover: their own, else the whole year's (only when the whole year was read), else none. */
+function periodDates(totals: { fromDate?: string; toDate?: string }, year: YearRef | undefined): GatewayJsonObject {
+  const fromDate = totals.fromDate ?? year?.fromDate;
+  const toDate = totals.toDate ?? year?.toDate;
+  return { ...(fromDate ? { fromDate } : {}), ...(toDate ? { toDate } : {}) };
+}
+
+/**
+ * key_figures: sums only. The amounts per account are read and summed per key
+ * figure code here; no account, entry, customer or supplier is returned.
+ */
+async function keyFigures(client: EconomicClient, input: GatewayJsonObject): Promise<GatewayToolResult> {
+  const args = keyFiguresArgs(input);
+  if ('error' in args) return errorResult(args.error);
+
+  const years: YearRef[] = (await allRestItems(client, '/accounting-years')).flatMap(item => {
+    const self = typeof item.self === 'string' ? item.self : '';
+    const id = decodeURIComponent(self.split('/').filter(Boolean).pop() ?? '');
+    return typeof item.year === 'string' && typeof item.fromDate === 'string' && typeof item.toDate === 'string' && id
+      ? [{ year: item.year, id, fromDate: item.fromDate.slice(0, 10), toDate: item.toDate.slice(0, 10) }]
+      : [];
+  }).sort((a, b) => a.fromDate.localeCompare(b.fromDate));
+  if (years.length === 0) return errorResult('e-conomic has no accounting years for this agreement.');
+  const today = new Date().toISOString().slice(0, 10);
+  const chosen = args.year !== undefined
+    ? years.find(year => year.year === args.year)
+    : years.find(year => year.fromDate <= today && today <= year.toDate) ?? years.at(-1);
+  if (!chosen) return errorResult(`There is no accounting year ${args.year} in e-conomic.`);
+  const previous = years[years.indexOf(chosen) - 1];
+
+  // Which key figure code each account counts under (accountsapi), and the codes' names.
+  const codeOf = new Map<number, number>();
+  for (const account of await allOpenApiItems(client, 'accounts', '/Accounts')) {
+    if (typeof account.number === 'number' && typeof account.keyFigureCodeNumber === 'number') {
+      codeOf.set(account.number, account.keyFigureCodeNumber);
+    }
+  }
+  const codes = await allOpenApiItems(client, 'accounts', '/KeyFigureCodes');
+  const balanceCodes = new Set(codes.filter(code => code.isBalance === true && typeof code.number === 'number').map(code => code.number as number));
+
+  const current = await totalsPerAccount(client, chosen, args.period);
+  const figures: GatewayJsonObject = resultFigures(sumByCode(codeOf, current.amounts));
+
+  // Balances now (classic REST /accounts), summed per balance key figure code, and the VAT accounts.
+  const balances = new Map<number, number>();
+  for (const account of await allRestItems(client, '/accounts')) {
+    if (typeof account.accountNumber === 'number' && typeof account.balance === 'number') balances.set(account.accountNumber, account.balance);
+  }
+  const balanceSums = sumByCode(new Map([...codeOf].filter(([, code]) => balanceCodes.has(code))), balances);
+  const vatAccounts = new Set<number>();
+  for (const vat of await allRestItems(client, '/vat-accounts')) {
+    const account = asObject(vat.account).accountNumber;
+    if (typeof account === 'number') vatAccounts.add(account);
+  }
+  let vat = 0;
+  for (const account of vatAccounts) vat += balances.get(account) ?? 0;
+
+  const invoices = asObject(await callEndpoint(client, { serviceId: 'rest', method: 'GET', pathTemplate: '/invoices/totals' }));
+  const unpaid = asObject(asObject(invoices.booked).unpaid);
+  const overdue = asObject(unpaid.overdue);
+  const money = (value: unknown) => (typeof value === 'number' ? round2(value) : null);
+
+  const result: GatewayJsonObject = {
+    accountingYear: chosen.year,
+    ...(args.period === undefined ? {} : { period: args.period }),
+    // A period with no totals has no dates in the answer; the year's dates would be wrong for it.
+    ...periodDates(current, args.period === undefined ? chosen : undefined),
+    currency: 'base currency of the agreement',
+    figures,
+    balancesNow: {
+      cash: round2(balanceSums.get(14) ?? 0),
+      receivables: round2(balanceSums.get(12) ?? 0),
+      supplierDebt: round2(-(balanceSums.get(20) ?? 0)),
+      vatOwed: round2(-vat),
+    },
+    invoicesNow: {
+      unpaidGross: money(unpaid.grossRemainderInBaseCurrency),
+      unpaidCount: typeof unpaid.invoiceCount === 'number' ? unpaid.invoiceCount : null,
+      overdueGross: money(overdue.grossRemainderInBaseCurrency),
+      overdueCount: typeof overdue.invoiceCount === 'number' ? overdue.invoiceCount : null,
+    },
+  };
+  if (args.compare && previous) {
+    const before = await totalsPerAccount(client, previous, args.period);
+    result.previousYear = {
+      accountingYear: previous.year,
+      ...(args.period === undefined ? {} : { period: args.period }),
+      ...periodDates(before, args.period === undefined ? previous : undefined),
+      figures: resultFigures(sumByCode(codeOf, before.amounts)),
+    };
+  }
+  const span = args.period === undefined ? `accounting year ${chosen.year}` : `period ${args.period} of ${chosen.year}`;
+  return jsonResult(`key_figures: ${span}${result.previousYear ? ', with the year before' : ''}.`, result);
 }
 
 /** Strict base64: canonical (no whitespace, correct padding and padding bits), decoded. */
