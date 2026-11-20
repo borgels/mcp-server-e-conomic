@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.16.0
+
+Subscriptions in the embedded gateway (#68). Additive for embedders.
+
+- Read tool `subscription_overview`: subscriptions (default), subscribers and
+  subscription lines (subscriptionsapi v6.0.3). The catalog names the lines
+  `subscriptionlines`, as the API pages them; `SubscriptionLines` answered 404.
+- Write tool `add_subscriber`: adds a customer to a subscription with a start
+  date and the end of the first period, and optionally an expiry date, a
+  quantity factor or a discount. Log values: numbers and dates.
+- Write tool `end_subscriber`: sets the last day a subscriber can be invoiced
+  (`expiryDate`) by read-merge-write; read-only fields are not sent back.
+  Nothing is deleted.
+- A tool that needs a module (`module` in the tool table; here the
+  subscription module) reads the agreement's modules in `/self` when a
+  request fails, and answers plainly when the module is not enabled. That
+  read of `/self` is in the tool's `upstream`.
+- Checked against the demo agreement: all three reads answer. The demo
+  agreement is read-only, so the writes are tested with recorded answers
+  after the API's schema.
+
 ## 0.15.0
 
 Projects and time in the embedded gateway (#67), and a fix of the project

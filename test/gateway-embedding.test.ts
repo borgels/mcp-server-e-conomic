@@ -63,6 +63,8 @@ function readTargets(name: string): Array<{ serviceId: string; resource: string 
   const seen = new Map<string, { serviceId: string; resource: string }>();
   for (const operation of catalogEntry(name).upstream) {
     if (operation.access !== 'read') continue;
+    // The read of /self that a tool needing a module makes after a failure is not a target.
+    if (operation.path === '/self' && name !== 'check_connection' && name !== 'company_context') continue;
     seen.set(`${operation.serviceId}:${operation.resource}`, { serviceId: operation.serviceId, resource: operation.resource });
   }
   return [...seen.values()];
@@ -246,6 +248,8 @@ describe('declared upstream requests', () => {
     create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
     upgrade_order: [{ orderNumber: 4 }],
+    add_subscriber: [{ subscriptionNumber: 1, customerNumber: 2, startDate: '2026-01-01', endDate: '2026-03-31', expiryDate: '2026-12-31', discountPercentage: 10 }],
+    end_subscriber: [{ subscriberNumber: 3, expiryDate: '2026-12-31' }],
     update_time_entry: [{ timeEntryNumber: 5, hours: 3.5, date: '2026-03-02', description: 'Rettet' }],
     create_mileage_entry: [{ projectNumber: 1, employeeNumber: 2, date: '2026-03-02', distance: 42, from: 'A', to: 'B' }],
     approve_time_entries: [{ timeEntryNumbers: [5, 6] }],
