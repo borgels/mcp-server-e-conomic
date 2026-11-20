@@ -371,6 +371,19 @@ describe('book_journal', () => {
     expect(tooMany.isError).toBe(true);
   });
 
+  it('books exactly 100 entries, and nothing from a journal of 101', async () => {
+    for (const [count, booked] of [[100, true], [101, false]] as const) {
+      const entries = draftEntries(count);
+      const { gateway, writes } = fakeEconomic(BOOKING, (method, path) =>
+        method === 'GET' && path.endsWith('/draft-entries') ? Response.json({ items: entries }) : undefined,
+      );
+      const result = await gateway.callTool('book_journal', { journalNumber: 1, entryCount: Math.min(count, 100), requireVoucher: false }, context);
+      expect(result.isError === true, `${count}`).toBe(!booked);
+      expect(writes().length, `${count}`).toBe(booked ? 1 : 0);
+      if (booked) expect((writes()[0]?.body as { entryNumbers: number[] }).entryNumbers).toHaveLength(100);
+    }
+  });
+
   it('requires an attached document on every voucher unless requireVoucher is false', async () => {
     const { gateway, writes } = fakeEconomic(BOOKING, (method, path) =>
       method === 'GET' && path.endsWith('/AttachedDocuments') ? Response.json({ items: [], cursor: null }) : undefined,
