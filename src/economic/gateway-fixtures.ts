@@ -214,6 +214,33 @@ export function economicGatewayContractFixture(
     case 'project_overview':
       return collectionFixture('Fetched e-conomic contract projects.', input, projects);
 
+    case 'subscription_overview':
+      return collectionFixture('Fetched e-conomic contract subscriptions.', input, [
+        { number: 1, name: 'Serviceaftale, kvartal', interval: 3, isBarred: false },
+      ]);
+
+    case 'add_subscriber':
+      return {
+        text: 'Added a contract subscriber.',
+        structuredContent: {
+          mode: 'contract',
+          number: 31,
+          subscriptionNumber: numberOr(input.subscriptionNumber, 0),
+          customerNumber: numberOr(input.customerNumber, 0),
+          startDate: typeof input.startDate === 'string' ? input.startDate : '2026-01-01',
+        },
+      };
+
+    case 'end_subscriber':
+      return {
+        text: 'Ended a contract subscriber.',
+        structuredContent: {
+          mode: 'contract',
+          number: numberOr(input.subscriberNumber, 0),
+          expiryDate: typeof input.expiryDate === 'string' ? input.expiryDate : '2026-12-31',
+        },
+      };
+
     case 'quote_overview':
       return collectionFixture('Fetched e-conomic contract quotes.', input, quotes);
 

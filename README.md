@@ -199,14 +199,18 @@ Write preparation and commit:
 
 The project tools target the e-conomic Projects (Projektregnskab) add-on. Projects
 collect per-job revenue and cost, project groups route project registrations to
-accounts, and employees provide the responsible person required on a project.
+accounts, and an employee can be the responsible person on a project (a new
+project needs only a name and a project group).
 `economic_prepare_time_entry` registers hours against a project/activity/employee.
 The Projects add-on upserts via the collection: create with `POST /X`, update with
 `PUT /X` (the full object including its number and `objectVersion`), delete with
 `DELETE /X/{number}`. Item-level `PUT /X/{number}` and `PATCH` return HTTP 405, and
 a `PUT` is a full replace (omitted fields are cleared). Project status, cost types
-and activities are read-only via the API and managed in the e-conomic UI; time
-entries support create and delete only.
+and activities are read-only via the API and managed in the e-conomic UI. A time
+entry can be changed until it is approved: in the embedded gateway with
+`update_time_entry`, and `approve_time_entries` approves entries (a booking tool:
+it books their cost and cannot be undone through the API). Deleting time is never
+offered by the gateway.
 
 Long-tail coverage:
 
@@ -408,6 +412,7 @@ is the default. Anything else is refused before a request is sent.
 | `quote_overview` | `rest:quotes/drafts`, `rest:quotes/sent`, `rest:quotes/archived` (one quote by `number` includes its lines) |
 | `order_overview` | `rest:orders/drafts`, `rest:orders/sent`, `rest:orders/archived` (one order by `number` includes its lines) |
 | `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |
+| `subscription_overview` | `subscriptions:Subscriptions`, `subscriptions:Subscribers`, `subscriptions:subscriptionlines` (needs the subscription module) |
 | `project_overview` | `projects:Projects`, `projects:project-activities`, `projects:Activities/allowed` (query `employeeNumber`, `projectNumber`), `projects:Projects/allowed` (query `employeeNumber`), `projects:Mileages`, `projects:MileagePrices`, `projects:TimeEntryPrices`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
 | `get_document` | `documents:AttachedDocuments`, `rest:invoices/booked`, `rest:invoices/drafts`; with `number` and `pdf: true` the record's PDF as base64 (at most 4 MB) |
 | `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
@@ -421,6 +426,8 @@ Write gateway tools, disabled by default:
 | `create_draft_quote`, `create_draft_order` | write | Draft quote or draft order, built like a draft invoice (not sent) |
 | `upgrade_quote`, `upgrade_order` | write | Turns a draft quote into a draft order or draft invoice, or a draft order into a draft invoice, with e-conomic's upgrade template (not booked, not sent) |
 | `attach_voucher_file` | write | Attaches a PDF, JPEG or PNG (at most 9 MB, type checked by its first bytes) to a voucher by voucher number and accounting year (documentsapi). Fails when the voucher already has a document, unless `onConflict: merge`. The file is never logged |
+| `add_subscriber` | write | Adds a customer to a subscription from a start date (needs the subscription module) |
+| `end_subscriber` | write | Sets the last day a subscriber can be invoiced (`expiryDate`); nothing is deleted |
 | `upsert_customer`, `upsert_product`, `upsert_project` | write | Master data, read-merge-write |
 | `create_time_entry` | write | Project time |
 | `update_time_entry` | write | Changes a time entry that is not approved (date, hours, activity, project, note), read-merge-write |

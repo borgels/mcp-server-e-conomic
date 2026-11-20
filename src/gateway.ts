@@ -745,6 +745,31 @@ const keyFiguresInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+const addSubscriberInput = {
+  type: 'object',
+  required: ['subscriptionNumber', 'customerNumber', 'startDate', 'endDate'],
+  properties: {
+    subscriptionNumber: { type: 'integer', minimum: 1, description: 'The subscription.' },
+    customerNumber: { type: 'integer', minimum: 1, description: 'The customer who receives the invoices.' },
+    startDate: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'First day invoiced (YYYY-MM-DD).' },
+    endDate: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'Last day of the first period invoiced (YYYY-MM-DD).' },
+    expiryDate: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'Optional last day the customer can be invoiced.' },
+    quantityFactor: { type: 'number', exclusiveMinimum: 0, maximum: 10000, description: 'Optional factor on the quantities of the subscription lines.' },
+    discountPercentage: { type: 'number', minimum: 0, maximum: 100, description: 'Optional discount in percent on the subscription lines.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const endSubscriberInput = {
+  type: 'object',
+  required: ['subscriberNumber', 'expiryDate'],
+  properties: {
+    subscriberNumber: { type: 'integer', minimum: 1, description: 'The subscriber (read them with subscription_overview).' },
+    expiryDate: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'Last day the customer can be invoiced (YYYY-MM-DD).' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const DEFAULT_REST_BASE_URL = 'https://restapi.e-conomic.com';
 const DEFAULT_OPENAPI_BASE_URL = 'https://apis.e-conomic.com';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -816,6 +841,11 @@ const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
     ref('rest', 'invoices/paid'),
     ref('rest', 'invoices/sent'),
     ref('rest', 'invoices/drafts'),
+  ],
+  subscription_overview: [
+    ref('subscriptions', 'Subscriptions'),
+    ref('subscriptions', 'Subscribers'),
+    ref('subscriptions', 'subscriptionlines'),
   ],
   project_overview: [
     ref('projects', 'Projects'),
@@ -931,7 +961,21 @@ interface ToolSpec extends GatewayToolDefinition {
   booking: boolean;
   /** Write tools: what the change does, for the host's log. */
   change?: EconomicChangeSpec;
+  /**
+   * The e-conomic module the tool needs. When a request of the tool fails,
+   * the gateway reads the agreement's modules (GET /self) and answers plainly
+   * if the module is not enabled.
+   */
+  module?: EconomicModule;
 }
+
+interface EconomicModule {
+  /** Matches the module's name in /self (Danish or English). */
+  readonly pattern: RegExp;
+  readonly name: string;
+}
+
+const SUBSCRIPTION_MODULE: EconomicModule = { pattern: /subscription|abonnement/i, name: 'Subscription' };
 
 function operation(
   access: 'read' | 'write',
@@ -959,6 +1003,12 @@ function targetOperations(target: EconomicResourceRef): GatewayUpstreamOperation
 }
 
 function upstreamOf(spec: ToolSpec): GatewayUpstreamOperation[] {
+  // A tool that needs a module may read /self to tell the caller the module is off.
+  const moduleRead = spec.module ? [operation('read', 'GET', 'rest', 'self', '/self')] : [];
+  return [...ownUpstream(spec), ...moduleRead];
+}
+
+function ownUpstream(spec: ToolSpec): GatewayUpstreamOperation[] {
   if (spec.upstream) return [...spec.upstream];
   if (spec.broad) {
     // get_entity: a record by number, or any GET endpoint a self URL can match.
@@ -988,9 +1038,10 @@ function upstreamOf(spec: ToolSpec): GatewayUpstreamOperation[] {
   ];
 }
 
-function narrowReadTool(name: string, title: string, description: string): ToolSpec {
+function narrowReadTool(name: string, title: string, description: string, module?: EconomicModule): ToolSpec {
   const reads = NARROW_READ_TARGETS[name] ?? [];
   return {
+    ...(module ? { module } : {}),
     name,
     title,
     description,
@@ -1004,7 +1055,8 @@ function narrowReadTool(name: string, title: string, description: string): ToolS
 }
 
 function writeTool(
-  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads' | 'booking' | 'change'> & {
+  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads' | 'booking' | 'change' | 'module'> & {
+    module?: EconomicModule;
     riskLevel?: GatewayRiskLevel;
     booking?: boolean;
     change: EconomicChangeSpec;
@@ -1135,6 +1187,12 @@ const TOOL_SPECS: ToolSpec[] = [
     'List draft orders (default), sent orders or archived orders, or read one order with its lines. Supports query paging (skippages, pagesize) and filters.',
   ),
   narrowReadTool(
+    'subscription_overview',
+    'Get e-conomic subscriptions',
+    'Read subscriptions (default), subscribers (which customer has which subscription, from when, until when) or subscription lines. Needs the subscription module.',
+    SUBSCRIPTION_MODULE,
+  ),
+  narrowReadTool(
     'project_overview',
     'Get e-conomic project overview',
     'Read the Projects add-on: projects (default), project groups and statuses, cost types, activities and activity groups, the activities of a project, employees and employee groups, time entries, mileage, and time and mileage prices. Projects/allowed (query employeeNumber) and Activities/allowed (query employeeNumber and projectNumber) list what an employee may register on.',
@@ -1217,6 +1275,33 @@ const TOOL_SPECS: ToolSpec[] = [
     // The file and its name are never logged: only the voucher, the year and the type.
     change: change('create', 'attached-document', { voucherNumber: 'recordNumber', accountingYear: 'accountingYear', contentType: 'enum' }),
     upstream: [operation('write', 'POST', 'documents', 'AttachedDocuments', '/AttachedDocuments')],
+  }),
+  writeTool({
+    name: 'add_subscriber',
+    title: 'Add a customer to an e-conomic subscription',
+    description: `Add a customer to a subscription as a subscriber, from a start date; endDate is the last day of the first period invoiced. Needs the subscription module. ${WRITE_NOTE}`,
+    inputSchema: addSubscriberInput,
+    module: SUBSCRIPTION_MODULE,
+    change: change('create', 'subscriber', {
+      subscriptionNumber: 'recordNumber',
+      customerNumber: 'recordNumber',
+      startDate: 'date',
+      endDate: 'date',
+      expiryDate: 'date',
+    }),
+    upstream: [operation('write', 'POST', 'subscriptions', 'Subscribers', '/Subscribers')],
+  }),
+  writeTool({
+    name: 'end_subscriber',
+    title: 'End an e-conomic subscriber',
+    description: `End a subscriber: sets the last day the customer can be invoiced for the subscription (expiryDate). Nothing is deleted. Needs the subscription module. ${WRITE_NOTE}`,
+    inputSchema: endSubscriberInput,
+    module: SUBSCRIPTION_MODULE,
+    change: change('upsert', 'subscriber', { subscriberNumber: 'recordNumber', expiryDate: 'date' }),
+    upstream: [
+      operation('read', 'GET', 'subscriptions', 'Subscribers', '/Subscribers/{number}'),
+      operation('write', 'PUT', 'subscriptions', 'Subscribers', '/Subscribers'),
+    ],
   }),
   writeTool({
     name: 'upsert_customer',
@@ -1975,9 +2060,17 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           callRedactor.add(grant);
           const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
 
-          return target
-            ? await readResult(client, spec.name, target, args)
-            : await writeResult(client, spec.name, args, writePolicy);
+          try {
+            return target
+              ? await readResult(client, spec.name, target, args)
+              : await writeResult(client, spec.name, args, writePolicy);
+          } catch (error) {
+            // A refused access (401) always goes on as e-conomic's own error: a module answer must not hide it.
+            const refused = error instanceof EconomicHttpError && error.status === 401;
+            const missing = spec.module && !refused ? await moduleMissing(client, spec.module) : undefined;
+            if (missing) return errorResult(missing);
+            throw error;
+          }
         })();
       } catch (error) {
         result = errorResult(formatUnknownError(error, callRedactor));
@@ -2071,6 +2164,10 @@ async function writeResult(
       return upgradeSalesDocument(client, toolName, input, writePolicy);
     case 'attach_voucher_file':
       return attachVoucherFile(client, input, writePolicy);
+    case 'add_subscriber':
+      return addSubscriber(client, input, writePolicy);
+    case 'end_subscriber':
+      return endSubscriber(client, input, writePolicy);
     case 'upsert_customer':
       return upsertCustomer(client, input, writePolicy);
     case 'upsert_product':
@@ -3410,6 +3507,106 @@ async function approveTimeEntries(
   if (denied) return denied;
   const approved = await callEndpoint(client, { serviceId: 'projects', method: 'POST', pathTemplate: '/TimeEntries/approve', body });
   return jsonResult(`Approved ${numbers.length === 1 ? '1 time entry' : `${numbers.length} time entries`}.`, approved ?? null);
+}
+
+/**
+ * After a failed request: the plain answer when the agreement does not have
+ * the module the tool needs (from GET /self), else undefined. A failure to
+ * read /self is not an answer either.
+ */
+async function moduleMissing(client: EconomicClient, module: EconomicModule): Promise<string | undefined> {
+  try {
+    const modules = asObject(await client.rest('/self')).modules;
+    if (!Array.isArray(modules)) return undefined;
+    const enabled = modules.some(item => module.pattern.test(String(asObject(item).name ?? '')));
+    return enabled
+      ? undefined
+      : `The ${module.name} module is not enabled for this agreement in e-conomic. It must be turned on in e-conomic before this can be used.`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Adds a customer to a subscription (subscriptionsapi POST /Subscribers). */
+async function addSubscriber(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const subscriptionNumber = positiveInteger(input.subscriptionNumber);
+  const customerNumber = positiveInteger(input.customerNumber);
+  const startDate = isoDateValue(input.startDate);
+  const endDate = isoDateValue(input.endDate);
+  if (subscriptionNumber === undefined || customerNumber === undefined || !startDate || !endDate) {
+    return errorResult('add_subscriber needs subscriptionNumber, customerNumber, startDate and endDate (YYYY-MM-DD).');
+  }
+  if (endDate < startDate) return errorResult('endDate must be on or after startDate.');
+  const body: GatewayJsonObject = { subscriptionNumber, customerNumber, startDate, endDate };
+  if (input.expiryDate !== undefined) {
+    const expiryDate = isoDateValue(input.expiryDate);
+    if (!expiryDate || expiryDate < startDate) return errorResult('expiryDate must be a date on or after startDate.');
+    body.expiryDate = expiryDate;
+  }
+  if (input.quantityFactor !== undefined) {
+    const factor = input.quantityFactor;
+    if (typeof factor !== 'number' || !Number.isFinite(factor) || factor <= 0 || factor > 10000) {
+      return errorResult('quantityFactor must be a number above 0.');
+    }
+    body.quantityFactor = factor;
+  }
+  if (input.discountPercentage !== undefined) {
+    const discount = input.discountPercentage;
+    if (typeof discount !== 'number' || !Number.isFinite(discount) || discount < 0 || discount > 100) {
+      return errorResult('discountPercentage must be a number from 0 to 100.');
+    }
+    body.discountPercentage = discount;
+  }
+  const denied = writePolicyDenial(policy, { capability: 'add_subscriber', serviceId: 'subscriptions', method: 'POST', path: '/Subscribers', body });
+  if (denied) return denied;
+  const created = await callEndpoint(client, { serviceId: 'subscriptions', method: 'POST', pathTemplate: '/Subscribers', body });
+  return jsonResult(`Added customer ${customerNumber} to subscription ${subscriptionNumber} from ${startDate}.`, created);
+}
+
+/** Ends a subscriber by setting its expiryDate (read-merge-write). Nothing is deleted. */
+async function endSubscriber(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const number = positiveInteger(input.subscriberNumber);
+  const expiryDate = isoDateValue(input.expiryDate);
+  if (number === undefined || !expiryDate) return errorResult('end_subscriber needs subscriberNumber and expiryDate (YYYY-MM-DD).');
+  const early = writePolicyDenial(policy, { capability: 'end_subscriber', serviceId: 'subscriptions', method: 'PUT', path: '/Subscribers', body: {} });
+  if (early) return early;
+  let existing: GatewayJsonObject;
+  try {
+    existing = (await callEndpoint(client, {
+      serviceId: 'subscriptions',
+      method: 'GET',
+      pathTemplate: '/Subscribers/{number}',
+      pathParams: { number },
+    })) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Subscriber ${number} does not exist.`);
+    throw error;
+  }
+  if (typeof existing.startDate === 'string' && expiryDate < existing.startDate.slice(0, 10)) {
+    return errorResult('expiryDate must be on or after the subscriber’s start date.');
+  }
+  const body: GatewayJsonObject = { ...existing, expiryDate, number };
+  // Read-only in subscriptionsapi: never sent back.
+  for (const field of ['bookedInvoiceId', 'draftDocumentId', 'lastUpdated']) delete body[field];
+  const denied = writePolicyDenial(policy, {
+    capability: 'end_subscriber',
+    serviceId: 'subscriptions',
+    method: 'PUT',
+    path: '/Subscribers',
+    body,
+    current: existing,
+  });
+  if (denied) return denied;
+  const updated = await callEndpoint(client, { serviceId: 'subscriptions', method: 'PUT', pathTemplate: '/Subscribers', body });
+  return jsonResult(`Subscriber ${number} ends on ${expiryDate}.`, updated);
 }
 
 type JournalEntryKind = 'financeVouchers' | 'supplierInvoices' | 'customerPayments' | 'supplierPayments';

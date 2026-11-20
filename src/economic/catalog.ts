@@ -177,7 +177,8 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     surface: 'openapi',
     servicePath: 'subscriptionsapi/v6.0.3',
     version: '6.0.3',
-    resources: ['Subscribers', 'SubscriptionLines', 'Subscriptions'],
+    // The lines of every subscription are paged at /subscriptionlines (lower case).
+    resources: ['Subscribers', 'subscriptionlines', 'Subscriptions'],
   },
   {
     id: 'dimensions',
