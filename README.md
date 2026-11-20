@@ -199,14 +199,18 @@ Write preparation and commit:
 
 The project tools target the e-conomic Projects (Projektregnskab) add-on. Projects
 collect per-job revenue and cost, project groups route project registrations to
-accounts, and employees provide the responsible person required on a project.
+accounts, and an employee can be the responsible person on a project (a new
+project needs only a name and a project group).
 `economic_prepare_time_entry` registers hours against a project/activity/employee.
 The Projects add-on upserts via the collection: create with `POST /X`, update with
 `PUT /X` (the full object including its number and `objectVersion`), delete with
 `DELETE /X/{number}`. Item-level `PUT /X/{number}` and `PATCH` return HTTP 405, and
 a `PUT` is a full replace (omitted fields are cleared). Project status, cost types
-and activities are read-only via the API and managed in the e-conomic UI; time
-entries support create and delete only.
+and activities are read-only via the API and managed in the e-conomic UI. A time
+entry can be changed until it is approved: in the embedded gateway with
+`update_time_entry`, and `approve_time_entries` approves entries (a booking tool:
+it books their cost and cannot be undone through the API). Deleting time is never
+offered by the gateway.
 
 Long-tail coverage:
 
