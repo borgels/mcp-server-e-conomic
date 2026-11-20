@@ -32,12 +32,12 @@ const draft = {
   netAmount: 100,
   grossAmount: 125,
   vatAmount: 25,
-  paymentTerms: { paymentTermsNumber: 1, self: 'https://restapi.e-conomic.com/payment-terms/1' },
+  paymentTerms: { paymentTermsNumber: 1, name: 'Netto 8 dage', daysOfCredit: 8, paymentTermsType: 'net', self: 'https://restapi.e-conomic.com/payment-terms/1' },
   customer: { customerNumber: 1001, self: 'https://restapi.e-conomic.com/customers/1001' },
   recipient: { name: 'Kunde A/S', vatZone: { vatZoneNumber: 1, self: 'https://restapi.e-conomic.com/vat-zones/1' } },
   notes: { heading: 'Faktura', textLine1: 'Linje et', textLine2: 'Linje to' },
   layout: { layoutNumber: 19 },
-  references: { salesPerson: { employeeNumber: 1 } },
+  references: { salesPerson: { employeeNumber: 1, self: 'https://restapi.e-conomic.com/employees/1' } },
   lines: [{ lineNumber: 1, product: { productNumber: 'P1', self: 'https://restapi.e-conomic.com/products/P1' }, quantity: 1, unitNetPrice: 100, totalNetAmount: 100, marginInBaseCurrency: 40 }],
 };
 
@@ -93,7 +93,8 @@ describe('update_draft_invoice', () => {
     const put = requests.find(request => request.method === 'PUT')!.body as GatewayJsonObject;
     expect(put.notes).toEqual({ heading: 'Ny overskrift', textLine1: 'Linje et', textLine2: 'Linje to' });
     expect(put.lines).toEqual([{ lineNumber: 1, product: { productNumber: 'P1' }, quantity: 1, unitNetPrice: 100 }]);
-    expect(JSON.stringify(put)).not.toMatch(/self|netAmount|grossAmount|vatAmount|margin/);
+    expect(JSON.stringify(put)).not.toMatch(/self|netAmount|grossAmount|vatAmount|margin|daysOfCredit|paymentTermsType|Netto/);
+    expect(put.paymentTerms).toEqual({ paymentTermsNumber: 1 });
   });
 
   it('refuses an empty change, bad fields, and a draft that is gone; nothing is sent', async () => {

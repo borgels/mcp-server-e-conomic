@@ -2569,37 +2569,77 @@ function draftLines(rawLines: GatewayJsonValue[]): { lines: GatewayJsonObject[] 
   return { lines };
 }
 
-/** The fields of a REST draft invoice a PUT may carry (invoices.drafts.draftInvoiceNumber.put schema). */
-const DRAFT_INVOICE_FIELDS = [
-  'date', 'dueDate', 'currency', 'exchangeRate', 'paymentTerms', 'customer', 'recipient',
-  'deliveryLocation', 'delivery', 'notes', 'references', 'layout', 'project', 'lines',
-];
-/** The fields of a line a PUT may carry; amounts and margins are computed by e-conomic. */
-const DRAFT_LINE_FIELDS = [
-  'lineNumber', 'sortKey', 'description', 'accrual', 'unit', 'product', 'quantity',
-  'unitNetPrice', 'discountPercentage', 'unitCostPrice', 'departmentalDistribution',
-];
+/**
+ * The writable shape of a REST draft invoice on PUT (invoices.drafts.draftInvoiceNumber.put): `true` keeps a value,
+ * an object keeps only those fields of a nested object, and `lines` is applied to each line. Everything else (links,
+ * names of referenced records, amounts, margins, payment terms' type and days) is computed or read only.
+ */
+type Shape = { readonly [field: string]: true | Shape };
+const refShape = (field: string): Shape => ({ [field]: true });
+const DRAFT_LINE_SHAPE: Shape = {
+  lineNumber: true,
+  sortKey: true,
+  description: true,
+  accrual: { startDate: true, endDate: true },
+  unit: refShape('unitNumber'),
+  product: refShape('productNumber'),
+  quantity: true,
+  unitNetPrice: true,
+  discountPercentage: true,
+  unitCostPrice: true,
+  departmentalDistribution: refShape('departmentalDistributionNumber'),
+};
+const DRAFT_INVOICE_SHAPE: Shape = {
+  date: true,
+  dueDate: true,
+  currency: true,
+  exchangeRate: true,
+  paymentTerms: refShape('paymentTermsNumber'),
+  customer: refShape('customerNumber'),
+  recipient: {
+    name: true,
+    address: true,
+    zip: true,
+    city: true,
+    country: true,
+    ean: true,
+    publicEntryNumber: true,
+    cvr: true,
+    nemHandelType: true,
+    attention: refShape('customerContactNumber'),
+    vatZone: refShape('vatZoneNumber'),
+  },
+  deliveryLocation: refShape('deliveryLocationNumber'),
+  delivery: { address: true, zip: true, city: true, country: true, deliveryTerms: true, deliveryDate: true },
+  notes: { heading: true, textLine1: true, textLine2: true },
+  references: {
+    other: true,
+    customerContact: refShape('customerContactNumber'),
+    salesPerson: refShape('employeeNumber'),
+    vendorReference: refShape('employeeNumber'),
+  },
+  layout: refShape('layoutNumber'),
+  project: refShape('projectNumber'),
+  lines: DRAFT_LINE_SHAPE,
+};
 
-/** A copy without `self` links at any depth. */
-function withoutSelf(value: GatewayJsonValue): GatewayJsonValue {
-  if (Array.isArray(value)) return value.map(withoutSelf);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'self').map(([key, inner]) => [key, withoutSelf(inner)]));
+/** Only the fields a shape names, at every depth; arrays apply the shape to each item. */
+function pickShape(value: GatewayJsonValue | undefined, shape: Shape): GatewayJsonValue | undefined {
+  if (Array.isArray(value)) return value.map(item => pickShape(item, shape) ?? {});
+  if (!value || typeof value !== 'object') return undefined;
+  const picked: GatewayJsonObject = {};
+  for (const [field, inner] of Object.entries(shape)) {
+    const source = (value as GatewayJsonObject)[field];
+    if (source === undefined) continue;
+    const kept = inner === true ? (source && typeof source === 'object' ? undefined : source) : pickShape(source, inner);
+    if (kept !== undefined) picked[field] = kept;
+  }
+  return picked;
 }
 
-/** What of a draft invoice read with GET can go back in a PUT: its writable fields, without links or computed amounts. */
+/** What of a draft invoice read with GET can go back in a PUT: its writable fields only. */
 function writableDraft(existing: GatewayJsonObject): GatewayJsonObject {
-  const body: GatewayJsonObject = {};
-  for (const field of DRAFT_INVOICE_FIELDS) {
-    if (existing[field] !== undefined) body[field] = withoutSelf(existing[field] as GatewayJsonValue);
-  }
-  if (Array.isArray(body.lines)) {
-    body.lines = body.lines.map(line => {
-      const source = asObject(line);
-      return Object.fromEntries(DRAFT_LINE_FIELDS.filter(field => source[field] !== undefined).map(field => [field, source[field] as GatewayJsonValue]));
-    });
-  }
-  return body;
+  return (pickShape(existing, DRAFT_INVOICE_SHAPE) ?? {}) as GatewayJsonObject;
 }
 
 /** Changes a draft invoice (REST read-merge-write: GET then PUT /invoices/drafts/{n}). */
@@ -2664,8 +2704,8 @@ async function updateDraftInvoice(
   }
   const body: GatewayJsonObject = { ...writableDraft(existing), ...changes };
   // Notes given are merged into the draft's notes: a new heading keeps the text lines.
-  if (changes.notes) body.notes = { ...asObject(withoutSelf(existing.notes as GatewayJsonValue)), ...asObject(changes.notes) } as GatewayJsonObject;
-  if (reference.value !== undefined) body.references = { ...asObject(existing.references), other: reference.value } as GatewayJsonObject;
+  if (changes.notes) body.notes = { ...asObject(writableDraft(existing).notes), ...asObject(changes.notes) } as GatewayJsonObject;
+  if (reference.value !== undefined) body.references = { ...asObject(writableDraft(existing).references), other: reference.value } as GatewayJsonObject;
 
   const denied = writePolicyDenial(policy, { capability: 'update_draft_invoice', method: 'PUT', path, body, current: existing });
   if (denied) return denied;
