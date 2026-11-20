@@ -1,4 +1,5 @@
 import type { EconomicClient } from './client.js';
+import { EconomicHttpError } from '../errors.js';
 import { callEndpoint } from './endpoints.js';
 import { loadPolicy } from './policy.js';
 import { prepareOperation, type PreparedOperation } from './operations.js';
@@ -360,6 +361,8 @@ async function assertVoucherHasAttachment(client: EconomicClient, voucherNumber:
       pathParams: { number: voucherNumber },
     });
   } catch (error) {
+    // A refused access (401) goes on as e-conomic's own error, so an embedding host can tell that it was taken back.
+    if (error instanceof EconomicHttpError && error.status === 401) throw error;
     throw new Error(
       `Booking blocked: voucher ${voucherNumber} has no verifiable attached document (${
         error instanceof Error ? error.message : String(error)

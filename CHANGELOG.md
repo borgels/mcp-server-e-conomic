@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.1
+
+Backport to the 0.11 line of the fixes in 0.14.1 and 0.14.2 (#81, #82), for
+hosts still on 0.11 (borgels/letmcp#550): a refused access (HTTP 401) always
+goes on as e-conomic's own error, first in the text. `create_draft_invoice`
+answers only a 404 of its customer lookup with its own message, and a booking
+no longer wraps a 401 from its voucher lookup in `Booking blocked…`. Test:
+every tool passes a 401 on, on any of its requests.
+
 ## 0.11.0
 
 Embedded gateway: a fixed fence for a broad app role (SuperUser), #73.

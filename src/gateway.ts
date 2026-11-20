@@ -1804,8 +1804,13 @@ async function createDraftInvoice(
   let customer: DraftCustomer = {};
   try {
     customer = (await client.rest(`/customers/${customerNumber}`)) as DraftCustomer;
-  } catch {
-    return errorResult(`Customer ${customerNumber} could not be read from e-conomic.`);
+  } catch (error) {
+    // Only a missing customer is answered here. Anything else, a refused access (401) above all, goes on as e-conomic's
+    // own HTTP error, so an embedding host can tell that the access was taken back.
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Customer ${customerNumber} could not be read from e-conomic.`);
+    }
+    throw error;
   }
 
   const currency = stringValue(input.currency) ?? customer.currency;
