@@ -10,6 +10,12 @@ export interface EconomicService {
   servicePath: string;
   version?: string;
   resources: string[];
+  /**
+   * OpenAPI resources whose page endpoint is not `/{resource}/paged`. The
+   * products API pages products at `/productspaged/paged`; `/products/paged`
+   * answers 404.
+   */
+  pagedPaths?: Record<string, string>;
 }
 
 export interface EndpointOperation {
@@ -89,6 +95,7 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     servicePath: 'productsapi/v2.0.0',
     version: '2.0.0',
     resources: ['pricegroups', 'productgroups', 'products', 'salespriceincurrencies', 'specialprices'],
+    pagedPaths: { products: '/productspaged/paged' },
   },
   {
     id: 'accounts',
@@ -233,8 +240,14 @@ export function findService(serviceId: string): EconomicService {
   return service;
 }
 
+/** The page endpoint of an OpenAPI resource: `/{resource}/paged` unless the service says otherwise. */
+export function pagedPathTemplate(service: EconomicService, resource: string): string {
+  return service.pagedPaths?.[resource] ?? `/${resource}/paged`;
+}
+
 /**
- * Only the OpenAPI surface registers a `/{resource}/paged` endpoint; the
+ * Only the OpenAPI surface registers a page endpoint (`/{resource}/paged`, or
+ * the service's own path for it in `pagedPaths`); the
  * classic REST surface paginates the plain collection path via
  * skippages/pagesize query params instead (a `/paged` path either 404s on
  * e-conomic's side or fails the local allowlist there).
@@ -248,8 +261,8 @@ export function resolveReadPathTemplate(
     return `/${resource}/{number}`;
   }
 
-  const isPagedSurface = findService(serviceId).surface === 'openapi';
-  return options.paged && isPagedSurface ? `/${resource}/paged` : `/${resource}`;
+  const service = findService(serviceId);
+  return options.paged && service.surface === 'openapi' ? pagedPathTemplate(service, resource) : `/${resource}`;
 }
 
 export function findEndpoint(
@@ -356,11 +369,11 @@ function buildEndpointOperations(): EndpointOperation[] {
 
       operations.push(
         {
-          id: endpointId(service.id, 'GET', `/${resource}/paged`),
+          id: endpointId(service.id, 'GET', pagedPathTemplate(service, resource)),
           serviceId: service.id,
           surface: service.surface,
           method: 'GET',
-          pathTemplate: `/${resource}/paged`,
+          pathTemplate: pagedPathTemplate(service, resource),
           summary: `Retrieve a page of ${resource}.`,
           risk: 'read',
         },

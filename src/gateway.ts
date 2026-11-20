@@ -4,6 +4,7 @@ import {
   ENDPOINT_OPERATIONS,
   findEndpoint,
   findService,
+  pagedPathTemplate,
   resolveReadPathTemplate,
   type ApiSurface,
   type CapabilityRisk,
@@ -806,9 +807,10 @@ function targetOperations(target: EconomicResourceRef): GatewayUpstreamOperation
     return [operation('read', 'GET', 'rest', 'self', '/self')];
   }
   const base = `/${target.resource}`;
-  const templates = findService(target.serviceId).surface === 'rest'
+  const service = findService(target.serviceId);
+  const templates = service.surface === 'rest'
     ? [base, `${base}/{number}`]
-    : [`${base}/paged`, base, `${base}/{number}`];
+    : [pagedPathTemplate(service, target.resource), base, `${base}/{number}`];
   return templates.map(template => operation('read', 'GET', target.serviceId, target.resource, template));
 }
 
@@ -1208,7 +1210,10 @@ function optionalString(input: GatewayJsonObject, key: string): { ok: true; valu
 }
 
 function resourceOfTemplate(serviceId: string, pathTemplate: string): string | undefined {
-  const resources = [...findService(serviceId).resources].sort((a, b) => b.length - a.length);
+  const service = findService(serviceId);
+  const paged = Object.entries(service.pagedPaths ?? {}).find(([, template]) => template === pathTemplate);
+  if (paged) return paged[0];
+  const resources = [...service.resources].sort((a, b) => b.length - a.length);
   return resources.find(resource => pathTemplate === `/${resource}` || pathTemplate.startsWith(`/${resource}/`));
 }
 

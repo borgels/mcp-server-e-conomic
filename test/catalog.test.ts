@@ -99,6 +99,14 @@ describe('e-conomic catalog', () => {
     expect(resolveReadPathTemplate('projects', 'Projects', { paged: false })).toBe('/Projects');
   });
 
+  it('pages products at /productspaged/paged, the products API has no /products/paged (#61)', () => {
+    expect(resolveReadPathTemplate('products', 'products', { paged: true })).toBe('/productspaged/paged');
+    expect(resolveReadPathTemplate('products', 'products', { paged: false })).toBe('/products');
+    expect(resolveReadPathTemplate('products', 'productgroups', { paged: true })).toBe('/productgroups/paged');
+    expect(findEndpoint('products', 'GET', '/productspaged/paged')).toBeDefined();
+    expect(() => findEndpoint('products', 'GET', '/products/paged')).toThrow(/not allowlisted/);
+  });
+
   it('resolves the item path when a number is supplied, regardless of surface', () => {
     expect(resolveReadPathTemplate('rest', 'suppliers', { number: 42, paged: true })).toBe('/suppliers/{number}');
     expect(resolveReadPathTemplate('projects', 'Projects', { number: 42, paged: true })).toBe('/Projects/{number}');

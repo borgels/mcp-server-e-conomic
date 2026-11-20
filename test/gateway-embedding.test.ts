@@ -181,6 +181,15 @@ describe('fixed read targets per tool', () => {
     });
     expect(resolveEconomicReadTarget('upsert_customer', {}).ok).toBe(false);
   });
+
+  it('maps a get_entity self URL for the products page to the products resource (#61)', () => {
+    expect(resolveEconomicReadTarget('get_entity', { selfUrl: 'https://apis.e-conomic.com/productsapi/v2.0.0/productspaged/paged' })).toEqual({
+      ok: true,
+      target: { serviceId: 'products', resource: 'products', method: 'GET', pathTemplate: '/productspaged/paged' },
+    });
+    const upstream = catalogEntry('get_entity').upstream.filter(operation => operation.path === '/productsapi/v2.0.0/productspaged/paged');
+    expect(upstream).toEqual([{ access: 'read', method: 'GET', path: '/productsapi/v2.0.0/productspaged/paged', serviceId: 'products', resource: 'products' }]);
+  });
 });
 
 describe('declared upstream requests', () => {
@@ -265,6 +274,7 @@ describe('declared upstream requests', () => {
         { selfUrl: 'https://restapi.e-conomic.com/invoices/booked/70001' },
         { selfUrl: 'https://apis.e-conomic.com/documentsapi/v3.0.1/AttachedDocuments/5/pdf' },
         { selfUrl: 'https://apis.e-conomic.com/customersapi/v3.1.0/Customers/paged' },
+        { selfUrl: 'https://apis.e-conomic.com/productsapi/v2.0.0/productspaged/paged' },
       ];
     }
     return readTargets(name).flatMap(target => [{ ...target }, { ...target, number: 7 }, { ...target, paged: false }]);

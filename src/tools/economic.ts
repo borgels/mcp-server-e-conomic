@@ -209,9 +209,9 @@ export function registerEconomicTools(server: McpServer, client: EconomicClient)
   registerReadTool(server, 'economic_get_product_overview', client, {
     title: 'Get Product Overview',
     description: 'Read products, product groups, price groups, and sales price data.',
-    // The OpenAPI products service's /paged and /specialprices paths 404 on
-    // e-conomic's side; the classic REST surface (/products, /products/{n})
-    // is the reliable path for this resource.
+    // The OpenAPI products service pages products at /productspaged/paged
+    // (not /products/paged) and has no top-level /specialprices; the classic
+    // REST surface (/products, /products/{n}) is the reliable default here.
     defaultServiceId: 'rest',
     defaultResource: 'products',
   });
