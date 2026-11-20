@@ -192,7 +192,23 @@ export function checkPolicy(rawInput: PolicyCheckInput, policy = loadPolicy()): 
   return { allowed: true, reason: 'matched write policy', policy };
 }
 
-const AMOUNT_KEY = /amount|total|price/i;
+/**
+ * Keys that hold money in e-conomic's schemas: amount, netAmount, grossAmount,
+ * vatAmount, amountInBaseCurrency, roundingAmount, totalNetAmount, unitNetPrice,
+ * unitCostPrice, salesPrice, costPrice, recommendedPrice, remainder, balance
+ * and creditLimit.
+ */
+const AMOUNT_KEY = /amount|total|price|remainder|balance|creditlimit/i;
+
+/**
+ * Keys that never hold money even inside a monetary object: references and
+ * counts (customerNumber, accountNumber, id, vatCode, quantity) and ratios
+ * (discountPercentage, exchangeRate). Checked after AMOUNT_KEY, so a key such
+ * as totalAmount is always compared.
+ */
+const NON_AMOUNT_KEY = /(?:number|code|percentage|quantity|rate|count|year|days)$/i;
+/** id, customerId: case-sensitive so a key such as paid is not taken for one. */
+const ID_KEY = /^id$|[a-z]Id$/;
 
 /**
  * True when the body carries a monetary value above maxAmount.
@@ -202,6 +218,11 @@ const AMOUNT_KEY = /amount|total|price/i;
  * check — an e-conomic customerNumber is an ordinary 8-digit id, and
  * comparing it against a kroner limit blocked every write for that customer
  * with "amount exceeds policy maxAmount".
+ *
+ * The flag is inherited down arrays and objects under a monetary key, so
+ * { totalAmounts: [60000] } and { totals: { net: 60000 } } are still caught,
+ * except for keys that are plainly not money ({ totals: { customerNumber } }).
+ * A numeric string under a monetary key is compared like a number.
  */
 function bodyContainsAmountAbove(
   value: unknown,
@@ -210,6 +231,12 @@ function bodyContainsAmountAbove(
 ): boolean {
   if (typeof value === 'number') {
     return underAmountKey && Math.abs(value) > maxAmount;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return underAmountKey && /^[-+]?\d+(?:[.,]\d+)?$/.test(trimmed)
+      && Math.abs(Number(trimmed.replace(',', '.'))) > maxAmount;
   }
 
   if (Array.isArray(value)) {
@@ -222,6 +249,10 @@ function bodyContainsAmountAbove(
   }
 
   return Object.entries(value).some(([key, nested]) =>
-    bodyContainsAmountAbove(nested, maxAmount, AMOUNT_KEY.test(key)),
+    bodyContainsAmountAbove(
+      nested,
+      maxAmount,
+      AMOUNT_KEY.test(key) || (underAmountKey && !NON_AMOUNT_KEY.test(key) && !ID_KEY.test(key)),
+    ),
   );
 }

@@ -141,6 +141,70 @@ describe('write policy', () => {
         checkPolicy(input({ totals: { customerNumber: 12_345_678 } }), policy),
       ).toMatchObject({ allowed: true });
     });
+
+    const blocked = (body: unknown) => checkPolicy(input(body), policy).allowed === false;
+
+    it('catches the amount fields of draft invoices, quotes, orders and credit notes', () => {
+      for (const path of ['/invoices/drafts', '/quotes/drafts', '/orders/drafts']) {
+        const at = (body: unknown) => checkPolicy({ ...input(body), path }, policy).allowed;
+        const ok = {
+          customer: { customerNumber: 87_654_321 },
+          paymentTerms: { paymentTermsNumber: 1 },
+          layout: { layoutNumber: 21 },
+          exchangeRate: 745.5,
+          lines: [{ lineNumber: 1, product: { productNumber: '99887766' }, quantity: 600, unitNetPrice: 75, discountPercentage: 10 }],
+        };
+        expect(at(ok)).toBe(true);
+        expect(at({ ...ok, lines: [{ quantity: 1, unitNetPrice: 60_000 }] })).toBe(false);
+        expect(at({ ...ok, lines: [{ quantity: 1, unitNetPrice: 10, unitCostPrice: 60_000 }] })).toBe(false);
+        for (const field of ['netAmount', 'grossAmount', 'vatAmount', 'roundingAmount', 'netAmountInBaseCurrency']) {
+          expect(at({ ...ok, [field]: 60_000 })).toBe(false);
+        }
+      }
+      // A credit note carries negative amounts: the absolute value counts.
+      expect(blocked({ lines: [{ quantity: -1, unitNetPrice: -60_000 }] })).toBe(true);
+      expect(blocked({ lines: [{ quantity: -1, unitNetPrice: -500 }] })).toBe(false);
+    });
+
+    it('catches journal voucher and payment amounts, not the account and invoice numbers', () => {
+      const voucher = (amount: number) => ({
+        accountingYear: { year: '2026' },
+        journal: { journalNumber: 1 },
+        voucherNumber: 12_345_678,
+        entries: {
+          financeVouchers: [{ date: '2026-11-20', amount, account: { accountNumber: 55_000 }, contraAccount: { accountNumber: 58_100 }, currency: { code: 'DKK' } }],
+          customerPayments: [{ date: '2026-11-20', amount: 100, customer: { customerNumber: 87_654_321 }, customerInvoice: 87_654_321, contraAccount: { accountNumber: 58_100 } }],
+          supplierInvoices: [{ date: '2026-11-20', amount: 100, amountDefaultCurrency: 100, supplier: { supplierNumber: 76_543_210 }, supplierInvoiceNumber: '76543210' }],
+        },
+      });
+      expect(checkPolicy({ ...input(voucher(1_000)), path: '/journals/1/vouchers' }, policy)).toMatchObject({ allowed: true });
+      expect(checkPolicy({ ...input(voucher(60_000)), path: '/journals/1/vouchers' }, policy)).toMatchObject({ allowed: false });
+      expect(blocked({ entries: { supplierPayments: [{ amountDefaultCurrency: 60_000 }] } })).toBe(true);
+    });
+
+    it('catches product prices and a customer credit limit', () => {
+      for (const field of ['salesPrice', 'costPrice', 'recommendedPrice']) {
+        expect(blocked({ productNumber: '12345678', [field]: 60_000 })).toBe(true);
+        expect(blocked({ productNumber: '12345678', [field]: 100 })).toBe(false);
+      }
+      expect(blocked({ customerNumber: 87_654_321, creditLimit: 60_000 })).toBe(true);
+      expect(blocked({ customerNumber: 87_654_321, creditLimit: 10_000, balance: 0 })).toBe(false);
+    });
+
+    it('catches money nested under a monetary key, but not references there', () => {
+      expect(blocked({ totals: { net: 60_000 } })).toBe(true);
+      expect(blocked({ totals: { paid: 60_000 } })).toBe(true);
+      expect(blocked({ amounts: [{ value: 60_000 }] })).toBe(true);
+      expect(blocked({ totals: { accountNumber: 99_999_999, id: 99_999_999, customerId: 99_999_999, vatCode: 99_999_999 } })).toBe(false);
+      expect(blocked({ totals: { customerNumber: 1, totalAmount: 60_000 } })).toBe(true);
+    });
+
+    it('compares a numeric string under a monetary key', () => {
+      expect(blocked({ lines: [{ unitNetPrice: '60000' }] })).toBe(true);
+      expect(blocked({ lines: [{ unitNetPrice: '60000,50' }] })).toBe(true);
+      expect(blocked({ lines: [{ unitNetPrice: '499.95' }] })).toBe(false);
+      expect(blocked({ customer: { customerNumber: '87654321' } })).toBe(false);
+    });
   });
 
   it('normalizes a JSON-string body so the prepare result carries a real object', () => {
