@@ -2065,7 +2065,9 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
               ? await readResult(client, spec.name, target, args)
               : await writeResult(client, spec.name, args, writePolicy);
           } catch (error) {
-            const missing = spec.module ? await moduleMissing(client, spec.module) : undefined;
+            // A refused access (401) always goes on as e-conomic's own error: a module answer must not hide it.
+            const refused = error instanceof EconomicHttpError && error.status === 401;
+            const missing = spec.module && !refused ? await moduleMissing(client, spec.module) : undefined;
             if (missing) return errorResult(missing);
             throw error;
           }

@@ -58,6 +58,18 @@ describe('subscription_overview', () => {
     expect(requests.map(request => request.path)).toEqual(['/subscriptionsapi/v6.0.3/Subscriptions/paged', '/self']);
   });
 
+  it('keeps a refused access (401) as e-conomic’s own error and does not ask /self', async () => {
+    const { gateway, requests } = fakeEconomic(request =>
+      new URL(request.url).pathname === '/self'
+        ? Response.json({ modules: [] })
+        : new Response('{"message":"Unauthorized"}', { status: 401, headers: { 'content-type': 'application/json' } }));
+    const result = await gateway.callTool('subscription_overview', {}, context);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('HTTP 401');
+    expect(result.content[0]?.text).not.toContain('module');
+    expect(requests.map(request => request.path)).toEqual(['/subscriptionsapi/v6.0.3/Subscriptions/paged']);
+  });
+
   it('keeps e-conomic’s own error when the module is on', async () => {
     const { gateway } = fakeEconomic(request =>
       new URL(request.url).pathname === '/self'
