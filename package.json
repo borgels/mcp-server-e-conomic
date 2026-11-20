@@ -30,7 +30,8 @@
     "test": "vitest run",
     "prepare": "npm run build",
     "prepack": "npm run typecheck && npm test && npm run build",
-    "smoke:live": "tsx test/live-smoke.ts"
+    "smoke:live": "tsx test/live-smoke.ts",
+    "check:demo": "tsx test/demo-check.ts"
   },
   "repository": {
     "type": "git",
