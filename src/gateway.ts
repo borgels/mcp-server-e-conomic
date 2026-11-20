@@ -745,6 +745,26 @@ const keyFiguresInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+const setEntryDimensionsInput = {
+  type: 'object',
+  required: ['target', 'dimensionNumber', 'dimensionKey'],
+  properties: {
+    target: {
+      type: 'string',
+      enum: ['draftEntry', 'salesDocumentLine'],
+      description: 'draftEntry: a draft line in a journal (journalNumber, entryNumber). salesDocumentLine: a line of a draft invoice, order or quote (documentNumber, lineNumber).',
+    },
+    journalNumber: { type: 'integer', minimum: 1, description: 'draftEntry: the journal.' },
+    entryNumber: { type: 'integer', minimum: 1, description: 'draftEntry: the draft entry.' },
+    documentNumber: { type: 'integer', minimum: 1, description: 'salesDocumentLine: the sales document.' },
+    lineNumber: { type: 'integer', minimum: 1, description: 'salesDocumentLine: the line.' },
+    dimensionNumber: { type: 'integer', minimum: 1, description: 'The dimension, e.g. 1 for department.' },
+    dimensionKey: { type: 'integer', minimum: 1, description: 'The value (or distribution) of the dimension.' },
+    isDistribution: { type: 'boolean', description: 'true when dimensionKey is a distribution, not a value (default false).' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const addSubscriberInput = {
   type: 'object',
   required: ['subscriptionNumber', 'customerNumber', 'startDate', 'endDate'],
@@ -841,6 +861,15 @@ const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
     ref('rest', 'invoices/paid'),
     ref('rest', 'invoices/sent'),
     ref('rest', 'invoices/drafts'),
+  ],
+  dimension_overview: [
+    ref('dimensions', 'dimensions'),
+    ref('dimensions', 'values'),
+    ref('dimensions', 'distributions'),
+    ref('dimensions', 'dimension-data/draft-entries'),
+    ref('dimensions', 'dimension-data/sales-document-lines'),
+    ref('dimensions', 'dimension-data/booked-entries'),
+    ref('dimensions', 'dimension-data/booked-invoice-lines'),
   ],
   subscription_overview: [
     ref('subscriptions', 'Subscriptions'),
@@ -976,6 +1005,7 @@ interface EconomicModule {
 }
 
 const SUBSCRIPTION_MODULE: EconomicModule = { pattern: /subscription|abonnement/i, name: 'Subscription' };
+const DIMENSION_MODULE: EconomicModule = { pattern: /dimension/i, name: 'Dimension' };
 
 function operation(
   access: 'read' | 'write',
@@ -1187,6 +1217,12 @@ const TOOL_SPECS: ToolSpec[] = [
     'List draft orders (default), sent orders or archived orders, or read one order with its lines. Supports query paging (skippages, pagesize) and filters.',
   ),
   narrowReadTool(
+    'dimension_overview',
+    'Get e-conomic dimensions',
+    'Read dimensions (default), their values and distributions, and the dimension values set on draft entries, sales document lines, booked entries and booked invoice lines (filter on entry, journal, document or line number). Needs the dimension module.',
+    DIMENSION_MODULE,
+  ),
+  narrowReadTool(
     'subscription_overview',
     'Get e-conomic subscriptions',
     'Read subscriptions (default), subscribers (which customer has which subscription, from when, until when) or subscription lines. Needs the subscription module.',
@@ -1275,6 +1311,30 @@ const TOOL_SPECS: ToolSpec[] = [
     // The file and its name are never logged: only the voucher, the year and the type.
     change: change('create', 'attached-document', { voucherNumber: 'recordNumber', accountingYear: 'accountingYear', contentType: 'enum' }),
     upstream: [operation('write', 'POST', 'documents', 'AttachedDocuments', '/AttachedDocuments')],
+  }),
+  writeTool({
+    name: 'set_entry_dimensions',
+    title: 'Set an e-conomic dimension value on a draft entry or sales line',
+    description: `Set the value of a dimension (e.g. department) on a draft journal entry or on a line of a draft sales document. Adds it, or changes the value already set for that dimension. Dimensions and their values are set up in e-conomic, not here. Needs the dimension module. ${WRITE_NOTE}`,
+    inputSchema: setEntryDimensionsInput,
+    module: DIMENSION_MODULE,
+    change: change('upsert', 'dimension-value', {
+      target: 'enum',
+      journalNumber: 'recordNumber',
+      entryNumber: 'recordNumber',
+      documentNumber: 'recordNumber',
+      lineNumber: 'recordNumber',
+      dimensionNumber: 'recordNumber',
+      dimensionKey: 'recordNumber',
+    }),
+    upstream: [
+      operation('read', 'GET', 'dimensions', 'dimension-data/draft-entries', '/dimension-data/draft-entries'),
+      operation('read', 'GET', 'dimensions', 'dimension-data/sales-document-lines', '/dimension-data/sales-document-lines'),
+      operation('write', 'POST', 'dimensions', 'dimension-data/draft-entries', '/dimension-data/draft-entries'),
+      operation('write', 'PUT', 'dimensions', 'dimension-data/draft-entries', '/dimension-data/draft-entries'),
+      operation('write', 'POST', 'dimensions', 'dimension-data/sales-document-lines', '/dimension-data/sales-document-lines'),
+      operation('write', 'PUT', 'dimensions', 'dimension-data/sales-document-lines', '/dimension-data/sales-document-lines'),
+    ],
   }),
   writeTool({
     name: 'add_subscriber',
@@ -2164,6 +2224,8 @@ async function writeResult(
       return upgradeSalesDocument(client, toolName, input, writePolicy);
     case 'attach_voucher_file':
       return attachVoucherFile(client, input, writePolicy);
+    case 'set_entry_dimensions':
+      return setEntryDimensions(client, input, writePolicy);
     case 'add_subscriber':
       return addSubscriber(client, input, writePolicy);
     case 'end_subscriber':
@@ -3525,6 +3587,72 @@ async function moduleMissing(client: EconomicClient, module: EconomicModule): Pr
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Sets a dimension value on a draft entry or a sales document line
+ * (dimensionsapi /dimension-data/...): reads what is set for that dimension,
+ * then adds it (POST) or changes it (PUT with its objectVersion).
+ */
+async function setEntryDimensions(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const dimensionNumber = positiveInteger(input.dimensionNumber);
+  const dimensionKey = positiveInteger(input.dimensionKey);
+  if (dimensionNumber === undefined || dimensionKey === undefined) {
+    return errorResult('set_entry_dimensions needs dimensionNumber and dimensionKey (positive whole numbers).');
+  }
+  if (input.isDistribution !== undefined && typeof input.isDistribution !== 'boolean') return errorResult('isDistribution must be true or false.');
+  let path: '/dimension-data/draft-entries' | '/dimension-data/sales-document-lines';
+  let keys: GatewayJsonObject;
+  let where: string;
+  if (input.target === 'draftEntry') {
+    const journalNumber = positiveInteger(input.journalNumber);
+    const entryNumber = positiveInteger(input.entryNumber);
+    if (journalNumber === undefined || entryNumber === undefined || input.documentNumber !== undefined || input.lineNumber !== undefined) {
+      return errorResult('A draftEntry takes journalNumber and entryNumber (and no document or line number).');
+    }
+    path = '/dimension-data/draft-entries';
+    keys = { journalNumber, entryNumber };
+    where = `draft entry ${entryNumber} in journal ${journalNumber}`;
+  } else if (input.target === 'salesDocumentLine') {
+    const documentNumber = positiveInteger(input.documentNumber);
+    const lineNumber = positiveInteger(input.lineNumber);
+    if (documentNumber === undefined || lineNumber === undefined || input.journalNumber !== undefined || input.entryNumber !== undefined) {
+      return errorResult('A salesDocumentLine takes documentNumber and lineNumber (and no journal or entry number).');
+    }
+    path = '/dimension-data/sales-document-lines';
+    keys = { documentNumber, lineNumber };
+    where = `line ${lineNumber} of sales document ${documentNumber}`;
+  } else {
+    return errorResult('target must be draftEntry or salesDocumentLine.');
+  }
+
+  const early = writePolicyDenial(policy, { capability: 'set_entry_dimensions', serviceId: 'dimensions', method: 'POST', path, body: {} });
+  if (early) return early;
+
+  const filter = [...Object.entries(keys), ['dimensionNumber', dimensionNumber]]
+    .map(([field, value]) => `${field}$eq:${value}`)
+    .join('$and:');
+  const found = asObject(await callEndpoint(client, { serviceId: 'dimensions', method: 'GET', pathTemplate: path, query: { filter } }));
+  const items = Array.isArray(found.items) ? found.items.map(item => asObject(item)) : [];
+  const current = items.find(item =>
+    item.dimensionNumber === dimensionNumber && Object.entries(keys).every(([field, value]) => item[field] === value));
+
+  const body: GatewayJsonObject = {
+    ...keys,
+    dimensionNumber,
+    dimensionKey,
+    isDistribution: input.isDistribution === true,
+    ...(current && typeof current.objectVersion === 'string' ? { objectVersion: current.objectVersion } : {}),
+  };
+  const method = current ? 'PUT' : 'POST';
+  const denied = writePolicyDenial(policy, { capability: 'set_entry_dimensions', serviceId: 'dimensions', method, path, body });
+  if (denied) return denied;
+  const result = await callEndpoint(client, { serviceId: 'dimensions', method, pathTemplate: path, body });
+  return jsonResult(`${current ? 'Changed' : 'Set'} dimension ${dimensionNumber} to ${dimensionKey} on ${where}.`, result ?? body);
 }
 
 /** Adds a customer to a subscription (subscriptionsapi POST /Subscribers). */

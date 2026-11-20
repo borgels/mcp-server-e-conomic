@@ -33,6 +33,10 @@ const NARROW_READ_TOOLS = [
   'invoice_overview',
   'project_overview',
   'accounting_entries',
+  'quote_overview',
+  'order_overview',
+  'subscription_overview',
+  'dimension_overview',
 ];
 
 const SERVICE_PATHS = new Map(economicServiceCatalog.services.map(service => [service.id, service.servicePath]));
@@ -248,6 +252,10 @@ describe('declared upstream requests', () => {
     create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
     upgrade_order: [{ orderNumber: 4 }],
+    set_entry_dimensions: [
+      { target: 'draftEntry', journalNumber: 1, entryNumber: 11, dimensionNumber: 1, dimensionKey: 2 },
+      { target: 'salesDocumentLine', documentNumber: 7, lineNumber: 1, dimensionNumber: 1, dimensionKey: 3, isDistribution: true },
+    ],
     add_subscriber: [{ subscriptionNumber: 1, customerNumber: 2, startDate: '2026-01-01', endDate: '2026-03-31', expiryDate: '2026-12-31', discountPercentage: 10 }],
     end_subscriber: [{ subscriberNumber: 3, expiryDate: '2026-12-31' }],
     update_time_entry: [{ timeEntryNumber: 5, hours: 3.5, date: '2026-03-02', description: 'Rettet' }],

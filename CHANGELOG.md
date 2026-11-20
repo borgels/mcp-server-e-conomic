@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.17.0
+
+Dimensions in the embedded gateway (#69). Additive for embedders.
+
+- Read tool `dimension_overview`: dimensions (default), values and
+  distributions, and the dimension values set on draft entries, sales
+  document lines, booked entries and booked invoice lines (dimensionsapi
+  v5.3.1). Needs the dimension module; the tool says so plainly when it is
+  off.
+- Write tool `set_entry_dimensions`: sets the value of a dimension on a draft
+  journal entry (`journalNumber`, `entryNumber`) or a draft sales document
+  line (`documentNumber`, `lineNumber`). It reads what is set for that
+  dimension and adds it (POST) or changes it (PUT with its `objectVersion`).
+  Log values: numbers only.
+- Not offered: creating, changing or deleting dimensions, values or
+  distributions (set-up, like the chart of accounts), dimension values on
+  booked entries, and every DELETE.
+- Checked against the demo agreement (dimension module on): all reads answer.
+  The writes are tested with recorded answers after the API's schema, as the
+  demo agreement is read-only.
+- A tool that needs a module asks `/self` only when a request fails with
+  something other than a refused access: a 401 always goes on as
+  e-conomic's own error (from 0.16.0).
+
 ## 0.16.0
 
 Subscriptions in the embedded gateway (#68). Additive for embedders.

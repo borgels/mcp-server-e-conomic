@@ -412,7 +412,8 @@ is the default. Anything else is refused before a request is sent.
 | `quote_overview` | `rest:quotes/drafts`, `rest:quotes/sent`, `rest:quotes/archived` (one quote by `number` includes its lines) |
 | `order_overview` | `rest:orders/drafts`, `rest:orders/sent`, `rest:orders/archived` (one order by `number` includes its lines) |
 | `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |
-| `subscription_overview` | `subscriptions:Subscriptions`, `subscriptions:Subscribers`, `subscriptions:subscriptionlines` (needs the subscription module) |
+| `dimension_overview` | `dimensions:dimensions`, `dimensions:values`, `dimensions:distributions`, `dimensions:dimension-data/draft-entries`, `dimensions:dimension-data/sales-document-lines`, `dimensions:dimension-data/booked-entries`, `dimensions:dimension-data/booked-invoice-lines` (needs the dimension module) |
+| `subscription_overview` | `subscriptions:Subscriptions`, `subscriptions:Subscribers`, `subscriptions:subscriptionlines` (needs the subscription module; a 401 is never turned into a module answer) |
 | `project_overview` | `projects:Projects`, `projects:project-activities`, `projects:Activities/allowed` (query `employeeNumber`, `projectNumber`), `projects:Projects/allowed` (query `employeeNumber`), `projects:Mileages`, `projects:MileagePrices`, `projects:TimeEntryPrices`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
 | `get_document` | `documents:AttachedDocuments`, `rest:invoices/booked`, `rest:invoices/drafts`; with `number` and `pdf: true` the record's PDF as base64 (at most 4 MB) |
 | `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
@@ -426,6 +427,7 @@ Write gateway tools, disabled by default:
 | `create_draft_quote`, `create_draft_order` | write | Draft quote or draft order, built like a draft invoice (not sent) |
 | `upgrade_quote`, `upgrade_order` | write | Turns a draft quote into a draft order or draft invoice, or a draft order into a draft invoice, with e-conomic's upgrade template (not booked, not sent) |
 | `attach_voucher_file` | write | Attaches a PDF, JPEG or PNG (at most 9 MB, type checked by its first bytes) to a voucher by voucher number and accounting year (documentsapi). Fails when the voucher already has a document, unless `onConflict: merge`. The file is never logged |
+| `set_entry_dimensions` | write | Sets a dimension value on a draft journal entry or a draft sales document line (adds it or changes it); dimensions and values themselves are not created or deleted |
 | `add_subscriber` | write | Adds a customer to a subscription from a start date (needs the subscription module) |
 | `end_subscriber` | write | Sets the last day a subscriber can be invoiced (`expiryDate`); nothing is deleted |
 | `upsert_customer`, `upsert_product`, `upsert_project` | write | Master data, read-merge-write |
