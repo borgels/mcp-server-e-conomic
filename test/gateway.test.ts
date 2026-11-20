@@ -16,6 +16,7 @@ describe('e-conomic gateway export', () => {
       ['invoice_overview', 'read', true],
       ['quote_overview', 'read', true],
       ['order_overview', 'read', true],
+      ['vat_overview', 'read', true],
       ['dimension_overview', 'read', true],
       ['subscription_overview', 'read', true],
       ['project_overview', 'read', true],

@@ -89,6 +89,7 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
       'suppliers',
       'supplier-groups',
       'vat-accounts',
+      'vat-types',
       'vat-zones',
     ],
   },
@@ -549,6 +550,7 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('rest', 'GET', '/accounting-years/{number}/totals', 'Totals per account for an accounting year.', 'read'),
     customEndpoint('rest', 'GET', '/accounting-years/{number}/periods/{period}/totals', 'Totals per account for a period of an accounting year.', 'read'),
     customEndpoint('rest', 'GET', '/invoices/totals', 'Totals of draft and booked invoices (unpaid, overdue, paid).', 'read'),
+    customEndpoint('rest', 'GET', '/vat-types/{number}/vat-report-setups', 'The VAT return fields of a VAT type.', 'read'),
     customEndpoint('rest', 'GET', '/invoices/drafts/{number}/pdf', 'Fetch the PDF of a draft invoice.', 'read'),
     customEndpoint('booked-entries', 'POST', '/booked-entries/match', 'Match booked entries.', 'dangerous'),
   );

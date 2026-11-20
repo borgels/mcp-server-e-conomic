@@ -214,6 +214,12 @@ export function economicGatewayContractFixture(
     case 'project_overview':
       return collectionFixture('Fetched e-conomic contract projects.', input, projects);
 
+    case 'vat_overview':
+      return collectionFixture('Fetched e-conomic contract VAT codes.', input, [
+        { vatCode: 'U25', name: 'Salgsmoms 25 %', ratePercentage: 25, vatType: { vatTypeNumber: 1 } },
+        { vatCode: 'I25', name: 'Købsmoms 25 %', ratePercentage: 25, vatType: { vatTypeNumber: 2 } },
+      ]);
+
     case 'dimension_overview':
       return collectionFixture('Fetched e-conomic contract dimensions.', input, [
         { number: 1, name: 'Afdeling', active: true },
