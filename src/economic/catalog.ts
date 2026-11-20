@@ -467,6 +467,9 @@ function buildEndpointOperations(): EndpointOperation[] {
 
   operations.push(
     customEndpoint('rest', 'POST', '/invoices/drafts', 'Create a draft (unbooked) sales invoice.', 'draft'),
+    // Deleting a draft invoice: it has not been booked or sent. The gateway's
+    // delete_draft_invoice tool reads its status right before the DELETE.
+    customEndpoint('rest', 'DELETE', '/invoices/drafts/{number}', 'Delete a draft (unbooked, unsent) invoice.', 'draft'),
     customEndpoint('rest', 'POST', '/accounts', 'Create a general ledger account.', 'commit'),
     customEndpoint('rest', 'PUT', '/accounts/{number}', 'Update a general ledger account.', 'commit'),
     // Customer/product master data writes on the classic REST surface: the

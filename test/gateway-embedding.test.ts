@@ -222,6 +222,10 @@ describe('declared upstream requests', () => {
       });
     }
     if (request.method === 'GET' && path.startsWith('/invoices/drafts/')) return Response.json({ draftInvoiceNumber: 7 });
+    if (request.method === 'GET' && /\/draft-entries\/11$/.test(path)) return Response.json({ entryNumber: 11, journalNumber: 1, voucherNumber: 501 });
+    if (request.method === 'GET' && /\/TimeEntries\/\d+$/.test(path)) {
+      return Response.json({ number: 5, projectNumber: 1, activityNumber: 1, employeeNumber: 1, isApproved: false, isReconciled: false });
+    }
     return Response.json({ collection: [] });
   }
 
@@ -261,8 +265,12 @@ describe('declared upstream requests', () => {
       { journalNumber: 1, entryNumbers: [11, 12] },
       { journalNumber: 1, voucherNumbers: [501] },
     ],
+    book_journal: [{ journalNumber: 1, entryCount: 2 }, { journalNumber: 1, entryCount: 2, requireVoucher: false }],
     book_invoice: [{ draftInvoiceNumber: 7 }],
     match_open_items: [{ entryIds: [800001, 800002] }],
+    delete_journal_entry: [{ journalNumber: 1, entryNumber: 11 }],
+    delete_draft_invoice: [{ draftInvoiceNumber: 7 }],
+    delete_time_entry: [{ timeEntryNumber: 5 }],
   };
 
   function inputsFor(name: string): GatewayJsonObject[] {

@@ -12,7 +12,13 @@ import {
 import { callEndpoint, resolveSelfUrl } from './economic/endpoints.js';
 import { encodePathParam } from './economic/path-params.js';
 import { basePolicy, checkPolicy, type EconomicPolicy } from './economic/policy.js';
-import { assertMatchEntryIds, draftEntryNumbersForVouchers, validateBooking } from './economic/bookings.js';
+import {
+  MAX_JOURNAL_BOOKING_ENTRIES,
+  assertMatchEntryIds,
+  draftEntryNumbersForVouchers,
+  draftEntryNumbersOfJournal,
+  validateBooking,
+} from './economic/bookings.js';
 import { BANK_FIELDS_REFUSED, bankFieldPaths, changedBankFields } from './economic/bank-fields.js';
 import { fenceRule } from './economic/fence.js';
 import { EconomicHttpError, SecretRedactor, formatUnknownError } from './errors.js';
@@ -114,17 +120,19 @@ export interface EconomicGatewayOptions {
  * payment details, the company's own record), the paths the built-in write
  * policy denies outside the booking tools (VAT, payment), and the fixed fence
  * in `GATEWAY_FENCE` (src/economic/fence.ts), checked in the HTTP client right
- * before any request is sent: deletion, the company's own record, bank
- * information, users, access and settings, webhooks, booking a whole journal,
- * accounting years and the chart of accounts. `upsert_account` is therefore
+ * before any request is sent: every deletion but a draft (a draft journal
+ * entry, a draft invoice, a time entry; see
+ * `GATEWAY_DELETABLE`), the company's own record, bank information, users,
+ * access and settings, webhooks, the whole-journal booking paths (`/book`,
+ * `bookWithDateInterval`), accounting years and the chart of accounts. `upsert_account` is therefore
  * always refused by the gateway, also when a host offers it.
  */
 export interface EconomicHostPolicy {
   /** Allow the write-risk tools. Default false. */
   enableWrites?: boolean;
   /**
-   * Allow the booking tools (book_journal_entries, book_invoice,
-   * match_open_items). They are irreversible in e-conomic. Default false.
+   * Allow the booking tools (book_journal, book_journal_entries, book_invoice,
+   * approve_time_entries, match_open_items). They are irreversible in e-conomic. Default false.
    * Requires enableWrites.
    */
   allowBooking?: boolean;
@@ -160,7 +168,7 @@ export type GatewayReadonlyJsonValue =
  */
 export interface GatewayUpstreamOperation {
   readonly access: 'read' | 'write';
-  readonly method: 'GET' | 'POST' | 'PUT';
+  readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   readonly path: string;
   readonly serviceId: string;
   readonly resource: string;
@@ -202,7 +210,7 @@ export interface GatewayToolCatalogEntry {
   readonly change?: EconomicChangeSpec;
 }
 
-export type EconomicChangeAction = 'create' | 'upsert' | 'register' | 'book' | 'match';
+export type EconomicChangeAction = 'create' | 'upsert' | 'register' | 'book' | 'match' | 'delete';
 
 export interface EconomicChangeSpec {
   readonly action: EconomicChangeAction;
@@ -601,6 +609,53 @@ const bookJournalEntriesInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+const bookJournalInput = {
+  type: 'object',
+  required: ['journalNumber', 'entryCount'],
+  properties: {
+    journalNumber: { type: 'integer', minimum: 1, description: 'Journal (kassekladde) whose draft entries are all booked.' },
+    entryCount: {
+      type: 'integer',
+      minimum: 1,
+      maximum: MAX_JOURNAL_BOOKING_ENTRIES,
+      description: `How many draft entries the journal holds (read them first with accounting_entries, journals:draft-entries). Nothing is booked when the journal holds another number. At most ${MAX_JOURNAL_BOOKING_ENTRIES}.`,
+    },
+    requireVoucher: {
+      type: 'boolean',
+      description: 'Require an attached document on every voucher (default true). Set false for lines without a document, e.g. bank payments.',
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const deleteJournalEntryInput = {
+  type: 'object',
+  required: ['journalNumber', 'entryNumber'],
+  properties: {
+    journalNumber: { type: 'integer', minimum: 1, description: 'Journal (kassekladde) holding the draft entry.' },
+    entryNumber: { type: 'integer', minimum: 1, description: 'The draft entry to delete (not booked).' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const deleteDraftInvoiceInput = {
+  type: 'object',
+  required: ['draftInvoiceNumber'],
+  properties: {
+    draftInvoiceNumber: { type: 'integer', minimum: 1, description: 'The draft invoice to delete (not booked, not sent).' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const deleteTimeEntryInput = {
+  type: 'object',
+  required: ['timeEntryNumber'],
+  properties: {
+    timeEntryNumber: { type: 'integer', minimum: 1, description: 'The time entry to delete (not approved, not reconciled).' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const bookInvoiceInput = {
   type: 'object',
   required: ['draftInvoiceNumber'],
@@ -771,7 +826,7 @@ interface ToolSpec extends GatewayToolDefinition {
 
 function operation(
   access: 'read' | 'write',
-  method: 'GET' | 'POST' | 'PUT',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   serviceId: string,
   resource: string,
   pathTemplate: string,
@@ -857,6 +912,9 @@ const change = (
 
 const WRITE_NOTE =
   'Write — disabled by default; enable via the gateway’s enableWrites option (standalone server: ECONOMIC_ENABLE_WRITES).';
+
+const DELETE_NOTE =
+  'Delete — reads the record’s status at e-conomic right before deleting, and deletes nothing when it cannot. Disabled by default; enable via the gateway’s enableWrites option.';
 
 const BOOKING_NOTE =
   'Booking — disabled by default; runs only when the host policy sets enableWrites and allowBooking.';
@@ -988,7 +1046,7 @@ const TOOL_SPECS: ToolSpec[] = [
   writeTool({
     name: 'create_time_entry',
     title: 'Register e-conomic project time',
-    description: `Register a project time entry (hours on a project + activity for an employee, on a date). Create only; deletion is a separate operation. ${WRITE_NOTE}`,
+    description: `Register a project time entry (hours on a project + activity for an employee, on a date). Create only; delete_time_entry deletes one that is not approved. ${WRITE_NOTE}`,
     inputSchema: createTimeEntryInput,
     change: change('create', 'time-entry', {
       projectNumber: 'recordNumber',
@@ -1069,9 +1127,22 @@ const TOOL_SPECS: ToolSpec[] = [
     ],
   }),
   writeTool({
+    name: 'book_journal',
+    title: 'Book an e-conomic journal',
+    description: `Book every draft entry of one journal (kassekladde). Give the number of entries the journal holds (entryCount); when it holds another number, nothing is booked. Exactly the entries read and checked are booked, so an entry added meanwhile is not. Every voucher must have an attached document unless requireVoucher is false. At most ${MAX_JOURNAL_BOOKING_ENTRIES} entries; book a larger journal in parts with book_journal_entries. Booking is irreversible: corrections are made with counter-entries. ${BOOKING_NOTE}`,
+    inputSchema: bookJournalInput,
+    booking: true,
+    change: change('book', 'journal', { journalNumber: 'recordNumber', entryCount: 'recordNumber' }),
+    upstream: [
+      operation('read', 'GET', 'journals', 'draft-entries', '/draft-entries'),
+      operation('read', 'GET', 'documents', 'AttachedDocuments', '/AttachedDocuments/{number}'),
+      operation('write', 'POST', 'journals', 'journals', '/journals/{journalNumber}/bookdraftentries'),
+    ],
+  }),
+  writeTool({
     name: 'book_journal_entries',
     title: 'Book e-conomic journal entries',
-    description: `Book explicit draft entries of a journal (kassekladde), by entry numbers or by voucher numbers; never a whole journal. Every entry must exist in the journal, and every voucher must have an attached document unless requireVoucher is false. Booking is irreversible: corrections are made with counter-entries. ${BOOKING_NOTE}`,
+    description: `Book explicit draft entries of a journal (kassekladde), by entry numbers or by voucher numbers (book_journal books every entry of a journal). Every entry must exist in the journal, and every voucher must have an attached document unless requireVoucher is false. Booking is irreversible: corrections are made with counter-entries. ${BOOKING_NOTE}`,
     inputSchema: bookJournalEntriesInput,
     booking: true,
     change: change('book', 'journal-entry', { journalNumber: 'recordNumber', entryNumbers: 'numberList', voucherNumbers: 'numberList' }),
@@ -1102,11 +1173,44 @@ const TOOL_SPECS: ToolSpec[] = [
     change: change('match', 'booked-entry', { entryIds: 'numberList' }),
     upstream: [operation('write', 'POST', 'booked-entries', 'booked-entries', '/booked-entries/match')],
   }),
+  writeTool({
+    name: 'delete_journal_entry',
+    title: 'Delete an e-conomic draft journal entry',
+    description: `Delete one draft entry (not booked) from a journal (kassekladde). A booked entry cannot be deleted; correct it with a counter-entry. ${DELETE_NOTE}`,
+    inputSchema: deleteJournalEntryInput,
+    change: change('delete', 'journal-entry', { journalNumber: 'recordNumber', entryNumber: 'recordNumber' }),
+    upstream: [
+      operation('read', 'GET', 'journals', 'draft-entries', '/draft-entries/{number}'),
+      operation('write', 'DELETE', 'journals', 'draft-entries', '/draft-entries/{number}'),
+    ],
+  }),
+  writeTool({
+    name: 'delete_draft_invoice',
+    title: 'Delete an e-conomic draft invoice',
+    description: `Delete a draft invoice. A draft is neither booked nor sent; a booked invoice cannot be deleted (correct it with a credit note). ${DELETE_NOTE}`,
+    inputSchema: deleteDraftInvoiceInput,
+    change: change('delete', 'draft-invoice', { draftInvoiceNumber: 'recordNumber' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'invoices/drafts', '/invoices/drafts/{number}'),
+      operation('write', 'DELETE', 'rest', 'invoices/drafts', '/invoices/drafts/{number}'),
+    ],
+  }),
+  writeTool({
+    name: 'delete_time_entry',
+    title: 'Delete e-conomic project time',
+    description: `Delete a time entry that is neither approved nor reconciled (invoiced). An approved entry has its cost booked on the project and cannot be deleted. ${DELETE_NOTE}`,
+    inputSchema: deleteTimeEntryInput,
+    change: change('delete', 'time-entry', { timeEntryNumber: 'recordNumber' }),
+    upstream: [
+      operation('read', 'GET', 'projects', 'TimeEntries', '/TimeEntries/{number}'),
+      operation('write', 'DELETE', 'projects', 'TimeEntries', '/TimeEntries/{number}'),
+    ],
+  }),
 ];
 
 const SPEC_BY_NAME = new Map(TOOL_SPECS.map(spec => [spec.name, spec]));
 
-export { GATEWAY_FENCE, fenceRule, type FenceRule } from './economic/fence.js';
+export { GATEWAY_DELETABLE, GATEWAY_FENCE, fenceRule, type FenceRule } from './economic/fence.js';
 
 export const economicGatewayTools: GatewayToolDefinition[] = TOOL_SPECS.map(spec => ({
   name: spec.name,
@@ -1718,8 +1822,16 @@ async function writeResult(
       return createJournalEntries(client, input, writePolicy);
     case 'register_payment':
       return registerPayment(client, input, writePolicy);
+    case 'book_journal':
+      return bookJournal(client, input, writePolicy);
     case 'book_journal_entries':
       return bookJournalEntries(client, input, writePolicy);
+    case 'delete_journal_entry':
+      return deleteJournalEntry(client, input, writePolicy);
+    case 'delete_draft_invoice':
+      return deleteSalesDraft(client, toolName, input, writePolicy);
+    case 'delete_time_entry':
+      return deleteTimeEntry(client, input, writePolicy);
     case 'book_invoice':
       return bookInvoice(client, input, writePolicy);
     case 'match_open_items':
@@ -2346,7 +2458,7 @@ function writePolicyDenial(
   policy: EconomicPolicy,
   input: {
     capability: string;
-    method: 'POST' | 'PUT';
+    method: 'POST' | 'PUT' | 'DELETE';
     path: string;
     body?: unknown;
     serviceId?: string;
@@ -2825,6 +2937,194 @@ async function bookJournalEntries(
   });
   const count = validation.entries.length === 1 ? '1 entry' : `${validation.entries.length} entries`;
   return jsonResult(`Booked ${count} in journal ${journalNumber}.`, { validation, result: booked ?? null });
+}
+
+/**
+ * Books every draft entry of one journal, through the same endpoint and
+ * guardrails as book_journal_entries: the caller states how many entries it
+ * expects, and exactly the entries read and checked are booked. Never
+ * POST /journals/{n}/book, which books whatever the journal holds when
+ * e-conomic runs it; that path stays behind the fence.
+ */
+async function bookJournal(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const journalNumber = positiveInteger(input.journalNumber);
+  if (journalNumber === undefined) return errorResult('book_journal needs journalNumber (a positive whole number).');
+  const entryCount = positiveInteger(input.entryCount);
+  if (entryCount === undefined || entryCount > MAX_JOURNAL_BOOKING_ENTRIES) {
+    return errorResult(`entryCount must be a whole number from 1 to ${MAX_JOURNAL_BOOKING_ENTRIES}.`);
+  }
+  if (input.requireVoucher !== undefined && typeof input.requireVoucher !== 'boolean') {
+    return errorResult('requireVoucher must be true or false.');
+  }
+  const requireVoucher = input.requireVoucher !== false;
+
+  const path = `/journals/${journalNumber}/bookdraftentries`;
+  // Booking must be allowed before anything is read.
+  const early = writePolicyDenial(policy, { capability: 'book_journal', serviceId: 'journals', method: 'POST', path, body: {} });
+  if (early) return early;
+
+  const entryNumbers = await draftEntryNumbersOfJournal(client, journalNumber);
+  if (entryNumbers.length === 0) return errorResult(`Journal ${journalNumber} has no draft entries. Nothing was booked.`);
+  if (entryNumbers.length !== entryCount) {
+    const held = entryNumbers.length === 1 ? '1 draft entry' : `${entryNumbers.length} draft entries`;
+    return errorResult(`Journal ${journalNumber} holds ${held}, not ${entryCount}. Nothing was booked; read the journal again.`);
+  }
+  const validation = await validateBooking(
+    client,
+    { journalNumber, entryNumbers, requireVoucher },
+    { maxEntries: MAX_JOURNAL_BOOKING_ENTRIES },
+  );
+  const body: GatewayJsonObject = { entryNumbers: validation.entries.map(entry => entry.entryNumber) };
+  const denied = writePolicyDenial(policy, { capability: 'book_journal', serviceId: 'journals', method: 'POST', path, body });
+  if (denied) return denied;
+
+  const booked = await callEndpoint(client, {
+    serviceId: 'journals',
+    method: 'POST',
+    pathTemplate: '/journals/{journalNumber}/bookdraftentries',
+    pathParams: { journalNumber },
+    body,
+  });
+  const count = validation.entries.length === 1 ? '1 entry' : `${validation.entries.length} entries`;
+  return jsonResult(`Booked journal ${journalNumber}: ${count}.`, { validation, result: booked ?? null });
+}
+
+/**
+ * Reads one record for a delete tool's status check. A 404 is "not there"
+ * (undefined); any other failure throws, so nothing is deleted when the status
+ * cannot be read.
+ */
+async function readForDelete(
+  client: EconomicClient,
+  serviceId: string,
+  pathTemplate: string,
+  number: number,
+): Promise<GatewayJsonObject | undefined> {
+  let answer: unknown;
+  try {
+    answer = await callEndpoint(client, { serviceId, method: 'GET', pathTemplate, pathParams: { number } });
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) return undefined;
+    throw error;
+  }
+  if (!answer || typeof answer !== 'object' || Array.isArray(answer)) {
+    throw new Error(`e-conomic gave no readable status for ${pathTemplate.replace('{number}', String(number))}. Nothing was deleted.`);
+  }
+  return answer as GatewayJsonObject;
+}
+
+/** Deletes one draft journal entry (journalsapi DELETE /draft-entries/{n}) after reading it as a draft of that journal. */
+async function deleteJournalEntry(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const journalNumber = positiveInteger(input.journalNumber);
+  const entryNumber = positiveInteger(input.entryNumber);
+  if (journalNumber === undefined || entryNumber === undefined) {
+    return errorResult('delete_journal_entry needs journalNumber and entryNumber (positive whole numbers).');
+  }
+  const early = writePolicyDenial(policy, {
+    capability: 'delete_journal_entry',
+    serviceId: 'journals',
+    method: 'DELETE',
+    path: `/draft-entries/${entryNumber}`,
+  });
+  if (early) return early;
+
+  // Only a draft entry is found here: a booked entry is no longer a draft entry.
+  const draft = await readForDelete(client, 'journals', '/draft-entries/{number}', entryNumber);
+  if (!draft) {
+    return errorResult(`Draft entry ${entryNumber} does not exist (booked, deleted, or never there). Nothing was deleted.`);
+  }
+  if (draft.entryNumber !== entryNumber) {
+    return errorResult(`e-conomic did not answer with draft entry ${entryNumber}. Nothing was deleted.`);
+  }
+  const journal = draft.journalNumber ?? asObject(draft.journal).journalNumber;
+  if (journal !== journalNumber) {
+    return errorResult(`Draft entry ${entryNumber} is not in journal ${journalNumber}. Nothing was deleted.`);
+  }
+
+  await callEndpoint(client, {
+    serviceId: 'journals',
+    method: 'DELETE',
+    pathTemplate: '/draft-entries/{number}',
+    pathParams: { number: entryNumber },
+  });
+  return jsonResult(`Deleted draft entry ${entryNumber} from journal ${journalNumber}.`, { deleted: true, journalNumber, entryNumber });
+}
+
+/** The draft sales documents a delete tool removes, and the states that must not hold the document. */
+const SALES_DRAFT_DELETES: Record<
+  string,
+  { field: 'draftInvoiceNumber' | 'quoteNumber' | 'orderNumber'; drafts: string; notIn: Array<{ path: string; state: string }>; noun: string }
+> = {
+  delete_draft_invoice: { field: 'draftInvoiceNumber', drafts: '/invoices/drafts', notIn: [], noun: 'draft invoice' },
+};
+
+/**
+ * Deletes a draft invoice (REST DELETE /invoices/drafts/{n}) after reading it
+ * as a draft. A draft invoice is neither booked nor sent:
+ * booking moves it to /invoices/booked under its own number, and only a booked
+ * invoice is sent.
+ */
+async function deleteSalesDraft(
+  client: EconomicClient,
+  toolName: string,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const kind = SALES_DRAFT_DELETES[toolName];
+  if (!kind) return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
+  const number = positiveInteger(input[kind.field]);
+  if (number === undefined) return errorResult(`${toolName} needs ${kind.field} (a positive whole number).`);
+  const early = writePolicyDenial(policy, { capability: toolName, method: 'DELETE', path: `${kind.drafts}/${number}` });
+  if (early) return early;
+
+  const draft = await readForDelete(client, 'rest', `${kind.drafts}/{number}`, number);
+  if (!draft) {
+    return errorResult(`The ${kind.noun} ${number} does not exist (booked, sent, deleted, or never there). Nothing was deleted.`);
+  }
+  for (const other of kind.notIn) {
+    if (await readForDelete(client, 'rest', `${other.path}/{number}`, number)) {
+      return errorResult(`The ${kind.noun} ${number} is ${other.state}. Nothing was deleted.`);
+    }
+  }
+
+  await callEndpoint(client, { serviceId: 'rest', method: 'DELETE', pathTemplate: `${kind.drafts}/{number}`, pathParams: { number } });
+  return jsonResult(`Deleted ${kind.noun} ${number}.`, { deleted: true, [kind.field]: number });
+}
+
+/** Deletes a time entry (projectsapi DELETE /TimeEntries/{n}) that is neither approved nor reconciled. */
+async function deleteTimeEntry(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const number = positiveInteger(input.timeEntryNumber);
+  if (number === undefined) return errorResult('delete_time_entry needs timeEntryNumber (a positive whole number).');
+  const early = writePolicyDenial(policy, {
+    capability: 'delete_time_entry',
+    serviceId: 'projects',
+    method: 'DELETE',
+    path: `/TimeEntries/${number}`,
+  });
+  if (early) return early;
+
+  const entry = await readForDelete(client, 'projects', '/TimeEntries/{number}', number);
+  if (!entry) return errorResult(`Time entry ${number} does not exist. Nothing was deleted.`);
+  // Both flags must be read as false: a missing or unexpected value is no proof that the entry is unused.
+  if (entry.isApproved !== false || entry.isReconciled !== false) {
+    const why = entry.isApproved === true ? 'approved' : entry.isReconciled === true ? 'reconciled (invoiced)' : 'of unknown status';
+    return errorResult(`Time entry ${number} is ${why} and cannot be deleted. Nothing was deleted.`);
+  }
+
+  await callEndpoint(client, { serviceId: 'projects', method: 'DELETE', pathTemplate: '/TimeEntries/{number}', pathParams: { number } });
+  return jsonResult(`Deleted time entry ${number}.`, { deleted: true, timeEntryNumber: number });
 }
 
 /** Books a draft invoice (REST POST /invoices/booked). Never sent electronically from here. */
