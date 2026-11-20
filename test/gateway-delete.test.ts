@@ -261,6 +261,37 @@ describe('delete tools', () => {
     }
   });
 
+  it('refuses an answer that does not name the record asked for, or names none', async () => {
+    const cases: Array<[string, GatewayJsonObject, RegExp]> = [
+      ['delete_draft_invoice', { draftInvoiceNumber: 7 }, /^\/invoices\/drafts\/7$/],
+      ['delete_time_entry', { timeEntryNumber: 5 }, /\/TimeEntries\/5$/],
+      ['delete_draft_quote', { quoteNumber: 3 }, /^\/quotes\/drafts\/3$/],
+      ['delete_draft_order', { orderNumber: 4 }, /^\/orders\/drafts\/4$/],
+    ];
+    for (const [tool, input, statusPath] of cases) {
+      for (const answer of [{}, { draftInvoiceNumber: 8, quoteNumber: 8, orderNumber: 8, number: 8, isApproved: false, isReconciled: false }]) {
+        const { gateway, deletes } = fakeEconomic(WRITES, (method, path) => (method === 'GET' && statusPath.test(path) ? Response.json(answer) : undefined));
+        const result = await gateway.callTool(tool, input, context);
+        expect(result.isError, `${tool} ${JSON.stringify(answer)}`).toBe(true);
+        expect(deletes(), tool).toEqual([]);
+      }
+    }
+  });
+
+  it('deletes nothing when the sent or archived lookup fails', async () => {
+    for (const [tool, input, state] of [
+      ['delete_draft_quote', { quoteNumber: 3 }, '/quotes/sent/3'],
+      ['delete_draft_quote', { quoteNumber: 3 }, '/quotes/archived/3'],
+      ['delete_draft_order', { orderNumber: 4 }, '/orders/sent/4'],
+      ['delete_draft_order', { orderNumber: 4 }, '/orders/archived/4'],
+    ] as const) {
+      const { gateway, deletes } = fakeEconomic(WRITES, (method, path) => (method === 'GET' && path === state ? new Response('boom', { status: 500 }) : undefined));
+      const result = await gateway.callTool(tool, input, context);
+      expect(result.isError, state).toBe(true);
+      expect(deletes(), state).toEqual([]);
+    }
+  });
+
   it('resolves a delete for the log: numbers only, action delete', () => {
     expect(resolveEconomicChange('delete_draft_invoice', { draftInvoiceNumber: 7 })).toEqual({
       ok: true,
@@ -298,6 +329,26 @@ describe('book_journal', () => {
       expect(result.content[0]?.text).toContain('holds 2 draft entries');
       expect(writes()).toEqual([]);
     }
+  });
+
+  it('books only the entries it counted, when an entry is added between its two reads', async () => {
+    let reads = 0;
+    const first = [
+      { entryNumber: 11, journalNumber: 1, voucherNumber: 501, date: '2026-03-02T00:00:00', amount: -1250 },
+      { entryNumber: 12, journalNumber: 1, voucherNumber: 501, date: '2026-03-02T00:00:00', amount: 1250 },
+    ];
+    const { gateway, writes } = fakeEconomic(BOOKING, (method, path) => {
+      if (method !== 'GET' || !path.endsWith('/draft-entries')) return undefined;
+      reads += 1;
+      const added = { entryNumber: 13, journalNumber: 1, voucherNumber: 502, date: '2026-03-02T00:00:00', amount: 99 };
+      return Response.json({ items: reads === 1 ? first : [...first, added] });
+    });
+    const result = await gateway.callTool('book_journal', { journalNumber: 1, entryCount: 2 }, context);
+    expect(result.isError, result.content[0]?.text).toBeUndefined();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(writes()).toEqual([
+      { method: 'POST', path: '/journalsapi/v16.0.1/journals/1/bookdraftentries', body: { entryNumbers: [11, 12] } },
+    ]);
   });
 
   it('books nothing from an empty journal', async () => {

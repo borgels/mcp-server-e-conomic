@@ -4365,6 +4365,10 @@ async function deleteSalesDraft(
   if (!draft) {
     return errorResult(`The ${kind.noun} ${number} does not exist (booked, sent, deleted, or never there). Nothing was deleted.`);
   }
+  // The answer must name the draft asked for: anything else is no proof of its status.
+  if (draft[kind.field] !== number) {
+    return errorResult(`e-conomic did not answer with the ${kind.noun} ${number}. Nothing was deleted.`);
+  }
   for (const other of kind.notIn) {
     if (await readForDelete(client, 'rest', `${other.path}/{number}`, number)) {
       return errorResult(`The ${kind.noun} ${number} is ${other.state}. Nothing was deleted.`);
@@ -4393,6 +4397,7 @@ async function deleteTimeEntry(
 
   const entry = await readForDelete(client, 'projects', '/TimeEntries/{number}', number);
   if (!entry) return errorResult(`Time entry ${number} does not exist. Nothing was deleted.`);
+  if (entry.number !== number) return errorResult(`e-conomic did not answer with time entry ${number}. Nothing was deleted.`);
   // Both flags must be read as false: a missing or unexpected value is no proof that the entry is unused.
   if (entry.isApproved !== false || entry.isReconciled !== false) {
     const why = entry.isApproved === true ? 'approved' : entry.isReconciled === true ? 'reconciled (invoiced)' : 'of unknown status';
