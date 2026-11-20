@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.22.0
+
+VAT set-up in the embedded gateway (#71). Additive for embedders.
+
+- Read tool `vat_overview`: the VAT codes with their rates and accounts
+  (default, `/vat-accounts`), the VAT types (`/vat-types`) and the VAT zones
+  (`/vat-zones`). With `rest:vat-types`, `number` and `reportSetups: true`,
+  the fields of the VAT return a VAT type reports to
+  (`/vat-types/{n}/vat-report-setups`). Read only: e-conomic's API has no way
+  to file a VAT return, and none is offered.
+- Checked against the demo agreement: every target answers.
+
+## 0.18.0
+
 ## 0.21.0
 
 Changing draft invoices, and credit notes as drafts, in the embedded gateway

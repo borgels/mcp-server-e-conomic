@@ -987,6 +987,11 @@ const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
     ref('rest', 'invoices/sent'),
     ref('rest', 'invoices/drafts'),
   ],
+  vat_overview: [
+    ref('rest', 'vat-accounts'),
+    ref('rest', 'vat-types'),
+    ref('rest', 'vat-zones'),
+  ],
   dimension_overview: [
     ref('dimensions', 'dimensions'),
     ref('dimensions', 'values'),
@@ -1048,12 +1053,23 @@ const PDF_TOOLS = new Set(['get_document']);
 /** Narrow read tools that can read the totals of an accounting year or period (`totals: true`). */
 const TOTALS_TOOLS = new Set(['report_data']);
 const TOTALS = ref('rest', 'accounting-years');
+/** Narrow read tools that can read the VAT return set-up of a VAT type (`reportSetups: true`). */
+const REPORT_SETUP_TOOLS = new Set(['vat_overview']);
+const VAT_TYPES = ref('rest', 'vat-types');
 
-function narrowReadInput(targets: readonly EconomicResourceRef[], pdf = false, totals = false): GatewayJsonObject {
+function narrowReadInput(targets: readonly EconomicResourceRef[], pdf = false, totals = false, reportSetups = false): GatewayJsonObject {
   const [first] = targets;
   return {
     type: 'object',
     properties: {
+      ...(reportSetups
+        ? {
+            reportSetups: {
+              type: 'boolean',
+              description: 'rest:vat-types with number (the VAT type): the fields of the VAT return the type reports to.',
+            },
+          }
+        : {}),
       ...(totals
         ? {
             totals: {
@@ -1186,6 +1202,9 @@ function ownUpstream(spec: ToolSpec): GatewayUpstreamOperation[] {
       operation('read', 'GET', TOTALS.serviceId, TOTALS.resource, '/accounting-years/{number}/periods/{period}/totals'),
     );
   }
+  if (REPORT_SETUP_TOOLS.has(spec.name)) {
+    reads.push(operation('read', 'GET', VAT_TYPES.serviceId, VAT_TYPES.resource, '/vat-types/{number}/vat-report-setups'));
+  }
   if (!PDF_TOOLS.has(spec.name)) return reads;
   return [
     ...reads,
@@ -1202,7 +1221,7 @@ function narrowReadTool(name: string, title: string, description: string, module
     description,
     riskLevel: 'read',
     enabledByDefault: true,
-    inputSchema: narrowReadInput(reads, PDF_TOOLS.has(name), TOTALS_TOOLS.has(name)),
+    inputSchema: narrowReadInput(reads, PDF_TOOLS.has(name), TOTALS_TOOLS.has(name), REPORT_SETUP_TOOLS.has(name)),
     broad: false,
     reads,
     booking: false,
@@ -1343,6 +1362,11 @@ const TOOL_SPECS: ToolSpec[] = [
     'order_overview',
     'Get e-conomic orders',
     'List draft orders (default), sent orders or archived orders, or read one order with its lines. Supports query paging (skippages, pagesize) and filters.',
+  ),
+  narrowReadTool(
+    'vat_overview',
+    'Get e-conomic VAT set-up',
+    'Read the VAT codes with their rates and accounts (default), the VAT types, and the VAT zones. With rest:vat-types, number and reportSetups: true, the fields of the VAT return a VAT type reports to. Nothing is reported to the tax authority.',
   ),
   narrowReadTool(
     'dimension_overview',
@@ -1935,6 +1959,9 @@ export function resolveEconomicReadTarget(
   if (totals && numberValue === undefined) {
     return refuse('totals needs number: the accounting year as in its self URL, e.g. 2026.');
   }
+  if (input.reportSetups !== undefined && typeof input.reportSetups !== 'boolean') return refuse('reportSetups must be true or false.');
+  const reportSetups = input.reportSetups === true;
+  if (reportSetups && numberValue === undefined) return refuse('reportSetups needs number: the VAT type.');
 
   try {
     if (spec.broad) {
@@ -1976,6 +2003,18 @@ export function resolveEconomicReadTarget(
     );
     if (!target) {
       return refuse(`${spec.name} reads only these serviceId:resource pairs: ${pairList(spec.reads)}.`);
+    }
+    if (reportSetups) {
+      if (target.serviceId !== VAT_TYPES.serviceId || target.resource !== VAT_TYPES.resource) {
+        return refuse('reportSetups reads rest:vat-types only.');
+      }
+      encodePathParam(numberValue as string | number, 'number');
+      const pathTemplate = '/vat-types/{number}/vat-report-setups';
+      findEndpoint(target.serviceId, 'GET', pathTemplate);
+      return {
+        ok: true,
+        target: { serviceId: target.serviceId, resource: target.resource, method: 'GET', pathTemplate, pathParams: { number: numberValue as string | number } },
+      };
     }
     if (totals) {
       if (target.serviceId !== TOTALS.serviceId || target.resource !== TOTALS.resource) {
@@ -2208,7 +2247,7 @@ function scalar(value: unknown): string | number | boolean | null {
 /** A short answer text for a read result: what was read and how many records, never the data itself. */
 function readSummary(toolName: string, target: EconomicReadTarget, data: unknown): string {
   const where = `${target.serviceId}:${target.resource}`;
-  if (target.pathParams && Object.keys(target.pathParams).length > 0 && !target.pathTemplate.endsWith('/totals')) {
+  if (target.pathParams && Object.keys(target.pathParams).length > 0 && !/\/(totals|vat-report-setups)$/.test(target.pathTemplate)) {
     return `${toolName}: one record from ${where}.`;
   }
   const source = asObject(data);
