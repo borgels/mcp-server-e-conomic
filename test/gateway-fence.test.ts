@@ -287,3 +287,26 @@ describe('tokens never reach the caller', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+describe('contract mode and tokens with reserved characters', () => {
+  it('refuses a tool behind the fence in contract mode too', async () => {
+    const contract = createEconomicGateway({ contractMode: true, policy: { enableWrites: true, allowBooking: true } });
+    const result = await contract.callTool('upsert_account', { accountNumber: 4010, name: 'Konto', accountType: 'status' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('gateway fence');
+  });
+
+  it('redacts a token with /, + and = also in its URL-encoded form', async () => {
+    const grant = 'fake/grant+token=aaaabbbbcccc';
+    const echo = `raw ${grant} encoded ${encodeURIComponent(grant)}`;
+    const gateway = createEconomicGateway({
+      appSecretToken: APP_SECRET,
+      fetchImpl: (async () => new Response(JSON.stringify({ message: echo }), { status: 400, headers: { 'content-type': 'application/json' } })) as typeof fetch,
+    });
+    const result = await gateway.callTool('customer_overview', {}, { credentials: { agreementGrantToken: grant } });
+    const text = JSON.stringify(result);
+    expect(encodeURIComponent(grant)).not.toBe(grant);
+    expect(text).not.toContain(grant);
+    expect(text).not.toContain(encodeURIComponent(grant));
+  });
+});

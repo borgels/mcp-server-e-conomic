@@ -697,7 +697,7 @@ describe('e-conomic gateway export', () => {
     expect(calls.filter(call => call.method !== 'GET')).toEqual([]);
   });
 
-  it('rejects account creation without name/accountType', async () => {
+  it('refuses account creation at the fence, also without name/accountType', async () => {
     const gateway = createEconomicGateway({
       appSecretToken: 'app',
       agreementGrantToken: 'grant',
@@ -712,7 +712,8 @@ describe('e-conomic gateway export', () => {
     });
     const result = await gateway.callTool('upsert_account', { accountNumber: 4011 });
     expect(result).toMatchObject({ isError: true });
-    expect(result.content[0]?.text).toMatch(/requires accountNumber, name, and accountType/);
+    // Behind the gateway fence, before any validation of the fields.
+    expect(result.content[0]?.text).toContain('gateway fence');
   });
 
   it('blocks account writes unless the embedder enables writes', async () => {

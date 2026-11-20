@@ -14,6 +14,7 @@ import { encodePathParam } from './economic/path-params.js';
 import { basePolicy, checkPolicy, type EconomicPolicy } from './economic/policy.js';
 import { assertMatchEntryIds, draftEntryNumbersForVouchers, validateBooking } from './economic/bookings.js';
 import { BANK_FIELDS_REFUSED, bankFieldPaths, changedBankFields } from './economic/bank-fields.js';
+import { fenceRule } from './economic/fence.js';
 import { EconomicHttpError, SecretRedactor, formatUnknownError } from './errors.js';
 import {
   economicGatewayContractEntity,
@@ -1152,6 +1153,18 @@ export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreez
   }),
 );
 
+/**
+ * Write tools whose every write request is behind the fence, with the fence's reason: refused before anything else
+ * (also in contract mode). Derived from the catalog, so a new tool is covered as soon as it is declared.
+ */
+const FENCED_TOOLS: ReadonlyMap<string, string> = new Map(
+  economicToolCatalog.flatMap(entry => {
+    const writes = entry.upstream.filter(operation => operation.access === 'write');
+    const rules = writes.map(operation => fenceRule(operation.method, operation.path.replace(/\{[^}]+\}/g, '1')));
+    return writes.length > 0 && rules.every(rule => rule !== undefined) ? [[entry.name, rules[0]!.reason] as const] : [];
+  }),
+);
+
 /** The services, resources and endpoints the server knows, with read/write marking. Frozen. */
 export const economicServiceCatalog: EconomicServiceCatalog = deepFreeze({
   services: ECONOMIC_SERVICES.map(service => ({
@@ -1594,6 +1607,13 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           // built request.
           if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
             return errorResult('Write blocked by policy: writes disabled');
+          }
+
+          // A write tool whose every write is behind the fence (upsert_account) is refused here too, so contract
+          // mode never answers a change that live mode would refuse.
+          const fenced = FENCED_TOOLS.get(spec.name);
+          if (fenced) {
+            return errorResult(`Request blocked by the gateway fence (${fenced}).`);
           }
 
           if (contractMode) {

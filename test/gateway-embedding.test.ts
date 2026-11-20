@@ -304,7 +304,8 @@ describe('declared upstream requests', () => {
         expect(result.isError, `${entry.name} ${JSON.stringify(input)}: ${result.content[0]?.text}`).toBeUndefined();
         expectDataInText(result, `${entry.name} ${JSON.stringify(input)}`);
       }
-      expect(requests.length, entry.name).toBeGreaterThan(0);
+      // upsert_account is refused before any request (the chart of accounts is behind the fence).
+      if (entry.name !== 'upsert_account') expect(requests.length, entry.name).toBeGreaterThan(0);
       for (const request of requests) {
         const url = new URL(request.url);
         const ok = declared.some(operation => operation.method === request.method && operation.pattern.test(url.pathname));

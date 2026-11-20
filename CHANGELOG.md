@@ -13,8 +13,9 @@ Embedded gateway: a fixed fence for a broad app role (SuperUser), #73.
   chart of accounts. It is checked in the HTTP client right before `fetch`,
   on the path decoded and lower-cased. The standalone server does not use it.
 - **Breaking:** `upsert_account` is always refused by the gateway (the chart
-  of accounts is behind the fence). Hosts that already disabled it see no
-  change.
+  of accounts is behind the fence), before any request and in contract mode
+  too: a write tool whose every write is fenced is refused up front. Hosts
+  that already disabled it see no change.
 - **Breaking:** `additionalFields` is removed from `upsert_project`,
   `create_time_entry`, `upsert_supplier`, `upsert_employee` and
   `upsert_account`. Write tools accept only the fields in their schema;
