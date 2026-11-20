@@ -76,9 +76,16 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
       'invoices/sent',
       'journals',
       'orders',
+      // Quotes and orders by status (classic REST; lines are part of each document).
+      'orders/drafts',
+      'orders/sent',
+      'orders/archived',
       'products',
       'product-groups',
       'quotes',
+      'quotes/drafts',
+      'quotes/sent',
+      'quotes/archived',
       'suppliers',
       'supplier-groups',
       'vat-accounts',
@@ -467,6 +474,14 @@ function buildEndpointOperations(): EndpointOperation[] {
 
   operations.push(
     customEndpoint('rest', 'POST', '/invoices/drafts', 'Create a draft (unbooked) sales invoice.', 'draft'),
+    // Quotes and orders: drafts are created and upgraded (quote -> order ->
+    // draft invoice) by POSTing the upgrade template e-conomic returns. Sending
+    // (/quotes/sent, /orders/sent) and deleting are not offered.
+    customEndpoint('rest', 'POST', '/quotes/drafts', 'Create a draft quote.', 'draft'),
+    customEndpoint('rest', 'POST', '/orders/drafts', 'Create a draft order.', 'draft'),
+    customEndpoint('rest', 'GET', '/quotes/drafts/{number}/templates/upgrade-instructions/order', 'Template that turns a draft quote into a draft order.', 'read'),
+    customEndpoint('rest', 'GET', '/quotes/drafts/{number}/templates/upgrade-instructions/draftInvoice', 'Template that turns a draft quote into a draft invoice.', 'read'),
+    customEndpoint('rest', 'GET', '/orders/drafts/{number}/templates/upgrade-instructions/draftInvoice', 'Template that turns a draft order into a draft invoice.', 'read'),
     customEndpoint('rest', 'POST', '/accounts', 'Create a general ledger account.', 'commit'),
     customEndpoint('rest', 'PUT', '/accounts/{number}', 'Update a general ledger account.', 'commit'),
     // Customer/product master data writes on the classic REST surface: the

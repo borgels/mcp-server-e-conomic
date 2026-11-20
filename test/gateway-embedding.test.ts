@@ -222,11 +222,19 @@ describe('declared upstream requests', () => {
       });
     }
     if (request.method === 'GET' && path.startsWith('/invoices/drafts/')) return Response.json({ draftInvoiceNumber: 7 });
+    if (request.method === 'GET' && path.endsWith('/upgrade-instructions/order')) return Response.json({ order: { customer: { customerNumber: 1 } } });
+    if (request.method === 'GET' && path.endsWith('/upgrade-instructions/draftInvoice')) {
+      return Response.json({ draftInvoice: { customer: { customerNumber: 1 } } });
+    }
     return Response.json({ collection: [] });
   }
 
   const writeInputs: Record<string, GatewayJsonObject[]> = {
     create_draft_invoice: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+    create_draft_quote: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+    create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+    upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
+    upgrade_order: [{ orderNumber: 4 }],
     upsert_customer: [
       { name: 'C', currency: 'DKK', customerGroupNumber: 1, paymentTermsNumber: 1, vatZoneNumber: 1 },
       { customerNumber: 1, name: 'C' },
