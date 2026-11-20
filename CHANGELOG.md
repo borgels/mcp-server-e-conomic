@@ -20,6 +20,9 @@ Dimensions in the embedded gateway (#69). Additive for embedders.
 - Checked against the demo agreement (dimension module on): all reads answer.
   The writes are tested with recorded answers after the API's schema, as the
   demo agreement is read-only.
+- A tool that needs a module asks `/self` only when a request fails with
+  something other than a refused access: a 401 always goes on as
+  e-conomic's own error (from 0.16.0).
 
 ## 0.16.0
 

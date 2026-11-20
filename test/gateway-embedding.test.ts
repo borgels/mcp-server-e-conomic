@@ -33,6 +33,10 @@ const NARROW_READ_TOOLS = [
   'invoice_overview',
   'project_overview',
   'accounting_entries',
+  'quote_overview',
+  'order_overview',
+  'subscription_overview',
+  'dimension_overview',
 ];
 
 const SERVICE_PATHS = new Map(economicServiceCatalog.services.map(service => [service.id, service.servicePath]));
