@@ -404,6 +404,8 @@ is the default. Anything else is refused before a request is sent.
 | `supplier_overview` | `rest:suppliers`, `rest:supplier-groups`, `suppliers:Contacts`, `suppliers:Groups` |
 | `product_overview` | `products:products`, `products:productgroups`, `products:pricegroups`, `products:salespriceincurrencies`, `rest:products`, `rest:product-groups`, `rest:units` |
 | `report_data` | `accounts:Accounts`, `accounts:KeyFigureCodes`, `accounts:TotalIntervals`, `rest:accounts`, `rest:accounting-years`, `accounting-years:AccountingYears`, `accounting-years:accountingYears/periods`, `budgets:budget-figures` |
+| `quote_overview` | `rest:quotes/drafts`, `rest:quotes/sent`, `rest:quotes/archived` (one quote by `number` includes its lines) |
+| `order_overview` | `rest:orders/drafts`, `rest:orders/sent`, `rest:orders/archived` (one order by `number` includes its lines) |
 | `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |
 | `project_overview` | `projects:Projects`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
 | `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
@@ -414,6 +416,8 @@ Write gateway tools, disabled by default:
 | Tool | Risk | What it does |
 | --- | --- | --- |
 | `create_draft_invoice` | write | Draft sales invoice (not booked, not sent) |
+| `create_draft_quote`, `create_draft_order` | write | Draft quote or draft order, built like a draft invoice (not sent) |
+| `upgrade_quote`, `upgrade_order` | write | Turns a draft quote into a draft order or draft invoice, or a draft order into a draft invoice, with e-conomic's upgrade template (not booked, not sent) |
 | `upsert_customer`, `upsert_product`, `upsert_project` | write | Master data, read-merge-write |
 | `create_time_entry` | write | Project time |
 | `upsert_supplier` | write | Supplier master data; bank fields are refused |

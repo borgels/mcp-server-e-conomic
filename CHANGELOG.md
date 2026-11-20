@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.12.0
+
+Quotes and orders in the embedded gateway (#64). Additive for embedders.
+
+- Read tools `quote_overview` and `order_overview`: draft (default), sent or
+  archived quotes and orders on the classic REST surface, or one document with
+  its lines. Each reads only its own three collections.
+- Write tools `create_draft_quote` and `create_draft_order`: a draft built
+  exactly like `create_draft_invoice` (customer defaults, first layout, lines
+  with a product each), posted to `/quotes/drafts` or `/orders/drafts`.
+- Write tools `upgrade_quote` (`to`: `order` or `draftInvoice`) and
+  `upgrade_order` (to a draft invoice): read e-conomic's upgrade template for
+  the draft and post it, as e-conomic documents. The policy is checked before
+  the template is read. Nothing is booked or sent.
+- Log values (`change`): customer number, currency and date for the drafts,
+  plus the line count; the quote or order number and the target for the
+  upgrades. No names or free text.
+- Not offered: sending a quote or order (`/quotes/sent`, `/orders/sent`) and
+  deleting drafts. A test checks that the only quote and order write endpoints
+  are the two draft POSTs.
+- A read answer with more pages says "1 of 3 records", not "1 of 3 record".
+- `npm run check:demo` prints only the summary line or the HTTP status, never
+  an error body.
+
 ## 0.11.0
 
 Embedded gateway: a fixed fence for a broad app role (SuperUser), #73.

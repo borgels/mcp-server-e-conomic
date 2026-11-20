@@ -109,6 +109,30 @@ const bookedInvoices = [
   },
 ];
 
+const quotes = [
+  {
+    quoteNumber: 3001,
+    date: '2026-05-01',
+    currency: 'DKK',
+    netAmount: 3500,
+    grossAmount: 4375,
+    customer: { customerNumber: 1001 },
+    lines: [{ lineNumber: 1, product: { productNumber: 'TIME-TECH' }, quantity: 4, unitNetPrice: 875 }],
+  },
+];
+
+const orders = [
+  {
+    orderNumber: 4001,
+    date: '2026-05-03',
+    currency: 'DKK',
+    netAmount: 2400,
+    grossAmount: 3000,
+    customer: { customerNumber: 1002 },
+    lines: [{ lineNumber: 1, product: { productNumber: 'MAT-PUMP' }, quantity: 1, unitNetPrice: 2400 }],
+  },
+];
+
 const projects = [
   {
     projectNumber: 5001,
@@ -168,11 +192,33 @@ export function economicGatewayContractFixture(
     case 'project_overview':
       return collectionFixture('Fetched e-conomic contract projects.', input, projects);
 
+    case 'quote_overview':
+      return collectionFixture('Fetched e-conomic contract quotes.', input, quotes);
+
+    case 'order_overview':
+      return collectionFixture('Fetched e-conomic contract orders.', input, orders);
+
     case 'accounting_entries':
       return collectionFixture('Fetched e-conomic contract accounting entries.', input, bookedEntries);
 
     case 'create_draft_invoice':
       return draftInvoiceFixture(input);
+
+    case 'create_draft_quote':
+    case 'create_draft_order':
+      return salesDraftFixture(toolName, input);
+
+    case 'upgrade_quote':
+    case 'upgrade_order': {
+      const toOrder = toolName === 'upgrade_quote' && input.to === 'order';
+      const from = numberOr(toolName === 'upgrade_quote' ? input.quoteNumber : input.orderNumber, 0);
+      return {
+        text: `Turned the contract ${toolName === 'upgrade_quote' ? 'quote' : 'order'} into a ${toOrder ? 'draft order' : 'draft invoice'}. Not booked or sent.`,
+        structuredContent: toOrder
+          ? { mode: 'contract', orderNumber: 4002, quoteNumber: from }
+          : { mode: 'contract', draftInvoiceNumber: 90100, from },
+      };
+    }
 
     case 'upsert_customer':
       return upsertCustomerFixture(input);
@@ -372,6 +418,17 @@ function draftInvoiceFixture(input: GatewayJsonObject): GatewayContractFixture {
       self: `https://restapi.e-conomic.com/invoices/drafts/${draftInvoiceNumber}`,
     },
   };
+}
+
+function salesDraftFixture(toolName: string, input: GatewayJsonObject): GatewayContractFixture {
+  const invoice = draftInvoiceFixture(input).structuredContent as Record<string, GatewayJsonValue>;
+  const quote = toolName === 'create_draft_quote';
+  const number = (quote ? 30000 : 40000) + numberOr(input.customerNumber, 0);
+  const content: Record<string, GatewayJsonValue> = { ...invoice };
+  delete content.draftInvoiceNumber;
+  content[quote ? 'quoteNumber' : 'orderNumber'] = number;
+  content.self = `https://restapi.e-conomic.com/${quote ? 'quotes' : 'orders'}/drafts/${number}`;
+  return { text: `Created e-conomic contract ${quote ? 'draft quote' : 'draft order'}.`, structuredContent: content };
 }
 
 function upsertCustomerFixture(input: GatewayJsonObject): GatewayContractFixture {

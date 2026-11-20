@@ -21,10 +21,12 @@ async function main(): Promise<void> {
       const query: GatewayJsonObject = serviceId === 'rest' ? { pagesize: 1 } : { pageSize: 1 };
       const input: GatewayJsonObject = serviceId && resource ? { serviceId, resource, query } : {};
       const result = await gateway.callTool(tool.name, input);
-      const text = result.content[0]?.text.split('\n\n')[0] ?? '';
+      // Only the summary line or the HTTP status: never data, never an error body.
+      const first = result.content[0]?.text.split('\n\n')[0] ?? '';
+      const text = result.isError ? (/HTTP \d{3}/.exec(first)?.[0] ?? 'refused') : first;
       const key = `${tool.name} ${pair}`.trim();
       if (result.isError && !EXPECTED_MISSING.has(key)) failed += 1;
-      console.log(`${result.isError ? 'FAIL' : 'ok  '} ${key}: ${text.slice(0, 160)}`);
+      console.log(`${result.isError ? 'FAIL' : 'ok  '} ${key}: ${text}`);
     }
   }
   if (failed > 0) {

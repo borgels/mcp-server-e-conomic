@@ -300,43 +300,73 @@ const emptyInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
-const createDraftInvoiceInput = {
-  type: 'object',
-  required: ['customerNumber', 'lines'],
-  properties: {
-    customerNumber: { type: 'number', description: 'e-conomic customer number the draft is for.' },
-    lines: {
-      type: 'array',
-      minItems: 1,
-      description: 'Invoice lines. e-conomic requires a product reference on each line.',
-      items: {
+/** The input of the tools that create a sales document draft (invoice, quote, order). */
+function salesDraftInput(noun: 'Invoice' | 'Quote' | 'Order') {
+  return {
+    type: 'object',
+    required: ['customerNumber', 'lines'],
+    properties: {
+      customerNumber: { type: 'number', description: 'e-conomic customer number the draft is for.' },
+      lines: {
+        type: 'array',
+        minItems: 1,
+        description: `${noun} lines. e-conomic requires a product reference on each line.`,
+        items: {
+          type: 'object',
+          required: ['productNumber', 'quantity'],
+          properties: {
+            productNumber: { type: ['string', 'number'], description: 'e-conomic product number.' },
+            description: { type: 'string', description: 'Line text. Defaults to the product name.' },
+            quantity: { type: 'number' },
+            unitNetPrice: { type: 'number', description: 'Net unit price. Defaults to the product sales price when omitted.' },
+          },
+          additionalProperties: false,
+        },
+      },
+      date: { type: 'string', description: `${noun} date (ISO 8601 date). Defaults to today.` },
+      currency: { type: 'string', description: 'Currency code. Defaults to the customer currency.' },
+      paymentTermsNumber: { type: 'number', description: 'Defaults to the customer payment terms.' },
+      layoutNumber: { type: 'number', description: 'Defaults to the first available layout.' },
+      recipientName: { type: 'string', description: 'Defaults to the customer name.' },
+      vatZoneNumber: { type: 'number', description: 'Defaults to the customer VAT zone.' },
+      reference: { type: 'string', description: 'Optional free-text reference stored on the draft.' },
+      notes: {
         type: 'object',
-        required: ['productNumber', 'quantity'],
         properties: {
-          productNumber: { type: ['string', 'number'], description: 'e-conomic product number.' },
-          description: { type: 'string', description: 'Line text. Defaults to the product name.' },
-          quantity: { type: 'number' },
-          unitNetPrice: { type: 'number', description: 'Net unit price. Defaults to the product sales price when omitted.' },
+          heading: { type: 'string' },
+          textLine1: { type: 'string' },
         },
         additionalProperties: false,
       },
+      idempotencyKey: { type: 'string', description: 'Optional idempotency key forwarded to e-conomic.' },
     },
-    date: { type: 'string', description: 'Invoice date (ISO 8601 date). Defaults to today.' },
-    currency: { type: 'string', description: 'Currency code. Defaults to the customer currency.' },
-    paymentTermsNumber: { type: 'number', description: 'Defaults to the customer payment terms.' },
-    layoutNumber: { type: 'number', description: 'Defaults to the first available layout.' },
-    recipientName: { type: 'string', description: 'Defaults to the customer name.' },
-    vatZoneNumber: { type: 'number', description: 'Defaults to the customer VAT zone.' },
-    reference: { type: 'string', description: 'Optional free-text reference stored on the draft.' },
-    notes: {
-      type: 'object',
-      properties: {
-        heading: { type: 'string' },
-        textLine1: { type: 'string' },
-      },
-      additionalProperties: false,
+    additionalProperties: false,
+  } satisfies GatewayJsonObject;
+}
+
+const createDraftInvoiceInput = salesDraftInput('Invoice');
+const createDraftQuoteInput = salesDraftInput('Quote');
+const createDraftOrderInput = salesDraftInput('Order');
+
+const upgradeQuoteInput = {
+  type: 'object',
+  required: ['quoteNumber', 'to'],
+  properties: {
+    quoteNumber: { type: 'integer', minimum: 1, description: 'The draft quote to upgrade.' },
+    to: {
+      type: 'string',
+      enum: ['order', 'draftInvoice'],
+      description: 'order: a draft order. draftInvoice: a draft invoice (not booked, not sent).',
     },
-    idempotencyKey: { type: 'string', description: 'Optional idempotency key forwarded to e-conomic.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const upgradeOrderInput = {
+  type: 'object',
+  required: ['orderNumber'],
+  properties: {
+    orderNumber: { type: 'integer', minimum: 1, description: 'The draft order to turn into a draft invoice (not booked, not sent).' },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -679,6 +709,16 @@ const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
     ref('accounting-years', 'accountingYears/periods'),
     ref('budgets', 'budget-figures'),
   ],
+  quote_overview: [
+    ref('rest', 'quotes/drafts'),
+    ref('rest', 'quotes/sent'),
+    ref('rest', 'quotes/archived'),
+  ],
+  order_overview: [
+    ref('rest', 'orders/drafts'),
+    ref('rest', 'orders/sent'),
+    ref('rest', 'orders/archived'),
+  ],
   invoice_overview: [
     ref('rest', 'invoices/booked'),
     ref('rest', 'invoices/unpaid'),
@@ -928,6 +968,16 @@ const TOOL_SPECS: ToolSpec[] = [
     'List booked invoices (default) or an invoice collection (booked, unpaid, overdue, paid, sent, drafts) for revenue and receivables reporting. Supports query paging (skippages, pagesize) and filters.',
   ),
   narrowReadTool(
+    'quote_overview',
+    'Get e-conomic quotes',
+    'List draft quotes (default), sent quotes or archived quotes, or read one quote with its lines. Supports query paging (skippages, pagesize) and filters.',
+  ),
+  narrowReadTool(
+    'order_overview',
+    'Get e-conomic orders',
+    'List draft orders (default), sent orders or archived orders, or read one order with its lines. Supports query paging (skippages, pagesize) and filters.',
+  ),
+  narrowReadTool(
     'project_overview',
     'Get e-conomic project overview',
     'Read the Projects add-on: projects (default), project groups and statuses, cost types, activities and activity groups, employees and employee groups, or time entries.',
@@ -946,6 +996,54 @@ const TOOL_SPECS: ToolSpec[] = [
     upstream: [
       operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
       operation('read', 'GET', 'rest', 'layouts', '/layouts'),
+      operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
+    ],
+  }),
+  writeTool({
+    name: 'create_draft_quote',
+    title: 'Create e-conomic draft quote',
+    description: `Create a draft quote for a customer. The quote is not sent to the customer. ${WRITE_NOTE}`,
+    inputSchema: createDraftQuoteInput,
+    change: change('create', 'draft-quote', { customerNumber: 'recordNumber', currency: 'currency', date: 'date' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('read', 'GET', 'rest', 'layouts', '/layouts'),
+      operation('write', 'POST', 'rest', 'quotes/drafts', '/quotes/drafts'),
+    ],
+  }),
+  writeTool({
+    name: 'create_draft_order',
+    title: 'Create e-conomic draft order',
+    description: `Create a draft order for a customer. The order is not sent to the customer. ${WRITE_NOTE}`,
+    inputSchema: createDraftOrderInput,
+    change: change('create', 'draft-order', { customerNumber: 'recordNumber', currency: 'currency', date: 'date' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('read', 'GET', 'rest', 'layouts', '/layouts'),
+      operation('write', 'POST', 'rest', 'orders/drafts', '/orders/drafts'),
+    ],
+  }),
+  writeTool({
+    name: 'upgrade_quote',
+    title: 'Turn an e-conomic quote into an order or draft invoice',
+    description: `Turn a draft quote into a draft order or a draft invoice, with e-conomic's own upgrade template. Nothing is booked or sent. ${WRITE_NOTE}`,
+    inputSchema: upgradeQuoteInput,
+    change: change('create', 'upgraded-quote', { quoteNumber: 'recordNumber', to: 'enum' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'quotes/drafts', '/quotes/drafts/{number}/templates/upgrade-instructions/order'),
+      operation('read', 'GET', 'rest', 'quotes/drafts', '/quotes/drafts/{number}/templates/upgrade-instructions/draftInvoice'),
+      operation('write', 'POST', 'rest', 'orders/drafts', '/orders/drafts'),
+      operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
+    ],
+  }),
+  writeTool({
+    name: 'upgrade_order',
+    title: 'Turn an e-conomic order into a draft invoice',
+    description: `Turn a draft order into a draft invoice, with e-conomic's own upgrade template. The invoice is not booked or sent; book it with book_invoice. ${WRITE_NOTE}`,
+    inputSchema: upgradeOrderInput,
+    change: change('create', 'upgraded-order', { orderNumber: 'recordNumber' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'orders/drafts', '/orders/drafts/{number}/templates/upgrade-instructions/draftInvoice'),
       operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
     ],
   }),
@@ -1367,7 +1465,7 @@ export function resolveEconomicChange(
     const value = logValue(spec, field, input[field.name]);
     if (value !== undefined) values[field.name] = value;
   }
-  const lines = spec.name === 'create_draft_invoice' ? input.lines : spec.name === 'create_journal_entries' ? input.entries : undefined;
+  const lines = SALES_DRAFTS[spec.name] ? input.lines : spec.name === 'create_journal_entries' ? input.entries : undefined;
   if (Array.isArray(lines)) values.lineCount = lines.length;
   return {
     ok: true,
@@ -1505,8 +1603,9 @@ function readSummary(toolName: string, target: EconomicReadTarget, data: unknown
   }
   const pagination = asObject(source.pagination);
   const total = typeof pagination.results === 'number' ? pagination.results : undefined;
-  const records = items.length === 1 ? 'record' : 'records';
-  return total !== undefined && total > items.length
+  const more = total !== undefined && total > items.length;
+  const records = (more ? total : items.length) === 1 ? 'record' : 'records';
+  return more
     ? `${toolName}: ${items.length} of ${total} ${records} from ${where}. More pages are available.`
     : `${toolName}: ${items.length} ${records} from ${where}.`;
 }
@@ -1699,7 +1798,12 @@ async function writeResult(
 ): Promise<GatewayToolResult> {
   switch (toolName) {
     case 'create_draft_invoice':
-      return createDraftInvoice(client, input, writePolicy);
+    case 'create_draft_quote':
+    case 'create_draft_order':
+      return createSalesDraft(client, toolName, input, writePolicy);
+    case 'upgrade_quote':
+    case 'upgrade_order':
+      return upgradeSalesDocument(client, toolName, input, writePolicy);
     case 'upsert_customer':
       return upsertCustomer(client, input, writePolicy);
     case 'upsert_product':
@@ -1761,19 +1865,31 @@ interface DraftCustomer {
   vatZone?: { vatZoneNumber?: number };
 }
 
-async function createDraftInvoice(
+/** The sales document drafts the gateway creates, by tool: the REST path and the answer's noun. */
+const SALES_DRAFTS: Record<string, { path: '/invoices/drafts' | '/quotes/drafts' | '/orders/drafts'; noun: string }> = {
+  create_draft_invoice: { path: '/invoices/drafts', noun: 'draft invoice' },
+  create_draft_quote: { path: '/quotes/drafts', noun: 'draft quote' },
+  create_draft_order: { path: '/orders/drafts', noun: 'draft order' },
+};
+
+async function createSalesDraft(
   client: EconomicClient,
+  toolName: string,
   input: GatewayJsonObject,
   policy: EconomicPolicy,
 ): Promise<GatewayToolResult> {
+  const kind = SALES_DRAFTS[toolName];
+  if (!kind) {
+    return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
+  }
   const customerNumber = numberValue(input.customerNumber);
   if (customerNumber === undefined) {
-    return errorResult('create_draft_invoice requires a numeric customerNumber.');
+    return errorResult(`${toolName} requires a numeric customerNumber.`);
   }
 
   const rawLines = Array.isArray(input.lines) ? input.lines : [];
   if (rawLines.length === 0) {
-    return errorResult('create_draft_invoice requires at least one line.');
+    return errorResult(`${toolName} requires at least one line.`);
   }
 
   const lines: GatewayJsonObject[] = [];
@@ -1841,9 +1957,9 @@ async function createDraftInvoice(
   }
 
   const denied = writePolicyDenial(policy, {
-    capability: 'create_draft_invoice',
+    capability: toolName,
     method: 'POST',
-    path: '/invoices/drafts',
+    path: kind.path,
     body,
   });
   if (denied) {
@@ -1853,12 +1969,72 @@ async function createDraftInvoice(
   const created = await callEndpoint(client, {
     serviceId: 'rest',
     method: 'POST',
-    pathTemplate: '/invoices/drafts',
+    pathTemplate: kind.path,
     body,
     idempotencyKey: stringValue(input.idempotencyKey),
   });
 
-  return jsonResult('Created e-conomic draft invoice.', created);
+  return jsonResult(`Created e-conomic ${kind.noun}.`, created);
+}
+
+/**
+ * Turns a draft quote into a draft order or draft invoice, or a draft order
+ * into a draft invoice: reads e-conomic's upgrade template for the document
+ * and POSTs it, as e-conomic documents. Nothing is booked or sent.
+ */
+async function upgradeSalesDocument(
+  client: EconomicClient,
+  toolName: string,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const fromQuote = toolName === 'upgrade_quote';
+  const number = positiveInteger(fromQuote ? input.quoteNumber : input.orderNumber);
+  if (number === undefined) {
+    return errorResult(`${toolName} needs ${fromQuote ? 'quoteNumber' : 'orderNumber'} (a positive whole number).`);
+  }
+  let to: 'order' | 'draftInvoice' = 'draftInvoice';
+  if (fromQuote) {
+    if (input.to !== 'order' && input.to !== 'draftInvoice') return errorResult('to must be order or draftInvoice.');
+    to = input.to;
+  }
+  const source = fromQuote ? 'quotes' : 'orders';
+  const sourceNoun = fromQuote ? 'quote' : 'order';
+  const targetPath = to === 'order' ? '/orders/drafts' : '/invoices/drafts';
+
+  // Check the policy before the template is read, so a refused write reads nothing.
+  const early = writePolicyDenial(policy, { capability: toolName, method: 'POST', path: targetPath, body: {} });
+  if (early) return early;
+
+  let template: unknown;
+  try {
+    template = await callEndpoint(client, {
+      serviceId: 'rest',
+      method: 'GET',
+      pathTemplate: `/${source}/drafts/{number}/templates/upgrade-instructions/${to}`,
+      pathParams: { number },
+    });
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) {
+      return errorResult(`Draft ${sourceNoun} ${number} does not exist.`);
+    }
+    throw error;
+  }
+  const body = asObject(template)[to];
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return errorResult(`e-conomic returned no upgrade template for draft ${sourceNoun} ${number}.`);
+  }
+
+  const denied = writePolicyDenial(policy, { capability: toolName, method: 'POST', path: targetPath, body });
+  if (denied) return denied;
+
+  const created = await callEndpoint(client, { serviceId: 'rest', method: 'POST', pathTemplate: targetPath, body });
+  const createdNumber = to === 'order' ? asObject(created).orderNumber : asObject(created).draftInvoiceNumber;
+  const what = to === 'order' ? 'draft order' : 'draft invoice';
+  return jsonResult(
+    `Turned draft ${sourceNoun} ${number} into ${what}${typeof createdNumber === 'number' ? ` ${createdNumber}` : ''}. Not booked or sent.`,
+    created,
+  );
 }
 
 // Fields the caller may set on a customer; nested reference objects are built
