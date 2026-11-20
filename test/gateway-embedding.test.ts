@@ -216,10 +216,16 @@ describe('declared upstream requests', () => {
     if (request.method === 'GET' && path.endsWith('/draft-entries')) {
       return Response.json({
         items: [
-          { entryNumber: 11, journalNumber: 1, voucherNumber: 501, amount: 100 },
-          { entryNumber: 12, journalNumber: 1, voucherNumber: 501, amount: -100 },
+          { entryNumber: 11, journalNumber: 1, voucherNumber: 501, date: '2026-03-02', amount: 100 },
+          { entryNumber: 12, journalNumber: 1, voucherNumber: 501, date: '2026-03-02', amount: -100 },
         ],
       });
+    }
+    if (request.method === 'GET' && path.endsWith('/pdf')) {
+      return new Response(new Uint8Array([0x25, 0x50, 0x44, 0x46]), { headers: { 'content-type': 'application/pdf' } });
+    }
+    if (request.method === 'GET' && path.endsWith('/AttachedDocuments') && new URL(request.url).searchParams.has('filter')) {
+      return Response.json({ items: [{ number: 6001, voucherNumber: 501, accountingYear: '2026' }] });
     }
     if (request.method === 'GET' && path.startsWith('/invoices/drafts/')) return Response.json({ draftInvoiceNumber: 7 });
     if (request.method === 'GET' && path.endsWith('/upgrade-instructions/order')) return Response.json({ order: { customer: { customerNumber: 1 } } });
@@ -235,6 +241,10 @@ describe('declared upstream requests', () => {
     create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
     upgrade_order: [{ orderNumber: 4 }],
+    attach_voucher_file: [
+      { accountingYear: '2026', voucherNumber: 501, contentType: 'application/pdf', fileBase64: 'JVBERi0xLjcK' },
+      { accountingYear: '2025/2026', voucherNumber: 501, contentType: 'image/png', fileBase64: 'iVBORw0KGgo=', onConflict: 'merge' },
+    ],
     upsert_customer: [
       { name: 'C', currency: 'DKK', customerGroupNumber: 1, paymentTermsNumber: 1, vatZoneNumber: 1 },
       { customerNumber: 1, name: 'C' },

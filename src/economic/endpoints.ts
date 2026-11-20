@@ -1,4 +1,4 @@
-import type { HttpMethod, QueryValue } from './client.js';
+import type { HttpMethod, QueryValue, RawBody } from './client.js';
 import { EconomicClient } from './client.js';
 import { ECONOMIC_SERVICES, ENDPOINT_OPERATIONS, type EndpointOperation, findEndpoint, findService } from './catalog.js';
 import { assertSafePathParam, encodePathParam } from './path-params.js';
@@ -10,6 +10,11 @@ export interface EndpointCallInput {
   pathParams?: Record<string, string | number>;
   query?: Record<string, QueryValue>;
   body?: unknown;
+  /** A non-JSON body (multipart upload) with its content type; instead of body. */
+  rawBody?: RawBody;
+  rawContentType?: string;
+  /** Read the answer as bytes (EconomicBinaryBody), at most maxBytes. */
+  binary?: { maxBytes: number };
   idempotencyKey?: string;
 }
 
@@ -18,21 +23,19 @@ export async function callEndpoint(client: EconomicClient, input: EndpointCallIn
   const service = findService(endpoint.serviceId);
   const path = materializePath(endpoint, input.pathParams);
 
-  if (endpoint.surface === 'rest') {
-    return client.rest(path, {
-      method: endpoint.method,
-      query: input.query,
-      body: input.body,
-      idempotencyKey: input.idempotencyKey,
-    });
-  }
-
-  return client.openApi(service.servicePath, path, {
+  const options = {
     method: endpoint.method,
     query: input.query,
     body: input.body,
+    ...(input.rawBody !== undefined ? { rawBody: input.rawBody, rawContentType: input.rawContentType } : {}),
+    ...(input.binary ? { binary: input.binary } : {}),
     idempotencyKey: input.idempotencyKey,
-  });
+  };
+  if (endpoint.surface === 'rest') {
+    return client.rest(path, options);
+  }
+
+  return client.openApi(service.servicePath, path, options);
 }
 
 export function materializePath(

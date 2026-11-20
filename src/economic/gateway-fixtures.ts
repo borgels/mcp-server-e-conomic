@@ -198,6 +198,28 @@ export function economicGatewayContractFixture(
     case 'order_overview':
       return collectionFixture('Fetched e-conomic contract orders.', input, orders);
 
+    case 'get_document':
+      if (input.pdf === true) {
+        return {
+          text: 'Fetched e-conomic contract PDF.',
+          structuredContent: { contentType: 'application/pdf', sizeBytes: 9, base64: 'JVBERi0xLjcK' },
+        };
+      }
+      return collectionFixture('Fetched e-conomic contract documents.', input, [
+        { number: 6001, pageCount: 1, voucherNumber: 501, accountingYear: '2026' },
+      ]);
+
+    case 'attach_voucher_file':
+      return {
+        text: 'Attached a contract document.',
+        structuredContent: {
+          mode: 'contract',
+          number: 6002,
+          voucherNumber: numberOr(input.voucherNumber, 0),
+          accountingYear: typeof input.accountingYear === 'string' ? input.accountingYear : '2026',
+        },
+      };
+
     case 'accounting_entries':
       return collectionFixture('Fetched e-conomic contract accounting entries.', input, bookedEntries);
 

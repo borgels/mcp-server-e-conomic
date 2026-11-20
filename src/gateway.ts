@@ -1,4 +1,4 @@
-import { EconomicClient, type QueryValue } from './economic/client.js';
+import { EconomicClient, type EconomicBinaryBody, type QueryValue } from './economic/client.js';
 import {
   ECONOMIC_SERVICES,
   ENDPOINT_OPERATIONS,
@@ -655,6 +655,38 @@ const matchOpenItemsInput = {
   additionalProperties: false,
 } satisfies GatewayJsonObject;
 
+// Attached documents (bilag): documentsapi POST /AttachedDocuments, multipart.
+// e-conomic accepts PDF, JPEG and PNG up to 9 MiB (x-max-file-upload-size-in-bytes).
+const MAX_ATTACHMENT_BYTES = 9_437_184;
+const ATTACHMENT_TYPES = {
+  'application/pdf': { extension: 'pdf', magic: [0x25, 0x50, 0x44, 0x46] },
+  'image/jpeg': { extension: 'jpg', magic: [0xff, 0xd8, 0xff] },
+  'image/png': { extension: 'png', magic: [0x89, 0x50, 0x4e, 0x47] },
+} as const;
+/** The largest PDF get_document returns (base64 in the answer). */
+const MAX_PDF_BYTES = 4 * 1024 * 1024;
+
+const attachVoucherFileInput = {
+  type: 'object',
+  required: ['accountingYear', 'voucherNumber', 'fileBase64', 'contentType'],
+  properties: {
+    accountingYear: {
+      type: 'string',
+      pattern: String.raw`^\d{4}(\/\d{4})?$`,
+      description: 'Accounting year of the voucher as e-conomic names it, e.g. 2026 or 2025/2026.',
+    },
+    voucherNumber: { type: 'integer', minimum: 1, maximum: 999999999, description: 'Voucher (bilag) number in a journal or among booked entries.' },
+    fileBase64: { type: 'string', description: 'The file, base64-encoded. PDF, JPEG or PNG, at most 9 MB.' },
+    contentType: { type: 'string', enum: Object.keys(ATTACHMENT_TYPES), description: 'The file type.' },
+    onConflict: {
+      type: 'string',
+      enum: ['fail', 'merge'],
+      description: 'When the voucher already has a document: fail (default) refuses, merge adds the file to it.',
+    },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
 const DEFAULT_REST_BASE_URL = 'https://restapi.e-conomic.com';
 const DEFAULT_OPENAPI_BASE_URL = 'https://apis.e-conomic.com';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -738,6 +770,11 @@ const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
     ref('projects', 'EmployeeGroups'),
     ref('projects', 'TimeEntries'),
   ],
+  get_document: [
+    ref('documents', 'AttachedDocuments'),
+    ref('rest', 'invoices/booked'),
+    ref('rest', 'invoices/drafts'),
+  ],
   accounting_entries: [
     ref('booked-entries', 'booked-entries'),
     ref('booked-entries', 'booked-entries/matched-pairs'),
@@ -758,11 +795,22 @@ function pairList(targets: readonly EconomicResourceRef[]): string {
   return targets.map(target => `${target.serviceId}:${target.resource}`).join(', ');
 }
 
-function narrowReadInput(targets: readonly EconomicResourceRef[]): GatewayJsonObject {
+/** Narrow read tools that can fetch the PDF of one record (`pdf: true`). */
+const PDF_TOOLS = new Set(['get_document']);
+
+function narrowReadInput(targets: readonly EconomicResourceRef[], pdf = false): GatewayJsonObject {
   const [first] = targets;
   return {
     type: 'object',
     properties: {
+      ...(pdf
+        ? {
+            pdf: {
+              type: 'boolean',
+              description: 'With number: return the record\u2019s PDF (base64, at most 4 MB) instead of its data.',
+            },
+          }
+        : {}),
       serviceId: {
         type: 'string',
         enum: unique(targets.map(target => target.serviceId)),
@@ -850,7 +898,12 @@ function upstreamOf(spec: ToolSpec): GatewayUpstreamOperation[] {
         ),
       );
   }
-  return spec.reads.flatMap(targetOperations);
+  const reads = spec.reads.flatMap(targetOperations);
+  if (!PDF_TOOLS.has(spec.name)) return reads;
+  return [
+    ...reads,
+    ...spec.reads.map(target => operation('read', 'GET', target.serviceId, target.resource, `/${target.resource}/{number}/pdf`)),
+  ];
 }
 
 function narrowReadTool(name: string, title: string, description: string): ToolSpec {
@@ -861,7 +914,7 @@ function narrowReadTool(name: string, title: string, description: string): ToolS
     description,
     riskLevel: 'read',
     enabledByDefault: true,
-    inputSchema: narrowReadInput(reads),
+    inputSchema: narrowReadInput(reads, PDF_TOOLS.has(name)),
     broad: false,
     reads,
     booking: false,
@@ -983,6 +1036,11 @@ const TOOL_SPECS: ToolSpec[] = [
     'Read the Projects add-on: projects (default), project groups and statuses, cost types, activities and activity groups, employees and employee groups, or time entries.',
   ),
   narrowReadTool(
+    'get_document',
+    'Get e-conomic documents and PDFs',
+    'List attached documents (bilag) with voucher number and accounting year (default), or read one by its document number. With number and pdf: true, return the PDF of an attached document, a booked invoice or a draft invoice as base64 (at most 4 MB).',
+  ),
+  narrowReadTool(
     'accounting_entries',
     'Get e-conomic accounting entries',
     'Read booked accounting entries (default), matched pairs of booked entries, or journal draft entries. Used for ledger, supplier-invoice, and reconciliation reads. Supports paging and filters.',
@@ -1046,6 +1104,15 @@ const TOOL_SPECS: ToolSpec[] = [
       operation('read', 'GET', 'rest', 'orders/drafts', '/orders/drafts/{number}/templates/upgrade-instructions/draftInvoice'),
       operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
     ],
+  }),
+  writeTool({
+    name: 'attach_voucher_file',
+    title: 'Attach a document to an e-conomic voucher',
+    description: `Attach a PDF, JPEG or PNG (at most 9 MB) to a voucher (bilag) of draft or booked entries, by voucher number and accounting year. When the voucher already has a document, the call fails unless onConflict is merge. Nothing is booked. ${WRITE_NOTE}`,
+    inputSchema: attachVoucherFileInput,
+    // The file and its name are never logged: only the voucher, the year and the type.
+    change: change('create', 'attached-document', { voucherNumber: 'recordNumber', accountingYear: 'accountingYear', contentType: 'enum' }),
+    upstream: [operation('write', 'POST', 'documents', 'AttachedDocuments', '/AttachedDocuments')],
   }),
   writeTool({
     name: 'upsert_customer',
@@ -1175,7 +1242,8 @@ const TOOL_SPECS: ToolSpec[] = [
     change: change('book', 'journal-entry', { journalNumber: 'recordNumber', entryNumbers: 'numberList', voucherNumbers: 'numberList' }),
     upstream: [
       operation('read', 'GET', 'journals', 'draft-entries', '/draft-entries'),
-      operation('read', 'GET', 'documents', 'AttachedDocuments', '/AttachedDocuments/{number}'),
+      operation('read', 'GET', 'rest', 'accounting-years', '/accounting-years'),
+      operation('read', 'GET', 'documents', 'AttachedDocuments', '/AttachedDocuments'),
       operation('write', 'POST', 'journals', 'journals', '/journals/{journalNumber}/bookdraftentries'),
     ],
   }),
@@ -1341,6 +1409,9 @@ export function resolveEconomicReadTarget(
   }
   const numberValue = number === null || number === '' ? undefined : number;
   if (input.paged !== undefined && typeof input.paged !== 'boolean') return refuse('paged must be true or false.');
+  if (input.pdf !== undefined && typeof input.pdf !== 'boolean') return refuse('pdf must be true or false.');
+  const pdf = input.pdf === true;
+  if (pdf && numberValue === undefined) return refuse('pdf needs the number of the record.');
 
   try {
     if (spec.broad) {
@@ -1384,10 +1455,12 @@ export function resolveEconomicReadTarget(
       return refuse(`${spec.name} reads only these serviceId:resource pairs: ${pairList(spec.reads)}.`);
     }
     if (numberValue !== undefined) encodePathParam(numberValue, 'number');
-    const pathTemplate = resolveReadPathTemplate(target.serviceId, target.resource, {
-      number: numberValue,
-      paged: input.paged !== false,
-    });
+    const pathTemplate = pdf
+      ? `/${target.resource}/{number}/pdf`
+      : resolveReadPathTemplate(target.serviceId, target.resource, {
+          number: numberValue,
+          paged: input.paged !== false,
+        });
     findEndpoint(target.serviceId, 'GET', pathTemplate);
     return {
       ok: true,
@@ -1780,6 +1853,21 @@ async function readResult(
   const query = selfUrl
     ? resolveSelfUrl(selfUrl, queryValue(input.query)).query
     : queryValue(input.query);
+  if (target.pathTemplate.endsWith('/{number}/pdf')) {
+    const file = (await callEndpoint(client, {
+      serviceId: target.serviceId,
+      method: 'GET',
+      pathTemplate: target.pathTemplate,
+      pathParams: target.pathParams ? { ...target.pathParams } : undefined,
+      binary: { maxBytes: MAX_PDF_BYTES },
+    })) as EconomicBinaryBody;
+    const kb = Math.max(1, Math.round(file.bytes.byteLength / 1024));
+    return jsonResult(`${toolName}: PDF of one record from ${target.serviceId}:${target.resource} (${kb} KB).`, {
+      contentType: file.contentType,
+      sizeBytes: file.bytes.byteLength,
+      base64: Buffer.from(file.bytes).toString('base64'),
+    });
+  }
   const data = await callEndpoint(client, {
     serviceId: target.serviceId,
     method: 'GET',
@@ -1804,6 +1892,8 @@ async function writeResult(
     case 'upgrade_quote':
     case 'upgrade_order':
       return upgradeSalesDocument(client, toolName, input, writePolicy);
+    case 'attach_voucher_file':
+      return attachVoucherFile(client, input, writePolicy);
     case 'upsert_customer':
       return upsertCustomer(client, input, writePolicy);
     case 'upsert_product':
@@ -2035,6 +2125,90 @@ async function upgradeSalesDocument(
     `Turned draft ${sourceNoun} ${number} into ${what}${typeof createdNumber === 'number' ? ` ${createdNumber}` : ''}. Not booked or sent.`,
     created,
   );
+}
+
+/** Strict base64 (no whitespace, correct padding), decoded. */
+function decodeBase64Strict(value: string): Uint8Array | undefined {
+  if (value.length === 0 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return undefined;
+  return new Uint8Array(Buffer.from(value, 'base64'));
+}
+
+/** A multipart/form-data body with text fields and one file. */
+function multipartBody(
+  fields: Record<string, string>,
+  file: { field: string; name: string; contentType: string; bytes: Uint8Array },
+): { body: Uint8Array; contentType: string } {
+  const boundary = `----letmcpGateway${crypto.randomUUID().replace(/-/g, '')}`;
+  const encoder = new TextEncoder();
+  const parts: Uint8Array[] = [];
+  for (const [name, value] of Object.entries(fields)) {
+    parts.push(encoder.encode(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
+  }
+  parts.push(
+    encoder.encode(
+      `--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.name}"\r\nContent-Type: ${file.contentType}\r\n\r\n`,
+    ),
+    file.bytes,
+    encoder.encode(`\r\n--${boundary}--\r\n`),
+  );
+  return { body: new Uint8Array(Buffer.concat(parts)), contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+/**
+ * Attaches a file to a voucher (documentsapi POST /AttachedDocuments). The
+ * file is checked (type by its first bytes, size) before anything is sent; it
+ * is never logged or echoed.
+ */
+async function attachVoucherFile(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const voucherNumber = positiveInteger(input.voucherNumber);
+  if (voucherNumber === undefined || voucherNumber > 999999999) {
+    return errorResult('attach_voucher_file needs voucherNumber (a positive whole number).');
+  }
+  const year = typeof input.accountingYear === 'string' ? input.accountingYear.trim() : '';
+  if (!/^\d{4}(\/\d{4})?$/.test(year)) {
+    return errorResult('accountingYear must be written as e-conomic names it, e.g. 2026 or 2025/2026.');
+  }
+  const contentType = typeof input.contentType === 'string' ? input.contentType : '';
+  const type = Object.hasOwn(ATTACHMENT_TYPES, contentType) ? ATTACHMENT_TYPES[contentType as keyof typeof ATTACHMENT_TYPES] : undefined;
+  if (!type) return errorResult('contentType must be application/pdf, image/jpeg or image/png.');
+  if (input.onConflict !== undefined && input.onConflict !== 'fail' && input.onConflict !== 'merge') {
+    return errorResult('onConflict must be fail or merge.');
+  }
+  if (typeof input.fileBase64 !== 'string' || input.fileBase64.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) {
+    return errorResult('fileBase64 must be a base64 string of at most 9 MB.');
+  }
+  const bytes = decodeBase64Strict(input.fileBase64);
+  if (!bytes || bytes.byteLength === 0) return errorResult('fileBase64 is not valid base64.');
+  if (bytes.byteLength > MAX_ATTACHMENT_BYTES) return errorResult('The file is larger than 9 MB.');
+  if (!type.magic.every((byte, index) => bytes[index] === byte)) {
+    return errorResult(`The file is not a ${type.extension.toUpperCase()} (its first bytes do not match ${contentType}).`);
+  }
+
+  const denied = writePolicyDenial(policy, {
+    capability: 'attach_voucher_file',
+    serviceId: 'documents',
+    method: 'POST',
+    path: '/AttachedDocuments',
+    body: { voucherNumber, accountingYear: year },
+  });
+  if (denied) return denied;
+
+  const form = multipartBody(
+    { VoucherNumber: String(voucherNumber), AccountingYear: year, OnConflict: input.onConflict === 'merge' ? 'Merge' : 'Fail' },
+    { field: 'File', name: `bilag-${voucherNumber}.${type.extension}`, contentType, bytes },
+  );
+  const created = await callEndpoint(client, {
+    serviceId: 'documents',
+    method: 'POST',
+    pathTemplate: '/AttachedDocuments',
+    rawBody: form.body,
+    rawContentType: form.contentType,
+  });
+  return jsonResult(`Attached a ${type.extension.toUpperCase()} to voucher ${voucherNumber} in ${year}.`, created ?? { voucherNumber, accountingYear: year });
 }
 
 // Fields the caller may set on a customer; nested reference objects are built

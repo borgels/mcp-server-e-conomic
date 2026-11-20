@@ -45,6 +45,17 @@ export interface EconomicRequestOptions {
   rawContentType?: string;
   headers?: Record<string, string>;
   idempotencyKey?: string;
+  /**
+   * Read a successful answer as bytes (a PDF) instead of JSON, refusing one
+   * larger than `maxBytes`. The result is an EconomicBinaryBody.
+   */
+  binary?: { maxBytes: number };
+}
+
+/** A successful binary answer (`binary` option). */
+export interface EconomicBinaryBody {
+  readonly contentType: string;
+  readonly bytes: Uint8Array;
 }
 
 export interface EconomicRawBodyOptions {
@@ -186,6 +197,10 @@ export class EconomicClient {
       });
     }
 
+    if (response.ok && options.binary) {
+      return (await readBinaryBody(response, options.binary.maxBytes)) as T;
+    }
+
     const body = await readResponseBody(response);
 
     if (!response.ok) {
@@ -259,6 +274,32 @@ async function readResponseBody(response: Response): Promise<unknown> {
   } catch {
     return text;
   }
+}
+
+/** Reads a binary body, refusing one larger than `maxBytes` (the rest is not read). */
+async function readBinaryBody(response: Response, maxBytes: number): Promise<EconomicBinaryBody> {
+  const contentType = (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim();
+  const declared = Number(response.headers.get('content-length') ?? NaN);
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    void response.body?.cancel().catch(() => undefined);
+    throw new Error(`The file is larger than ${Math.floor(maxBytes / (1024 * 1024))} MB; open it in e-conomic.`);
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  if (response.body) {
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`The file is larger than ${Math.floor(maxBytes / (1024 * 1024))} MB; open it in e-conomic.`);
+      }
+      chunks.push(value);
+    }
+  }
+  return { contentType, bytes: new Uint8Array(Buffer.concat(chunks)) };
 }
 
 /** Reads at most `limit` bytes of the body as text and cancels the rest. */

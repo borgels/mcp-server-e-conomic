@@ -65,10 +65,10 @@ function unsignedOperation(fields: Omit<PreparedOperation, 'operationHash' | 'po
 const drafts = {
   cursor: null,
   items: [
-    { entryNumber: 11, journalNumber: 3, voucherNumber: 901, amount: 1200.5, text: 'A' },
-    { entryNumber: 12, journalNumber: 3, voucherNumber: 901, amount: -1200.5, text: 'B' },
-    { entryNumber: 13, journalNumber: 3, voucherNumber: 901, amount: 10, text: 'C' },
-    { entryNumber: 14, journalNumber: 3, voucherNumber: 901, amount: -10, text: 'D' },
+    { entryNumber: 11, journalNumber: 3, voucherNumber: 901, date: '2026-07-14', amount: 1200.5, text: 'A' },
+    { entryNumber: 12, journalNumber: 3, voucherNumber: 901, date: '2026-07-14', amount: -1200.5, text: 'B' },
+    { entryNumber: 13, journalNumber: 3, voucherNumber: 901, date: '2026-07-14', amount: 10, text: 'C' },
+    { entryNumber: 14, journalNumber: 3, voucherNumber: 901, date: '2026-07-14', amount: -10, text: 'D' },
   ],
 };
 
@@ -76,7 +76,12 @@ function makeFetch() {
   return vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
     if (url.includes('/draft-entries')) return Response.json(drafts);
-    if (url.includes('/AttachedDocuments/901')) return Response.json({ voucherNumber: 901 });
+    if (url.includes('/accounting-years')) {
+      return Response.json({ collection: [{ year: '2026', fromDate: '2026-01-01', toDate: '2026-12-31' }] });
+    }
+    if (url.includes('/AttachedDocuments?') && decodeURIComponent(url).includes('voucherNumber$eq:901$and:accountingYear$eq:2026')) {
+      return Response.json({ items: [{ number: 6001, voucherNumber: 901, accountingYear: '2026' }] });
+    }
     if (url.includes('/bookdraftentries') || url.includes('/booked-entries/match')) return Response.json({ ok: true });
     return new Response('not found', { status: 404 });
   });

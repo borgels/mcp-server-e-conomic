@@ -505,6 +505,9 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('journals', 'POST', '/journals/{journalNumber}/bookdraftentries', 'Book specific draft entries (irreversible).', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),
     customEndpoint('documents', 'GET', '/AttachedDocuments/{number}/pdf', 'Fetch attached document PDF.', 'read'),
+    // PDFs of draft and booked invoices (classic REST).
+    customEndpoint('rest', 'GET', '/invoices/booked/{number}/pdf', 'Fetch the PDF of a booked invoice.', 'read'),
+    customEndpoint('rest', 'GET', '/invoices/drafts/{number}/pdf', 'Fetch the PDF of a draft invoice.', 'read'),
     customEndpoint('booked-entries', 'POST', '/booked-entries/match', 'Match booked entries.', 'dangerous'),
   );
 

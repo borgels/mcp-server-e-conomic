@@ -44,6 +44,7 @@ export interface PreparedBooking {
 interface DraftEntry {
   entryNumber?: number;
   voucherNumber?: number;
+  date?: string;
   amount?: number;
   text?: string;
   journalNumber?: number;
@@ -180,8 +181,12 @@ export async function validateBooking(
         'Booking blocked: no voucher numbers on the requested entries. Pass requireVoucher=false only if documentation is verified elsewhere.',
       );
     }
+    const years = await accountingYears(client);
     for (const voucherNumber of vouchers) {
-      await assertVoucherHasAttachment(client, voucherNumber);
+      const dates = [...wanted.values()]
+        .filter(draft => (draft.voucherNumber ?? draft.voucher?.voucherNumber) === voucherNumber)
+        .map(draft => (typeof draft.date === 'string' ? draft.date.slice(0, 10) : undefined));
+      await assertVoucherHasAttachment(client, voucherNumber, yearOf(years, dates));
     }
   }
 
@@ -351,20 +356,75 @@ async function fetchDraftEntries(client: EconomicClient): Promise<DraftEntry[]> 
   );
 }
 
-async function assertVoucherHasAttachment(client: EconomicClient, voucherNumber: number): Promise<void> {
+interface AccountingYearRange {
+  year: string;
+  fromDate: string;
+  toDate: string;
+}
+
+/** The accounting years with their dates (classic REST GET /accounting-years). */
+async function accountingYears(client: EconomicClient): Promise<AccountingYearRange[]> {
+  const response = (await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'GET',
+    pathTemplate: '/accounting-years',
+    query: { pagesize: 1000 },
+  })) as { collection?: Array<{ year?: unknown; fromDate?: unknown; toDate?: unknown }> };
+  return (Array.isArray(response?.collection) ? response.collection : []).flatMap(item =>
+    typeof item.year === 'string' && typeof item.fromDate === 'string' && typeof item.toDate === 'string'
+      ? [{ year: item.year, fromDate: item.fromDate.slice(0, 10), toDate: item.toDate.slice(0, 10) }]
+      : [],
+  );
+}
+
+/** The one accounting year that holds every date, or undefined. */
+function yearOf(years: AccountingYearRange[], dates: Array<string | undefined>): string | undefined {
+  const found = new Set(
+    dates.map(date => (date ? years.find(year => year.fromDate <= date && date <= year.toDate)?.year : undefined)),
+  );
+  return found.size === 1 ? [...found][0] : undefined;
+}
+
+/**
+ * The voucher has an attached document in its accounting year: documentsapi
+ * lists attached documents by voucher number and year (GET /AttachedDocuments
+ * with a filter). `/AttachedDocuments/{number}` takes the document's own
+ * number, not the voucher's, so it cannot answer this.
+ */
+async function assertVoucherHasAttachment(
+  client: EconomicClient,
+  voucherNumber: number,
+  accountingYear: string | undefined,
+): Promise<void> {
+  const blocked = (why: string) =>
+    new Error(
+      `Booking blocked: voucher ${voucherNumber} has no verifiable attached document (${why}). Attach the document first, or pass requireVoucher=false if documentation is verified elsewhere.`,
+    );
+  if (!accountingYear) {
+    throw blocked('the accounting year of its entries could not be determined');
+  }
+  let response: unknown;
   try {
-    await callEndpoint(client, {
+    response = await callEndpoint(client, {
       serviceId: 'documents',
       method: 'GET',
-      pathTemplate: '/AttachedDocuments/{number}',
-      pathParams: { number: voucherNumber },
+      pathTemplate: '/AttachedDocuments',
+      query: { filter: `voucherNumber$eq:${voucherNumber}$and:accountingYear$eq:${accountingYear}` },
     });
   } catch (error) {
-    throw new Error(
-      `Booking blocked: voucher ${voucherNumber} has no verifiable attached document (${
-        error instanceof Error ? error.message : String(error)
-      }). Attach the document first, or pass requireVoucher=false if documentation is verified elsewhere.`,
-    );
+    throw blocked(error instanceof Error ? error.message : String(error));
+  }
+  const items = Array.isArray(response)
+    ? response
+    : Array.isArray((response as { items?: unknown })?.items)
+      ? (response as { items: unknown[] }).items
+      : [];
+  const attached = items.some(item => {
+    const document = item as { voucherNumber?: unknown; accountingYear?: unknown };
+    return document.voucherNumber === voucherNumber && document.accountingYear === accountingYear;
+  });
+  if (!attached) {
+    throw blocked(`none found for voucher ${voucherNumber} in ${accountingYear}`);
   }
 }
 
