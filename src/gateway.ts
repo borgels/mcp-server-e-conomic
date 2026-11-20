@@ -2127,10 +2127,11 @@ async function upgradeSalesDocument(
   );
 }
 
-/** Strict base64 (no whitespace, correct padding), decoded. */
+/** Strict base64: canonical (no whitespace, correct padding and padding bits), decoded. */
 function decodeBase64Strict(value: string): Uint8Array | undefined {
   if (value.length === 0 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return undefined;
-  return new Uint8Array(Buffer.from(value, 'base64'));
+  const bytes = Buffer.from(value, 'base64');
+  return bytes.toString('base64') === value ? new Uint8Array(bytes) : undefined;
 }
 
 /** A multipart/form-data body with text fields and one file. */

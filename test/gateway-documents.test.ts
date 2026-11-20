@@ -212,3 +212,89 @@ describe('the booking guard finds the voucher’s document by voucher number and
     }
   });
 });
+
+describe('review of #78', () => {
+  it('checks each voucher number in its own year when the same number is used in two years', async () => {
+    const lookups: string[] = [];
+    const { gateway, requests } = fakeEconomic(request => {
+      const url = new URL(request.url);
+      if (url.pathname === '/accounting-years') {
+        return Response.json({
+          collection: [
+            { year: '2025', fromDate: '2025-01-01', toDate: '2025-12-31' },
+            { year: '2026', fromDate: '2026-01-01', toDate: '2026-12-31' },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/draft-entries')) {
+        return Response.json({
+          items: [
+            { entryNumber: 1, journalNumber: 1, voucherNumber: 7, date: '2025-12-30', amount: 10 },
+            { entryNumber: 2, journalNumber: 1, voucherNumber: 7, date: '2026-01-02', amount: -10 },
+          ],
+        });
+      }
+      if (url.pathname.endsWith('/AttachedDocuments')) {
+        const filter = url.searchParams.get('filter') ?? '';
+        lookups.push(filter);
+        const year = filter.endsWith('2025') ? '2025' : '2026';
+        return Response.json({ items: [{ number: 1, voucherNumber: 7, accountingYear: year }] });
+      }
+      if (url.pathname.endsWith('/bookdraftentries')) return Response.json({ ok: true });
+      return undefined;
+    });
+    const result = await gateway.callTool('book_journal_entries', { journalNumber: 1, entryNumbers: [1, 2] }, context);
+    expect(result.isError, result.content[0]?.text).toBeUndefined();
+    expect(lookups.sort()).toEqual(['voucherNumber$eq:7$and:accountingYear$eq:2025', 'voucherNumber$eq:7$and:accountingYear$eq:2026']);
+    expect(requests.filter(request => request.method === 'POST')).toHaveLength(1);
+  });
+
+  it('reads a PDF exactly at the limit, and stops a larger one with or without Content-Length', async () => {
+    const limit = 4 * 1024 * 1024;
+    const exact = fakeEconomic(() => new Response(new Uint8Array(limit), { headers: { 'content-type': 'application/pdf' } }));
+    expect((await exact.gateway.callTool('get_document', { number: 1, pdf: true }, context)).isError).toBeUndefined();
+
+    const declared = fakeEconomic(() =>
+      new Response(new Uint8Array(16), { headers: { 'content-type': 'application/pdf', 'content-length': String(limit + 1) } }));
+    expect((await declared.gateway.callTool('get_document', { number: 1, pdf: true }, context)).content[0]?.text).toContain('larger than 4 MB');
+
+    let cancelled = false;
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        sent += 1024 * 1024;
+        controller.enqueue(new Uint8Array(1024 * 1024));
+        if (sent > 64 * 1024 * 1024) controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const streamed = fakeEconomic(() => new Response(stream, { headers: { 'content-type': 'application/pdf' } }));
+    expect((await streamed.gateway.callTool('get_document', { number: 1, pdf: true }, context)).content[0]?.text).toContain('larger than 4 MB');
+    expect(cancelled).toBe(true);
+    expect(sent).toBeLessThanOrEqual(8 * 1024 * 1024);
+  });
+
+  it('attaches a file exactly at 9 MB and refuses one byte more', async () => {
+    const pdfOf = (size: number) => {
+      const bytes = new Uint8Array(size);
+      bytes.set([0x25, 0x50, 0x44, 0x46]);
+      return Buffer.from(bytes).toString('base64');
+    };
+    const { gateway, requests } = fakeEconomic();
+    const input = { accountingYear: '2026', voucherNumber: 1, contentType: 'application/pdf' };
+    expect((await gateway.callTool('attach_voucher_file', { ...input, fileBase64: pdfOf(9_437_184) }, context)).isError).toBeUndefined();
+    expect((await gateway.callTool('attach_voucher_file', { ...input, fileBase64: pdfOf(9_437_185) }, context)).isError).toBe(true);
+    expect(requests).toHaveLength(1);
+  });
+
+  it('refuses base64 with non-canonical padding bits', async () => {
+    const { gateway, requests } = fakeEconomic();
+    const result = await gateway.callTool('attach_voucher_file', {
+      accountingYear: '2026', voucherNumber: 1, contentType: 'application/pdf', fileBase64: 'JVBERh==',
+    }, context);
+    expect(result.content[0]?.text).toBe('fileBase64 is not valid base64.');
+    expect(requests).toEqual([]);
+  });
+});

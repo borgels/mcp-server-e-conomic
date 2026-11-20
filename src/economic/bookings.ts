@@ -181,12 +181,18 @@ export async function validateBooking(
         'Booking blocked: no voucher numbers on the requested entries. Pass requireVoucher=false only if documentation is verified elsewhere.',
       );
     }
+    // A voucher is a voucher number in an accounting year: the same number can
+    // be used again in another year, so each (number, year) pair is checked.
     const years = await accountingYears(client);
-    for (const voucherNumber of vouchers) {
-      const dates = [...wanted.values()]
-        .filter(draft => (draft.voucherNumber ?? draft.voucher?.voucherNumber) === voucherNumber)
-        .map(draft => (typeof draft.date === 'string' ? draft.date.slice(0, 10) : undefined));
-      await assertVoucherHasAttachment(client, voucherNumber, yearOf(years, dates));
+    const pairs = new Map<string, { voucherNumber: number; accountingYear: string | undefined }>();
+    for (const draft of wanted.values()) {
+      const voucherNumber = draft.voucherNumber ?? draft.voucher?.voucherNumber;
+      if (!isNumber(voucherNumber)) continue;
+      const accountingYear = yearOf(years, typeof draft.date === 'string' ? draft.date.slice(0, 10) : undefined);
+      pairs.set(`${voucherNumber}|${accountingYear ?? ''}`, { voucherNumber, accountingYear });
+    }
+    for (const { voucherNumber, accountingYear } of pairs.values()) {
+      await assertVoucherHasAttachment(client, voucherNumber, accountingYear);
     }
   }
 
@@ -377,12 +383,9 @@ async function accountingYears(client: EconomicClient): Promise<AccountingYearRa
   );
 }
 
-/** The one accounting year that holds every date, or undefined. */
-function yearOf(years: AccountingYearRange[], dates: Array<string | undefined>): string | undefined {
-  const found = new Set(
-    dates.map(date => (date ? years.find(year => year.fromDate <= date && date <= year.toDate)?.year : undefined)),
-  );
-  return found.size === 1 ? [...found][0] : undefined;
+/** The accounting year that holds the date, or undefined. */
+function yearOf(years: AccountingYearRange[], date: string | undefined): string | undefined {
+  return date ? years.find(year => year.fromDate <= date && date <= year.toDate)?.year : undefined;
 }
 
 /**
