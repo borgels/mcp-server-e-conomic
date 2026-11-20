@@ -32,8 +32,8 @@ function makeClient(handler: (url: string) => unknown): EconomicClient {
 const drafts = {
   cursor: null,
   items: [
-    { entryNumber: 11, journalNumber: 3, voucherNumber: 901, amount: 1200.5, text: 'Betaling A' },
-    { entryNumber: 12, journalNumber: 3, voucherNumber: 901, amount: -1200.5, text: 'Modkonto' },
+    { entryNumber: 11, journalNumber: 3, voucherNumber: 901, date: '2026-07-14T00:00:00', amount: 1200.5, text: 'Betaling A' },
+    { entryNumber: 12, journalNumber: 3, voucherNumber: 901, date: '2026-07-14T00:00:00', amount: -1200.5, text: 'Modkonto' },
     { entryNumber: 20, journalNumber: 7, voucherNumber: 950, amount: 99, text: 'Andet journal' },
     { entryNumber: 30, journalNumber: 3, amount: 50, text: 'Uden bilag' },
   ],
@@ -43,8 +43,11 @@ function draftAndDocsHandler(url: string): unknown {
   if (url.includes('/draft-entries')) {
     return drafts;
   }
-  if (url.includes('/AttachedDocuments/901')) {
-    return { voucherNumber: 901, attachments: 1 };
+  if (url.includes('/accounting-years')) {
+    return { collection: [{ year: '2026', fromDate: '2026-01-01', toDate: '2026-12-31' }] };
+  }
+  if (url.includes('/AttachedDocuments?') && decodeURIComponent(url).includes('voucherNumber$eq:901$and:accountingYear$eq:2026')) {
+    return { items: [{ number: 6001, voucherNumber: 901, accountingYear: '2026' }], cursor: null };
   }
   return new Response('not found', { status: 404 });
 }

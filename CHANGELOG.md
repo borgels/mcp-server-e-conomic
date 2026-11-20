@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.13.0
+
+Attached documents (bilag) and PDFs in the embedded gateway (#65). Additive
+for embedders, and a fix of the booking guard.
+
+- Write tool `attach_voucher_file`: attaches a PDF, JPEG or PNG to a voucher
+  of draft or booked entries by voucher number and accounting year, with
+  documentsapi `POST /AttachedDocuments` (multipart). The file must be strict
+  base64, at most 9 MB (e-conomic's limit), and its first bytes must match the
+  given type. When the voucher already has a document the call fails, unless
+  `onConflict` is `merge`. The log values are the voucher number, the year and
+  the type; never the file or a file name.
+- Read tool `get_document`: attached documents (default) or draft and booked
+  invoices; with `number` and `pdf: true` it returns the record's PDF as
+  `{ contentType, sizeBytes, base64 }`, at most 4 MB (larger is refused with a
+  clear message). The HTTP client reads such an answer as bytes and stops at
+  the limit.
+- Fix: the booking guard (`book_journal_entries`, and the standalone
+  server's booking) looked a voucher's document up at
+  `/AttachedDocuments/{voucherNumber}`, but that path takes the document's own
+  number. It now lists the voucher's documents with a filter on voucher number
+  and accounting year (the year of the voucher's entries, from
+  `/accounting-years`), so a voucher with a document can be booked and one
+  without cannot.
+- No deletion of attached documents (`DELETE /AttachedDocuments`, `deletebulk`)
+  in `./gateway`; a test checks that no tool's upstream has one.
+- `npm run check:demo` also fetches the PDF of an attached document and of a
+  booked invoice from the demo agreement.
+
 ## 0.12.0
 
 Quotes and orders in the embedded gateway (#64). Additive for embedders.

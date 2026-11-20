@@ -61,10 +61,13 @@ function defaultResponse(method: string, path: string): Response {
       items: [
         { entryNumber: 11, journalNumber: 1, voucherNumber: 501, amount: -1250 },
         { entryNumber: 12, journalNumber: 1, voucherNumber: 501, amount: 1250 },
-        { entryNumber: 13, journalNumber: 1, voucherNumber: 502, amount: 99 },
+        { entryNumber: 13, journalNumber: 1, voucherNumber: 502, date: '2026-03-02T00:00:00', amount: 99 },
         { entryNumber: 21, journalNumber: 2, voucherNumber: 501, amount: 5 },
       ],
     });
+  }
+  if (method === 'GET' && path.endsWith('/AttachedDocuments')) {
+    return Response.json({ items: [{ number: 6001, voucherNumber: 502, accountingYear: '2026' }], cursor: null });
   }
   if (method === 'GET' && path === '/suppliers/2001') return Response.json(existingSupplier);
   if (method === 'GET' && path === '/invoices/drafts/404') return new Response('', { status: 404 });
@@ -293,7 +296,7 @@ describe('booking', () => {
     const { gateway, requests, writes } = fakeEconomic(booking);
     const withDocument = await gateway.callTool('book_journal_entries', { journalNumber: 1, entryNumbers: [13] }, context);
     expect(withDocument.isError, withDocument.content[0]?.text).toBeUndefined();
-    expect(requests.some(request => request.path.endsWith('/AttachedDocuments/502'))).toBe(true);
+    expect(requests.some(request => request.path.endsWith('/AttachedDocuments'))).toBe(true);
 
     const missing = await gateway.callTool('book_journal_entries', { journalNumber: 1, entryNumbers: [21] }, context);
     expect(missing.isError).toBe(true);

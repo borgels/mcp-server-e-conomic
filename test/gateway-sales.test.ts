@@ -187,3 +187,39 @@ describe('no sending and no deleting of quotes and orders', () => {
     }
   });
 });
+
+describe('upgrade edge cases (review of #76)', () => {
+  it('refuses a missing or malformed upgrade template and posts nothing', async () => {
+    for (const template of [{}, { order: null }, { order: [] }, { draftInvoice: { customer: { customerNumber: 1 } } }]) {
+      const { gateway, requests } = fakeEconomic(() => Response.json(template));
+      const result = await gateway.callTool('upgrade_quote', { quoteNumber: 17, to: 'order' }, context);
+      expect(result).toMatchObject({ isError: true, content: [{ text: 'e-conomic returned no upgrade template for draft quote 17.' }] });
+      expect(requests.some(request => request.method === 'POST')).toBe(false);
+    }
+  });
+
+  it('refuses a template that carries bank details', async () => {
+    const { gateway, requests } = fakeEconomic(() =>
+      Response.json({ draftInvoice: { customer: { customerNumber: 1 }, bankAccount: '1234-0001234567' } }));
+    const result = await gateway.callTool('upgrade_order', { orderNumber: 16 }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('Bank details');
+    expect(requests.some(request => request.method === 'POST')).toBe(false);
+  });
+
+  it('is refused before any request when the host turns the tool off', async () => {
+    const requests: string[] = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app-secret-for-tests',
+      policy: { enableWrites: true, disabledTools: ['upgrade_quote', 'create_draft_order'] },
+      fetchImpl: (async (input: string | URL | Request) => {
+        requests.push(String(input));
+        return Response.json({});
+      }) as typeof fetch,
+    });
+    expect(gateway.tools.map(tool => tool.name)).not.toContain('upgrade_quote');
+    expect((await gateway.callTool('upgrade_quote', { quoteNumber: 17, to: 'order' }, context)).isError).toBe(true);
+    expect((await gateway.callTool('create_draft_order', { customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }, context)).isError).toBe(true);
+    expect(requests).toEqual([]);
+  });
+});
