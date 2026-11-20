@@ -145,6 +145,10 @@ describe('key_figures', () => {
       figures: { turnover: 1000, grossProfit: 600 },
       previousYear: { accountingYear: '2025', period: 3, figures: { turnover: 0 } },
     });
+    // The period before has no totals: no dates, never the whole year's.
+    const previousYear = (result.structuredContent as GatewayJsonObject).previousYear as GatewayJsonObject;
+    expect(previousYear).not.toHaveProperty('fromDate');
+    expect(previousYear).not.toHaveProperty('toDate');
     expect(paths).toContain('/accounting-years/2026/periods/3/totals');
     expect(paths).toContain('/accounting-years/2025/periods/3/totals');
   });
@@ -161,17 +165,28 @@ describe('key_figures', () => {
     }
   });
 
-  it('names what it reads for the host log', () => {
-    expect(resolveEconomicReadTarget('key_figures', { accountingYear: '2026', period: 3 })).toEqual({
-      ok: true,
-      target: {
-        serviceId: 'rest',
-        resource: 'accounting-years',
-        method: 'GET',
-        pathTemplate: '/accounting-years/{number}/periods/{period}/totals',
-        pathParams: { number: '2026', period: 3 },
-      },
+  it('names what it reads for the host log, without a year id it cannot know before the call', () => {
+    for (const input of [{}, { accountingYear: '2025/2026', period: 3 }] as GatewayJsonObject[]) {
+      expect(resolveEconomicReadTarget('key_figures', input)).toEqual({
+        ok: true,
+        target: { serviceId: 'rest', resource: 'accounting-years', method: 'GET', pathTemplate: '/accounting-years' },
+      });
+    }
+  });
+
+  it('fails instead of answering with incomplete sums when a cursor repeats', async () => {
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app-secret-for-tests',
+      fetchImpl: (async (input: string | URL | Request) => {
+        const path = new URL(String(input instanceof Request ? input.url : input)).pathname;
+        if (path === '/accounting-years') return Response.json(years);
+        if (path.endsWith('/Accounts')) return Response.json({ items: [{ number: 1010, keyFigureCodeNumber: 1 }], cursor: 'same' });
+        return Response.json({ collection: [], items: [] });
+      }) as typeof fetch,
     });
+    const result = await gateway.callTool('key_figures', { accountingYear: '2026' }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('same cursor twice');
   });
 });
 

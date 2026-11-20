@@ -1453,20 +1453,11 @@ export function resolveEconomicReadTarget(
     return { ok: true, target: { serviceId: SELF.serviceId, resource: SELF.resource, method: 'GET', pathTemplate: '/self' } };
   }
   if (spec.name === 'key_figures') {
+    // The year's id in the path comes from its self URL, read during the call (2025_6_2026 for
+    // the year 2025/2026), so the target names only what is read first: the accounting years.
     const checked = keyFiguresArgs(input);
     if ('error' in checked) return refuse(checked.error);
-    return {
-      ok: true,
-      target: {
-        serviceId: 'rest',
-        resource: 'accounting-years',
-        method: 'GET',
-        pathTemplate: checked.period === undefined ? '/accounting-years/{number}/totals' : '/accounting-years/{number}/periods/{period}/totals',
-        ...(checked.year === undefined
-          ? {}
-          : { pathParams: checked.period === undefined ? { number: checked.year } : { number: checked.year, period: checked.period } }),
-      },
-    };
+    return { ok: true, target: { serviceId: 'rest', resource: 'accounting-years', method: 'GET', pathTemplate: '/accounting-years' } };
   }
 
   const serviceId = optionalString(input, 'serviceId');
@@ -2263,7 +2254,9 @@ async function allOpenApiItems(client: EconomicClient, serviceId: string, pathTe
     const response = asObject(await callEndpoint(client, { serviceId, method: 'GET', pathTemplate, query: cursor ? { cursor } : undefined }));
     for (const item of Array.isArray(response.items) ? response.items : []) items.push(asObject(item));
     const next = typeof response.cursor === 'string' && response.cursor ? response.cursor : undefined;
-    if (!next || next === cursor) return items;
+    // No cursor ends the list. The same cursor again would leave the sums incomplete: an error, not a result.
+    if (!next) return items;
+    if (next === cursor) throw new Error(`key_figures: ${pathTemplate} returned the same cursor twice.`);
     cursor = next;
   }
   throw new Error(`key_figures: ${pathTemplate} did not fit in ${KEY_FIGURE_PAGES} pages.`);
@@ -2352,6 +2345,13 @@ async function totalsPerAccount(client: EconomicClient, year: YearRef, period: n
   };
 }
 
+/** The dates the totals cover: their own, else the whole year's (only when the whole year was read), else none. */
+function periodDates(totals: { fromDate?: string; toDate?: string }, year: YearRef | undefined): GatewayJsonObject {
+  const fromDate = totals.fromDate ?? year?.fromDate;
+  const toDate = totals.toDate ?? year?.toDate;
+  return { ...(fromDate ? { fromDate } : {}), ...(toDate ? { toDate } : {}) };
+}
+
 /**
  * key_figures: sums only. The amounts per account are read and summed per key
  * figure code here; no account, entry, customer or supplier is returned.
@@ -2410,8 +2410,8 @@ async function keyFigures(client: EconomicClient, input: GatewayJsonObject): Pro
   const result: GatewayJsonObject = {
     accountingYear: chosen.year,
     ...(args.period === undefined ? {} : { period: args.period }),
-    fromDate: current.fromDate ?? chosen.fromDate,
-    toDate: current.toDate ?? chosen.toDate,
+    // A period with no totals has no dates in the answer; the year's dates would be wrong for it.
+    ...periodDates(current, args.period === undefined ? chosen : undefined),
     currency: 'base currency of the agreement',
     figures,
     balancesNow: {
@@ -2432,8 +2432,7 @@ async function keyFigures(client: EconomicClient, input: GatewayJsonObject): Pro
     result.previousYear = {
       accountingYear: previous.year,
       ...(args.period === undefined ? {} : { period: args.period }),
-      fromDate: before.fromDate ?? previous.fromDate,
-      toDate: before.toDate ?? previous.toDate,
+      ...periodDates(before, args.period === undefined ? previous : undefined),
       figures: resultFigures(sumByCode(codeOf, before.amounts)),
     };
   }
