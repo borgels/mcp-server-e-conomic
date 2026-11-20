@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.2
+
+Fix: a 401 on the voucher lookup of a booking goes on as e-conomic's own
+error (#82), not wrapped in `Booking blocked…`. Test: every tool passes a 401
+on first in its error also when it comes on a later request, and a missing
+customer of a draft invoice keeps its own message.
+
 ## 0.14.1
 
 Fix: a refused access is never hidden behind a tool's own message (#73,

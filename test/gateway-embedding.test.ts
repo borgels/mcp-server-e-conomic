@@ -321,6 +321,42 @@ describe('declared upstream requests', () => {
     }
   });
 
+  it('passes a 401 on as e-conomic\'s own error also when it comes on a later request of a tool', async () => {
+    for (const entry of economicToolCatalog) {
+      if (entry.name === 'upsert_account') continue;
+      for (const input of inputsFor(entry.name)) {
+        for (let answered = 1; answered <= 6; answered++) {
+          let sent = 0;
+          let refused = false;
+          const gateway = createEconomicGateway({
+            appSecretToken: 'app-secret-for-tests',
+            policy: { enableWrites: true, allowBooking: true },
+            fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+              sent++;
+              if (sent <= answered) return upstreamResponse(new Request(url, init));
+              refused = true;
+              return new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401, headers: { 'content-type': 'application/json' } });
+            }) as typeof fetch,
+          });
+          const result = await gateway.callTool(entry.name, input, context('grant-token-for-tests'));
+          if (!refused) continue;
+          expect(result.isError, `${entry.name} after ${answered}`).toBe(true);
+          expect(result.content[0]?.text, `${entry.name} ${JSON.stringify(input)} after ${answered}`).toMatch(/^e-conomic API request failed with HTTP 401(?!\d)/);
+        }
+      }
+    }
+  });
+
+  it('answers a missing customer of a draft invoice with its own message (404)', async () => {
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app-secret-for-tests',
+      policy: { enableWrites: true },
+      fetchImpl: (async () => new Response(JSON.stringify({ message: 'Not found' }), { status: 404, headers: { 'content-type': 'application/json' } })) as typeof fetch,
+    });
+    const result = await gateway.callTool('create_draft_invoice', { customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }, context('grant-token-for-tests'));
+    expect(result.content[0]?.text).toBe('Customer 1 could not be read from e-conomic.');
+  });
+
   it('makes only requests its catalog entry declares, for every tool', async () => {
     for (const entry of economicToolCatalog) {
       const declared = entry.upstream.map(operation => ({ method: operation.method, pattern: pattern(operation.path) }));
