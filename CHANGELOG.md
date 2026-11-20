@@ -12,8 +12,6 @@ VAT set-up in the embedded gateway (#71). Additive for embedders.
   to file a VAT return, and none is offered.
 - Checked against the demo agreement: every target answers.
 
-## 0.18.0
-
 ## 0.21.0
 
 Changing draft invoices, and credit notes as drafts, in the embedded gateway
@@ -33,8 +31,9 @@ Changing draft invoices, and credit notes as drafts, in the embedded gateway
   credit note's date). It is booked
   like any draft with `book_invoice`. Log values: the invoice number, the date
   and the line count.
-- Not offered: deleting drafts or lines, and
-  `PUT /invoices/drafts/{n}/sensitive-data`.
+- This release adds no deletion (a whole draft can be deleted with
+  `delete_draft_invoice` from 0.20.0); deleting single lines and
+  `PUT /invoices/drafts/{n}/sensitive-data` are not offered.
 - The demo agreement is read-only, so both writes are tested with recorded
   answers in e-conomic's REST shape (read from the demo agreement).
 
