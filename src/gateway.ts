@@ -430,10 +430,55 @@ const upsertProjectInput = {
     },
     name: { type: 'string', description: 'Project name. Required when creating.' },
     projectGroupNumber: { type: 'number', description: 'Project group number. Required when creating.' },
-    customerNumber: { type: 'number', description: 'Customer number the project is for. Required when creating.' },
-    responsibleEmployeeNumber: { type: 'number', description: 'Responsible Projects employee number. Required when creating.' },
+    customerNumber: { type: 'number', description: 'Customer number the project is for.' },
+    responsibleEmployeeNumber: { type: 'number', description: 'Responsible Projects employee number.' },
     description: { type: 'string' },
     barred: { type: 'boolean', description: 'Bar the project from new registrations.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const ISO_DATE_PATTERN = String.raw`^\d{4}-\d{2}-\d{2}$`;
+
+const updateTimeEntryInput = {
+  type: 'object',
+  required: ['timeEntryNumber'],
+  properties: {
+    timeEntryNumber: { type: 'integer', minimum: 1, description: 'The time entry to change (not approved yet).' },
+    date: { type: 'string', pattern: ISO_DATE_PATTERN, description: 'New date (YYYY-MM-DD).' },
+    hours: { type: 'number', minimum: 0, maximum: 24, description: 'New number of hours.' },
+    activityNumber: { type: 'integer', minimum: 1, description: 'New activity.' },
+    projectNumber: { type: 'integer', minimum: 1, description: 'Move the entry to this project.' },
+    description: { type: 'string', maxLength: 250, description: 'New note.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const createMileageEntryInput = {
+  type: 'object',
+  required: ['projectNumber', 'employeeNumber', 'date', 'distance'],
+  properties: {
+    projectNumber: { type: 'integer', minimum: 1, description: 'Project the trip is registered on.' },
+    employeeNumber: { type: 'integer', minimum: 1, description: 'Projects employee who drove.' },
+    date: { type: 'string', pattern: ISO_DATE_PATTERN, description: 'Date of the trip (YYYY-MM-DD).' },
+    distance: { type: 'number', exclusiveMinimum: 0, maximum: 10000, description: 'Distance in kilometres.' },
+    from: { type: 'string', maxLength: 100, description: 'Where the trip started.' },
+    to: { type: 'string', maxLength: 100, description: 'Where the trip ended.' },
+  },
+  additionalProperties: false,
+} satisfies GatewayJsonObject;
+
+const approveTimeEntriesInput = {
+  type: 'object',
+  required: ['timeEntryNumbers'],
+  properties: {
+    timeEntryNumbers: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 100,
+      items: { type: 'integer', minimum: 1 },
+      description: 'Time entries to approve. Approval books their cost on the project; e-conomic has no way to undo it through its API.',
+    },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -774,6 +819,12 @@ const NARROW_READ_TARGETS: Record<string, readonly EconomicResourceRef[]> = {
   ],
   project_overview: [
     ref('projects', 'Projects'),
+    ref('projects', 'project-activities'),
+    ref('projects', 'Activities/allowed'),
+    ref('projects', 'Projects/allowed'),
+    ref('projects', 'Mileages'),
+    ref('projects', 'MileagePrices'),
+    ref('projects', 'TimeEntryPrices'),
     ref('projects', 'ProjectGroups'),
     ref('projects', 'ProjectStatuses'),
     ref('projects', 'CostTypes'),
@@ -1086,7 +1137,7 @@ const TOOL_SPECS: ToolSpec[] = [
   narrowReadTool(
     'project_overview',
     'Get e-conomic project overview',
-    'Read the Projects add-on: projects (default), project groups and statuses, cost types, activities and activity groups, employees and employee groups, or time entries.',
+    'Read the Projects add-on: projects (default), project groups and statuses, cost types, activities and activity groups, the activities of a project, employees and employee groups, time entries, mileage, and time and mileage prices. Projects/allowed (query employeeNumber) and Activities/allowed (query employeeNumber and projectNumber) list what an employee may register on.',
   ),
   narrowReadTool(
     'get_document',
@@ -1216,6 +1267,41 @@ const TOOL_SPECS: ToolSpec[] = [
       hours: 'quantity',
     }),
     upstream: [operation('write', 'POST', 'projects', 'TimeEntries', '/TimeEntries')],
+  }),
+  writeTool({
+    name: 'update_time_entry',
+    title: 'Change e-conomic project time',
+    description: `Change a time entry that is not approved yet: date, hours, activity, project or note (reads the entry and merges the given fields). ${WRITE_NOTE}`,
+    inputSchema: updateTimeEntryInput,
+    change: change('upsert', 'time-entry', {
+      timeEntryNumber: 'recordNumber',
+      projectNumber: 'recordNumber',
+      activityNumber: 'recordNumber',
+      date: 'date',
+      hours: 'quantity',
+    }),
+    upstream: [
+      operation('read', 'GET', 'projects', 'TimeEntries', '/TimeEntries/{number}'),
+      operation('write', 'PUT', 'projects', 'TimeEntries', '/TimeEntries'),
+    ],
+  }),
+  writeTool({
+    name: 'create_mileage_entry',
+    title: 'Register e-conomic mileage',
+    description: `Register a trip (kilometres) on a project for an employee, on a date. ${WRITE_NOTE}`,
+    inputSchema: createMileageEntryInput,
+    // from and to are free text (addresses): never logged.
+    change: change('create', 'mileage', { projectNumber: 'recordNumber', employeeNumber: 'recordNumber', date: 'date', distance: 'quantity' }),
+    upstream: [operation('write', 'POST', 'projects', 'Mileages', '/Mileages')],
+  }),
+  writeTool({
+    name: 'approve_time_entries',
+    title: 'Approve e-conomic project time',
+    description: `Approve time entries, so their cost is booked on the project. e-conomic has no way to undo an approval through its API. ${BOOKING_NOTE}`,
+    inputSchema: approveTimeEntriesInput,
+    booking: true,
+    change: change('book', 'time-entry', { timeEntryNumbers: 'numberList' }),
+    upstream: [operation('write', 'POST', 'projects', 'TimeEntries', '/TimeEntries/approve')],
   }),
   writeTool({
     name: 'upsert_supplier',
@@ -1993,6 +2079,12 @@ async function writeResult(
       return upsertProject(client, input, writePolicy);
     case 'create_time_entry':
       return createTimeEntry(client, input, writePolicy);
+    case 'update_time_entry':
+      return updateTimeEntry(client, input, writePolicy);
+    case 'create_mileage_entry':
+      return createMileageEntry(client, input, writePolicy);
+    case 'approve_time_entries':
+      return approveTimeEntries(client, input, writePolicy);
     case 'upsert_supplier':
       return upsertSupplier(client, input, writePolicy);
     case 'upsert_employee':
@@ -3056,8 +3148,9 @@ async function upsertProject(
   if (description) {
     flat.description = description;
   }
+  // projectsapi's Project is flat: isBarred, projectGroupNumber, customerNumber, responsibleEmployeeNumber.
   if (typeof input.barred === 'boolean') {
-    flat.barred = input.barred;
+    flat.isBarred = input.barred;
   }
   const projectGroupNumber = numberValue(input.projectGroupNumber);
   const customerNumber = numberValue(input.customerNumber);
@@ -3065,21 +3158,19 @@ async function upsertProject(
 
   const applyRefs = (body: GatewayJsonObject): void => {
     if (projectGroupNumber !== undefined) {
-      body.projectGroup = { projectGroupNumber };
+      body.projectGroupNumber = projectGroupNumber;
     }
     if (customerNumber !== undefined) {
-      body.customer = { customerNumber };
+      body.customerNumber = customerNumber;
     }
     if (responsibleEmployeeNumber !== undefined) {
-      body.responsibleEmployee = { employeeNumber: responsibleEmployeeNumber };
+      body.responsibleEmployeeNumber = responsibleEmployeeNumber;
     }
   };
 
   if (projectNumber === undefined) {
-    if (!flat.name || projectGroupNumber === undefined || customerNumber === undefined || responsibleEmployeeNumber === undefined) {
-      return errorResult(
-        'Creating a project requires name, projectGroupNumber, customerNumber, and responsibleEmployeeNumber.',
-      );
+    if (!flat.name || projectGroupNumber === undefined) {
+      return errorResult('Creating a project requires name and projectGroupNumber.');
     }
 
     const body: GatewayJsonObject = { ...flat };
@@ -3119,7 +3210,7 @@ async function upsertProject(
     throw error;
   }
 
-  const body: GatewayJsonObject = { ...existing, ...flat, projectNumber };
+  const body: GatewayJsonObject = { ...existing, ...flat, number: projectNumber };
   applyRefs(body);
 
   const denied = writePolicyDenial(policy, {
@@ -3160,16 +3251,17 @@ async function createTimeEntry(
     return errorResult('create_time_entry requires projectNumber, activityNumber, employeeNumber, date, and hours.');
   }
 
+  // projectsapi's TimeEntry is flat: projectNumber, activityNumber, employeeNumber, date, numberOfHours, text.
   const body: GatewayJsonObject = {
+    projectNumber,
+    activityNumber,
+    employeeNumber,
     date,
-    hours,
-    project: { projectNumber },
-    activity: { activityNumber },
-    employee: { employeeNumber },
+    numberOfHours: hours,
   };
   const description = stringValue(input.description);
   if (description) {
-    body.description = description;
+    body.text = description;
   }
 
   const denied = writePolicyDenial(policy, {
@@ -3189,6 +3281,135 @@ async function createTimeEntry(
     pathTemplate: '/TimeEntries',
     body,
   }));
+}
+
+/** Changes a time entry that is not approved (read-merge-write, PUT /TimeEntries with its objectVersion). */
+async function updateTimeEntry(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const number = positiveInteger(input.timeEntryNumber);
+  if (number === undefined) return errorResult('update_time_entry needs timeEntryNumber (a positive whole number).');
+  const changes: GatewayJsonObject = {};
+  if (input.date !== undefined) {
+    const date = isoDateValue(input.date);
+    if (!date) return errorResult('date must be a date (YYYY-MM-DD).');
+    changes.date = date;
+  }
+  if (input.hours !== undefined) {
+    if (typeof input.hours !== 'number' || !Number.isFinite(input.hours) || input.hours < 0 || input.hours > 24) {
+      return errorResult('hours must be a number from 0 to 24.');
+    }
+    changes.numberOfHours = input.hours;
+  }
+  for (const field of ['activityNumber', 'projectNumber'] as const) {
+    if (input[field] !== undefined) {
+      const value = positiveInteger(input[field]);
+      if (value === undefined) return errorResult(`${field} must be a positive whole number.`);
+      changes[field] = value;
+    }
+  }
+  if (input.description !== undefined) {
+    const text = shortText(input.description, 250);
+    if (!text.ok) return errorResult('description must be at most 250 characters.');
+    changes.text = text.value ?? '';
+  }
+  if (Object.keys(changes).length === 0) return errorResult('Give at least one field to change.');
+
+  const early = writePolicyDenial(policy, { capability: 'update_time_entry', serviceId: 'projects', method: 'PUT', path: '/TimeEntries', body: {} });
+  if (early) return early;
+
+  let existing: GatewayJsonObject;
+  try {
+    existing = (await callEndpoint(client, {
+      serviceId: 'projects',
+      method: 'GET',
+      pathTemplate: '/TimeEntries/{number}',
+      pathParams: { number },
+    })) as GatewayJsonObject;
+  } catch (error) {
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Time entry ${number} does not exist.`);
+    throw error;
+  }
+  if (existing.isApproved === true) {
+    return errorResult(`Time entry ${number} is approved and can no longer be changed.`);
+  }
+  const body: GatewayJsonObject = { ...existing, ...changes, number };
+  // Read-only in projectsapi: never sent back.
+  for (const field of ['isApproved', 'isReconciled', 'lastUpdated']) delete body[field];
+
+  const denied = writePolicyDenial(policy, {
+    capability: 'update_time_entry',
+    serviceId: 'projects',
+    method: 'PUT',
+    path: '/TimeEntries',
+    body,
+    current: existing,
+  });
+  if (denied) return denied;
+  return jsonResult(`Changed time entry ${number}.`, await callEndpoint(client, {
+    serviceId: 'projects',
+    method: 'PUT',
+    pathTemplate: '/TimeEntries',
+    body,
+  }));
+}
+
+/** Registers a trip on a project (POST /Mileages). */
+async function createMileageEntry(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const projectNumber = positiveInteger(input.projectNumber);
+  const employeeNumber = positiveInteger(input.employeeNumber);
+  const date = isoDateValue(input.date);
+  const distance = input.distance;
+  if (projectNumber === undefined || employeeNumber === undefined || !date) {
+    return errorResult('create_mileage_entry needs projectNumber, employeeNumber and date (YYYY-MM-DD).');
+  }
+  if (typeof distance !== 'number' || !Number.isFinite(distance) || distance <= 0 || distance > 10000) {
+    return errorResult('distance must be a number of kilometres above 0 and at most 10000.');
+  }
+  const body: GatewayJsonObject = { projectNumber, employeeNumber, date, distance };
+  for (const field of ['from', 'to'] as const) {
+    const text = shortText(input[field], 100);
+    if (!text.ok) return errorResult(`${field} must be at most 100 characters.`);
+    if (text.value) body[field] = text.value;
+  }
+  const denied = writePolicyDenial(policy, { capability: 'create_mileage_entry', serviceId: 'projects', method: 'POST', path: '/Mileages', body });
+  if (denied) return denied;
+  return jsonResult(`Registered ${distance} km on project ${projectNumber}.`, await callEndpoint(client, {
+    serviceId: 'projects',
+    method: 'POST',
+    pathTemplate: '/Mileages',
+    body,
+  }));
+}
+
+/** Approves time entries (POST /TimeEntries/approve). Booking: no API undo. */
+async function approveTimeEntries(
+  client: EconomicClient,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const raw = Array.isArray(input.timeEntryNumbers) ? input.timeEntryNumbers : [];
+  const numbers = positiveIntegerList(raw, 100);
+  if (!numbers || numbers.length !== raw.length) {
+    return errorResult('timeEntryNumbers must contain 1-100 unique time entry numbers.');
+  }
+  const body: GatewayJsonObject = { numbers };
+  const denied = writePolicyDenial(policy, {
+    capability: 'approve_time_entries',
+    serviceId: 'projects',
+    method: 'POST',
+    path: '/TimeEntries/approve',
+    body,
+  });
+  if (denied) return denied;
+  const approved = await callEndpoint(client, { serviceId: 'projects', method: 'POST', pathTemplate: '/TimeEntries/approve', body });
+  return jsonResult(`Approved ${numbers.length === 1 ? '1 time entry' : `${numbers.length} time entries`}.`, approved ?? null);
 }
 
 type JournalEntryKind = 'financeVouchers' | 'supplierInvoices' | 'customerPayments' | 'supplierPayments';

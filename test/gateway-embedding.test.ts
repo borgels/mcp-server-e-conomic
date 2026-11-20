@@ -246,6 +246,9 @@ describe('declared upstream requests', () => {
     create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
     upgrade_order: [{ orderNumber: 4 }],
+    update_time_entry: [{ timeEntryNumber: 5, hours: 3.5, date: '2026-03-02', description: 'Rettet' }],
+    create_mileage_entry: [{ projectNumber: 1, employeeNumber: 2, date: '2026-03-02', distance: 42, from: 'A', to: 'B' }],
+    approve_time_entries: [{ timeEntryNumbers: [5, 6] }],
     attach_voucher_file: [
       { accountingYear: '2026', voucherNumber: 501, contentType: 'application/pdf', fileBase64: 'JVBERi0xLjcK' },
       { accountingYear: '2025/2026', voucherNumber: 501, contentType: 'image/png', fileBase64: 'iVBORw0KGgo=', onConflict: 'merge' },

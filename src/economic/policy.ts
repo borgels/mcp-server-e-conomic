@@ -98,6 +98,7 @@ const BOOKING_CAPABILITY_PATHS: Record<string, RegExp> = {
   book_journal_entries: /^\/journals\/(\{journalNumber\}|\d+)\/bookdraftentries$/,
   match_open_items: /^\/booked-entries\/match$/,
   book_invoice: /^\/invoices\/booked$/,
+  approve_time_entries: /^\/TimeEntries\/approve$/,
 };
 
 export function isBookingCapability(capability: string): boolean {

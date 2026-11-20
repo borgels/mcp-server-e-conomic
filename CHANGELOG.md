@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.15.0
+
+Projects and time in the embedded gateway (#67), and a fix of the project
+and time-entry bodies.
+
+- Fix: `upsert_project` and `create_time_entry` sent bodies in the classic
+  REST shape (`projectGroup: { projectGroupNumber }`, `project: {...}`,
+  `hours`, `description`), but projectsapi's `Project` and `TimeEntry` are
+  flat: `projectGroupNumber`, `customerNumber`, `responsibleEmployeeNumber`,
+  `isBarred`, `number`; and `projectNumber`, `activityNumber`,
+  `employeeNumber`, `numberOfHours`, `text`. Both now send that shape. A new
+  project needs only `name` and `projectGroupNumber`, as the API says. The
+  tools' input is unchanged.
+- Write tool `update_time_entry`: changes the date, hours, activity, project
+  or note of a time entry that is not approved (read-merge-write with its
+  `objectVersion`; read-only fields are not sent back). An approved entry is
+  refused.
+- Write tool `create_mileage_entry`: a trip in kilometres on a project for an
+  employee. `from` and `to` are free text and never logged.
+- Booking tool `approve_time_entries` (`booking: true`): approves time
+  entries, which books their cost on the project. e-conomic has no way to
+  undo an approval through its API, so it runs only when the host policy sets
+  `allowBooking`, as the other booking tools.
+- `project_overview` also reads mileage, mileage and time prices, a
+  project's activities, and what an employee may register on
+  (`Projects/allowed`, `Activities/allowed`, with the query the API needs).
+- No deletion of projects, time or mileage; `upsert_employee` is unchanged.
+- Checked against the demo agreement (SuperUser, with the projects module):
+  every project read answers. The demo agreement is read-only ("The license
+  is read-only"), so the writes are checked against projectsapi v1.1.1's
+  schemas and with recorded answers in the tests.
+
 ## 0.14.2
 
 Fix: a 401 on the voucher lookup of a booking goes on as e-conomic's own

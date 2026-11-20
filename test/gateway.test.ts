@@ -29,6 +29,9 @@ describe('e-conomic gateway export', () => {
       ['upsert_product', 'write', false],
       ['upsert_project', 'write', false],
       ['create_time_entry', 'write', false],
+      ['update_time_entry', 'write', false],
+      ['create_mileage_entry', 'write', false],
+      ['approve_time_entries', 'write', false],
       ['upsert_supplier', 'write', false],
       ['upsert_employee', 'write', false],
       ['upsert_account', 'destructive', false],
@@ -51,6 +54,9 @@ describe('e-conomic gateway export', () => {
       'upsert_product',
       'upsert_project',
       'create_time_entry',
+      'update_time_entry',
+      'create_mileage_entry',
+      'approve_time_entries',
       'upsert_supplier',
       'upsert_employee',
       'upsert_account',
@@ -529,12 +535,13 @@ describe('e-conomic gateway export', () => {
     expect(result.isError).toBeUndefined();
     const post = calls.find(call => call.method === 'POST');
     expect(post?.url).toContain('/projectsapi/v1.1.1/TimeEntries');
-    expect(post?.body).toMatchObject({
+    // projectsapi's TimeEntry is flat (#67).
+    expect(post?.body).toEqual({
       date: '2026-05-02',
-      hours: 4,
-      project: { projectNumber: 5001 },
-      activity: { activityNumber: 3 },
-      employee: { employeeNumber: 10 },
+      numberOfHours: 4,
+      projectNumber: 5001,
+      activityNumber: 3,
+      employeeNumber: 10,
     });
   });
 
@@ -562,12 +569,13 @@ describe('e-conomic gateway export', () => {
         const body = request.method === 'PUT' ? await request.clone().json() : undefined;
         calls.push({ method: request.method, url: request.url, body });
         if (request.method === 'GET') {
+          // projectsapi's Project is flat (#67).
           return Response.json({
-            projectNumber: 5001,
+            number: 5001,
             name: 'Servicekontrakt Nord',
-            projectGroup: { projectGroupNumber: 1 },
-            customer: { customerNumber: 1001 },
-            responsibleEmployee: { employeeNumber: 10 },
+            projectGroupNumber: 1,
+            customerNumber: 1001,
+            responsibleEmployeeNumber: 10,
             objectVersion: 'abc',
           });
         }
@@ -580,12 +588,14 @@ describe('e-conomic gateway export', () => {
     const put = calls.find(call => call.method === 'PUT');
     expect(put?.url).toContain('/projectsapi/v1.1.1/Projects');
     // Read-merge-write keeps objectVersion + existing refs while applying the change.
-    expect(put?.body).toMatchObject({
-      projectNumber: 5001,
+    expect(put?.body).toEqual({
+      number: 5001,
       name: 'Servicekontrakt Nord',
       description: 'Ny beskrivelse',
       objectVersion: 'abc',
-      responsibleEmployee: { employeeNumber: 10 },
+      projectGroupNumber: 1,
+      customerNumber: 1001,
+      responsibleEmployeeNumber: 10,
     });
   });
 
@@ -593,7 +603,7 @@ describe('e-conomic gateway export', () => {
     const gateway = createEconomicGateway({ appSecretToken: 'app', agreementGrantToken: 'grant', enableWrites: true });
     const result = await gateway.callTool('upsert_project', { name: 'Kun navn' });
     expect(result).toMatchObject({ isError: true });
-    expect(result.content[0]?.text).toMatch(/requires name, projectGroupNumber/);
+    expect(result.content[0]?.text).toMatch(/requires name and projectGroupNumber/);
   });
 
   it('serves deterministic project fixtures in contract mode', async () => {

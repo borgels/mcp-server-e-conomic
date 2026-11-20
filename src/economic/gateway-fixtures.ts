@@ -276,6 +276,35 @@ export function economicGatewayContractFixture(
     case 'create_time_entry':
       return createTimeEntryFixture(input);
 
+    case 'update_time_entry':
+      return {
+        text: 'Changed the contract time entry.',
+        structuredContent: {
+          mode: 'contract',
+          number: numberOr(input.timeEntryNumber, 0),
+          ...(typeof input.hours === 'number' ? { numberOfHours: input.hours } : {}),
+          ...(typeof input.date === 'string' ? { date: input.date } : {}),
+        },
+      };
+
+    case 'create_mileage_entry':
+      return {
+        text: 'Registered contract mileage.',
+        structuredContent: {
+          mode: 'contract',
+          number: 77,
+          projectNumber: numberOr(input.projectNumber, 0),
+          employeeNumber: numberOr(input.employeeNumber, 0),
+          distance: numberOr(input.distance, 0),
+        },
+      };
+
+    case 'approve_time_entries':
+      return {
+        text: 'Approved contract time entries.',
+        structuredContent: { mode: 'contract', action: 'approved', numbers: numberList(input.timeEntryNumbers) },
+      };
+
     case 'upsert_supplier':
       return upsertSupplierFixture(input);
 
