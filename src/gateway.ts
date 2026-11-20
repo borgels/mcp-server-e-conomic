@@ -3234,8 +3234,8 @@ async function upsertProject(
 }
 
 // Project time registration: POST /TimeEntries with project + activity +
-// employee + date + hours. The Projects API supports create and delete only
-// (no update), so this tool creates; deleting a registration is a separate op.
+// employee + date + hours. This tool only creates; update_time_entry changes an
+// entry that is not approved, and deleting a registration is never offered.
 async function createTimeEntry(
   client: EconomicClient,
   input: GatewayJsonObject,
