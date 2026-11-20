@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.2
+
+Fix: `product_overview` read products at a path that does not exist.
+
+- Products in the OpenAPI products service (`productsapi/v2.0.0`) are paged
+  at `/productspaged/paged`, as e-conomic's documentation for the products
+  API lists. `/products/paged` answers 404 for every agreement, so
+  `product_overview` failed on its default target (#61).
+- The catalog now records a service's own page path where it differs from
+  `/{resource}/paged` (`pagedPaths`), and the read resolution, the endpoint
+  allowlist and the `upstream` list in `economicToolCatalog` all use it.
+  `GET /products` and `GET /products/{number}` are unchanged.
+- Checked with GET requests against e-conomic's demo agreement: products,
+  product groups, price groups and sales prices in currencies all answer.
+
 ## 0.10.1
 
 Embedded gateway: the data is now in the text block too. Fix for embedders

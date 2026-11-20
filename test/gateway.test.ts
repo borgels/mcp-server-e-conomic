@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createEconomicGateway, economicGatewayTools } from '../src/gateway.js';
+import { createEconomicGateway, economicGatewayTools, economicToolCatalog, resolveEconomicReadTarget } from '../src/gateway.js';
 
 describe('e-conomic gateway export', () => {
   it('exposes curated gateway tools with writes gated off by default', () => {
@@ -443,6 +443,29 @@ describe('e-conomic gateway export', () => {
     const result = await gateway.callTool('project_overview', { resource: 'TimeEntries' });
     expect(result.isError).toBeUndefined();
     expect(requests[0]?.url).toContain('apis.e-conomic.com/projectsapi/v1.1.0/TimeEntries/paged');
+  });
+
+  it('pages products via /productspaged/paged in product_overview (#61)', async () => {
+    const requests: Request[] = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app',
+      agreementGrantToken: 'grant',
+      fetchImpl: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json([{ productNumber: '1' }]);
+      },
+    });
+
+    const result = await gateway.callTool('product_overview', {});
+    expect(result.isError).toBeUndefined();
+    expect(new URL(requests[0]!.url).pathname).toBe('/productsapi/v2.0.0/productspaged/paged');
+    expect(resolveEconomicReadTarget('product_overview', {})).toMatchObject({
+      ok: true,
+      target: { serviceId: 'products', resource: 'products', pathTemplate: '/productspaged/paged' },
+    });
+    const upstream = economicToolCatalog.find(tool => tool.name === 'product_overview')?.upstream ?? [];
+    expect(upstream.map(op => op.path)).toContain('/productsapi/v2.0.0/productspaged/paged');
+    expect(upstream.map(op => op.path)).not.toContain('/productsapi/v2.0.0/products/paged');
   });
 
   it('registers a project time entry via POST /TimeEntries when writes are enabled', async () => {
