@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.22.1
+
+Fix: the policy `maxAmount` treated identifiers as amounts (#46, by
+@carlhye).
+
+- `maxAmount` compared every number in a write's body with the limit, so a
+  customer number, account number or invoice number above the limit (an
+  ordinary 8-digit customer number, say) blocked every write for that
+  customer with "amount exceeds policy maxAmount". Now only numbers reached
+  through a monetary key are compared.
+- Monetary keys: `amount`, `total`, `price` (as before: `netAmount`,
+  `grossAmount`, `vatAmount`, `amountDefaultCurrency`, `totalNetAmount`,
+  `unitNetPrice`, `unitCostPrice`, `salesPrice`, `costPrice`,
+  `recommendedPrice`, ...) plus `remainder`, `balance` and `creditLimit`.
+  Arrays and objects under a monetary key inherit it
+  (`{ totals: { net: 60000 } }` is caught), except keys that are plainly not
+  money (`...Number`, `id`, `...Id`, `...Code`, `...Percentage`, `quantity`,
+  `...Rate`). A numeric string under a monetary key is compared like a
+  number. Negative amounts (credit notes) count by their absolute value.
+- Tests cover the bodies of draft invoices, quotes, orders, credit notes,
+  journal vouchers and payments, products and customers.
+- The embedded gateway sets no `maxAmount`, so it is unaffected; booking's
+  per-entry check in `bookings.ts` is unchanged.
+
 ## 0.22.0
 
 VAT set-up in the embedded gateway (#71). Additive for embedders.
