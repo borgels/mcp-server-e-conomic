@@ -110,9 +110,13 @@ export interface EconomicGatewayOptions {
  * offered).
  *
  * What no policy can turn on: changes to bank details (supplier bank account,
- * payment details, the company's own record), deletion (no gateway tool sends
- * DELETE), and the paths the built-in write policy denies outside the booking
- * tools (journal booking without explicit entries, VAT, webhooks).
+ * payment details, the company's own record), the paths the built-in write
+ * policy denies outside the booking tools (VAT, payment), and the fixed fence
+ * in `GATEWAY_FENCE` (src/economic/fence.ts), checked in the HTTP client right
+ * before any request is sent: deletion, the company's own record, bank
+ * information, users, access and settings, webhooks, booking a whole journal,
+ * accounting years and the chart of accounts. `upsert_account` is therefore
+ * always refused by the gateway, also when a host offers it.
  */
 export interface EconomicHostPolicy {
   /** Allow the write-risk tools. Default false. */
@@ -383,9 +387,9 @@ const upsertProductInput = {
 // Projects add-on (projectsapi, OpenAPI). e-conomic upserts a project via the
 // collection: POST /Projects creates, PUT /Projects (full object incl. its
 // number) updates - item-level PUT returns 405. responsibleEmployee references
-// a Projects-add-on employee, not a REST employee. additionalFields is a
-// passthrough for less-common attributes so the tool covers the resource
-// without enumerating every field.
+// a Projects-add-on employee, not a REST employee. Only the fields below are
+// sent: there is no passthrough of other fields (with a broad app role it
+// would reach any attribute e-conomic accepts).
 const upsertProjectInput = {
   type: 'object',
   properties: {
@@ -399,11 +403,6 @@ const upsertProjectInput = {
     responsibleEmployeeNumber: { type: 'number', description: 'Responsible Projects employee number. Required when creating.' },
     description: { type: 'string' },
     barred: { type: 'boolean', description: 'Bar the project from new registrations.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional Projects API fields to set on the project (passthrough).',
-      additionalProperties: true,
-    },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -418,11 +417,6 @@ const createTimeEntryInput = {
     date: { type: 'string', description: 'Registration date (ISO 8601 date).' },
     hours: { type: 'number', description: 'Number of hours to register.' },
     description: { type: 'string', description: 'Optional note stored on the registration.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional TimeEntries API fields (passthrough).',
-      additionalProperties: true,
-    },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -448,11 +442,7 @@ const upsertSupplierInput = {
     city: { type: 'string' },
     country: { type: 'string' },
     corporateIdentificationNumber: { type: 'string', description: 'Company registration number (e.g. CVR).' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional supplier fields to set (passthrough). Bank fields (bankAccount, remittanceAdvice, IBAN, SWIFT/BIC, registration number, payment details) are refused.',
-      additionalProperties: true,
-    },
+    phone: { type: 'string' },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -468,11 +458,6 @@ const upsertEmployeeInput = {
     },
     name: { type: 'string', description: 'Employee name. Required when creating.' },
     barred: { type: 'boolean', description: 'Bar the employee from new registrations.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional Projects Employee fields (passthrough).',
-      additionalProperties: true,
-    },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -480,8 +465,8 @@ const upsertEmployeeInput = {
 // Chart-of-accounts write (classic REST /accounts). Elevated: editing the CoA
 // is a structural change, so this is risk 'destructive' and the hosting control
 // plane gates it behind approval. accountType-specific required fields vary, so
-// only the always-required keys are validated here; additionalFields carries the
-// rest and e-conomic validates on write.
+// only the always-required keys are validated here and e-conomic validates on
+// write. No other fields are sent.
 const upsertAccountInput = {
   type: 'object',
   properties: {
@@ -496,11 +481,6 @@ const upsertAccountInput = {
     },
     blockDirectEntries: { type: 'boolean', description: 'Block direct entries on the account.' },
     vatCode: { type: 'string', description: 'Default VAT code for the account.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional account fields (accountType-specific, passthrough).',
-      additionalProperties: true,
-    },
   },
   required: ['accountNumber'],
   additionalProperties: false,
@@ -1125,6 +1105,8 @@ const TOOL_SPECS: ToolSpec[] = [
 
 const SPEC_BY_NAME = new Map(TOOL_SPECS.map(spec => [spec.name, spec]));
 
+export { GATEWAY_FENCE, fenceRule, type FenceRule } from './economic/fence.js';
+
 export const economicGatewayTools: GatewayToolDefinition[] = TOOL_SPECS.map(spec => ({
   name: spec.name,
   title: spec.title,
@@ -1539,6 +1521,8 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     // Never read the environment on the embedded path.
     credentialEnv: {},
+    // The fixed fence (GATEWAY_FENCE) applies to every request, whatever the policy.
+    fence: true,
   };
   // Validates the base URLs at creation.
   new EconomicClient({ ...clientOptions, redactor: redactor.fork() });
@@ -1585,14 +1569,15 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           }
           target = resolution.target;
         } else {
-          const unknown = unknownInputFields(spec, args);
-          if (unknown.length > 0) {
-            return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
-          }
           // Bank details are never changed, whatever the policy (also in contract mode).
           const bankFields = bankFieldPaths(args);
           if (bankFields.length > 0) {
             return errorResult(`Write blocked: ${BANK_FIELDS_REFUSED} Fields: ${bankFields.slice(0, 10).join(', ')}.`);
+          }
+          // Only the fields in the tool's schema are accepted; nothing is passed through.
+          const unknown = unknownInputFields(spec, args);
+          if (unknown.length > 0) {
+            return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
           }
         }
 
@@ -1617,10 +1602,11 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
         callRedactor.add(grant);
         const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
 
-        if (target) {
-          return await readResult(client, spec.name, target, args);
-        }
-        return await writeResult(client, spec.name, args, writePolicy);
+        const result = target
+          ? await readResult(client, spec.name, target, args)
+          : await writeResult(client, spec.name, args, writePolicy);
+        // Defence in depth: a token e-conomic echoes in an answer never reaches the caller.
+        return redactResult(result, callRedactor);
       } catch (error) {
         return errorResult(formatUnknownError(error, callRedactor));
       }
@@ -2069,6 +2055,7 @@ const SUPPLIER_FLAT_FIELDS = [
   'city',
   'country',
   'corporateIdentificationNumber',
+  'phone',
 ] as const;
 
 // Suppliers mirror customers on the classic REST surface: create via POST, full-
@@ -2086,7 +2073,6 @@ async function upsertSupplier(
       flat[field] = value;
     }
   }
-  const additional = objectValue(input.additionalFields) ?? {};
   const supplierGroupNumber = numberValue(input.supplierGroupNumber);
   const paymentTermsNumber = numberValue(input.paymentTermsNumber);
   const vatZoneNumber = numberValue(input.vatZoneNumber);
@@ -2110,7 +2096,7 @@ async function upsertSupplier(
       );
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat };
+    const body: GatewayJsonObject = { ...flat };
     applyRefs(body);
 
     const denied = writePolicyDenial(policy, { capability: 'upsert_supplier', method: 'POST', path: '/suppliers', body });
@@ -2136,7 +2122,7 @@ async function upsertSupplier(
     throw error;
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat };
+  const body: GatewayJsonObject = { ...existing, ...flat };
   applyRefs(body);
 
   const denied = writePolicyDenial(policy, {
@@ -2174,14 +2160,13 @@ async function upsertEmployee(
   if (typeof input.barred === 'boolean') {
     flat.barred = input.barred;
   }
-  const additional = objectValue(input.additionalFields) ?? {};
 
   if (employeeNumber === undefined) {
     if (!flat.name) {
       return errorResult('Creating an employee requires a name.');
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat };
+    const body: GatewayJsonObject = { ...flat };
     const denied = writePolicyDenial(policy, {
       capability: 'upsert_employee',
       serviceId: 'projects',
@@ -2216,7 +2201,7 @@ async function upsertEmployee(
     throw error;
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat, employeeNumber };
+  const body: GatewayJsonObject = { ...existing, ...flat, employeeNumber };
   const denied = writePolicyDenial(policy, {
     capability: 'upsert_employee',
     serviceId: 'projects',
@@ -2266,7 +2251,6 @@ async function upsertAccount(
   if (typeof input.blockDirectEntries === 'boolean') {
     flat.blockDirectEntries = input.blockDirectEntries;
   }
-  const additional = objectValue(input.additionalFields) ?? {};
 
   let existing: GatewayJsonObject | undefined;
   try {
@@ -2282,7 +2266,7 @@ async function upsertAccount(
       return errorResult('Creating an account requires accountNumber, name, and accountType.');
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat, accountNumber };
+    const body: GatewayJsonObject = { ...flat, accountNumber };
     const denied = writePolicyDenial(policy, { capability: 'upsert_account', method: 'POST', path: '/accounts', body });
     if (denied) {
       return denied;
@@ -2296,7 +2280,7 @@ async function upsertAccount(
     }));
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat };
+  const body: GatewayJsonObject = { ...existing, ...flat };
   const denied = writePolicyDenial(policy, {
     capability: 'upsert_account',
     method: 'PUT',
@@ -2377,7 +2361,6 @@ async function upsertProject(
   if (typeof input.barred === 'boolean') {
     flat.barred = input.barred;
   }
-  const additional = objectValue(input.additionalFields) ?? {};
   const projectGroupNumber = numberValue(input.projectGroupNumber);
   const customerNumber = numberValue(input.customerNumber);
   const responsibleEmployeeNumber = numberValue(input.responsibleEmployeeNumber);
@@ -2401,7 +2384,7 @@ async function upsertProject(
       );
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat };
+    const body: GatewayJsonObject = { ...flat };
     applyRefs(body);
 
     const denied = writePolicyDenial(policy, {
@@ -2438,7 +2421,7 @@ async function upsertProject(
     throw error;
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat, projectNumber };
+  const body: GatewayJsonObject = { ...existing, ...flat, projectNumber };
   applyRefs(body);
 
   const denied = writePolicyDenial(policy, {
@@ -2479,9 +2462,7 @@ async function createTimeEntry(
     return errorResult('create_time_entry requires projectNumber, activityNumber, employeeNumber, date, and hours.');
   }
 
-  const additional = objectValue(input.additionalFields) ?? {};
   const body: GatewayJsonObject = {
-    ...additional,
     date,
     hours,
     project: { projectNumber },
@@ -2952,6 +2933,27 @@ function jsonResult(text: string, structuredContent: unknown): GatewayToolResult
     content: [{ type: 'text', text: `${text}\n\n${JSON.stringify(data)}` }],
     structuredContent: data,
   };
+}
+
+/** The result with every string (text and structured content) passed through the redactor. */
+function redactResult(result: GatewayToolResult, redactor: SecretRedactor): GatewayToolResult {
+  const redacted: GatewayToolResult = {
+    ...result,
+    content: result.content.map(block => ({ ...block, text: redactor.redact(block.text) })),
+  };
+  if (result.structuredContent !== undefined) {
+    redacted.structuredContent = redactJson(result.structuredContent, redactor);
+  }
+  return redacted;
+}
+
+function redactJson(value: GatewayJsonValue, redactor: SecretRedactor): GatewayJsonValue {
+  if (typeof value === 'string') return redactor.redact(value);
+  if (Array.isArray(value)) return value.map(item => redactJson(item, redactor));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [redactor.redact(key), redactJson(nested, redactor)]));
+  }
+  return value;
 }
 
 function errorResult(text: string): GatewayToolResult {

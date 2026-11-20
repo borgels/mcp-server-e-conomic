@@ -418,7 +418,7 @@ Write gateway tools, disabled by default:
 | `create_time_entry` | write | Project time |
 | `upsert_supplier` | write | Supplier master data; bank fields are refused |
 | `upsert_employee` | write | Projects add-on employee |
-| `upsert_account` | destructive | Chart of accounts |
+| `upsert_account` | destructive | Chart of accounts. Always refused by the gateway's fence (below) |
 | `create_journal_entries` | write | One voucher with draft lines in a journal (kassekladde): ledger lines and supplier invoices. Not booked |
 | `register_payment` | write | A customer or supplier payment as a draft journal line. Not booked; records the payment, does not move money |
 | `book_journal_entries` | write, booking | Books explicit draft entries (by entry or voucher numbers, max 25) with the booking guardrails: entries must exist in the journal; vouchers need an attached document unless `requireVoucher: false` |
@@ -428,6 +428,19 @@ Write gateway tools, disabled by default:
 In the embedding, one call is one change: there is no prepare/commit step,
 because the host logs the change (`resolveEconomicChange`) before it calls.
 The prepare and commit tools remain on the full MCP server surface.
+
+The fence (`GATEWAY_FENCE`, exported): requests the gateway never sends,
+whatever the host policy or the app's role at e-conomic. It is checked in the
+HTTP client right before a request goes out, so a new tool cannot open one by
+mistake: every `DELETE`, any path with a `delete`/`deletebulk` segment, and
+writes to the company record (`/self`, including bank information, the user
+and settings), anything with `bank` in the path, users, app roles, agreements
+and settings, webhooks, booking a whole journal (`/book`,
+`bookWithDateInterval`; explicit entries go through `bookdraftentries`),
+accounting years and the chart of accounts (`/accounts`). Write tools accept
+only the fields in their schema; nothing is passed through to e-conomic. The
+credential headers are set by the client and cannot be given with a request,
+and both tokens are redacted from every error and every answer.
 
 Host policy (`policy` option, `EconomicHostPolicy`; every field optional,
 checked at creation, applies in contract mode too):

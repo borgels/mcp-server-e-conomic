@@ -295,6 +295,12 @@ describe('declared upstream requests', () => {
       });
       for (const input of inputsFor(entry.name)) {
         const result = await gateway.callTool(entry.name, input, context('grant-token-for-tests'));
+        if (entry.name === 'upsert_account') {
+          // The chart of accounts is behind the fixed fence: refused before the write is sent.
+          expect(result.isError, JSON.stringify(input)).toBe(true);
+          expect(result.content[0]?.text).toContain('gateway fence');
+          continue;
+        }
         expect(result.isError, `${entry.name} ${JSON.stringify(input)}: ${result.content[0]?.text}`).toBeUndefined();
         expectDataInText(result, `${entry.name} ${JSON.stringify(input)}`);
       }
