@@ -16,6 +16,11 @@ export interface EconomicService {
    * answers 404.
    */
   pagedPaths?: Record<string, string>;
+  /**
+   * OpenAPI resources without a page endpoint: the collection is read at
+   * `/{resource}` only (bookedEntriesapi has no `/booked-entries/matched-pairs/paged`).
+   */
+  unpaged?: string[];
 }
 
 export interface EndpointOperation {
@@ -92,42 +97,45 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     id: 'products',
     name: 'Products',
     surface: 'openapi',
-    servicePath: 'productsapi/v2.0.0',
-    version: '2.0.0',
-    resources: ['pricegroups', 'productgroups', 'products', 'salespriceincurrencies', 'specialprices'],
+    servicePath: 'productsapi/v2.1.0',
+    version: '2.1.0',
+    // Special prices are not a top-level resource: they live under a price
+    // group (/pricegroups/{n}/specialprices), so /specialprices answers 404 (#63).
+    resources: ['pricegroups', 'productgroups', 'products', 'salespriceincurrencies'],
     pagedPaths: { products: '/productspaged/paged' },
   },
   {
     id: 'accounts',
     name: 'Accounts',
     surface: 'openapi',
-    servicePath: 'accountsapi/v7.0.0',
-    version: '7.0.0',
+    servicePath: 'accountsapi/v7.0.1',
+    version: '7.0.1',
     resources: ['Accounts', 'KeyFigureCodes', 'TotalIntervals'],
   },
   {
     id: 'projects',
     name: 'Projects',
     surface: 'openapi',
-    servicePath: 'projectsapi/v1.1.0',
-    version: '1.1.0',
+    servicePath: 'projectsapi/v1.1.1',
+    version: '1.1.1',
     resources: ['Projects', 'ProjectGroups', 'CostTypes', 'ProjectStatuses', 'Employees', 'EmployeeGroups', 'TimeEntries', 'Activities', 'ActivityGroups'],
   },
   {
     id: 'journals',
     name: 'Journals',
     surface: 'openapi',
-    // v15 adds POST /journals/{n}/bookdraftentries (booking of explicit entries).
-    servicePath: 'journalsapi/v15.0.0',
-    version: '15.0.0',
+    // v15 added POST /journals/{n}/bookdraftentries (booking of explicit entries);
+    // v16 only corrects the documentation and adds an error code.
+    servicePath: 'journalsapi/v16.0.1',
+    version: '16.0.1',
     resources: ['draft-entries', 'journals', 'accruals'],
   },
   {
     id: 'q2c',
     name: 'Quote to Cash',
     surface: 'openapi',
-    servicePath: 'q2capi/v5.1.0',
-    version: '5.1.0',
+    servicePath: 'q2capi/v7.0.0',
+    version: '7.0.0',
     resources: ['invoices/drafts', 'invoices/booked/lines', 'orders', 'quotes'],
   },
   {
@@ -150,25 +158,26 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     id: 'dimensions',
     name: 'Dimensions',
     surface: 'openapi',
-    servicePath: 'dimensionsapi/v5.3.0',
-    version: '5.3.0',
+    servicePath: 'dimensionsapi/v5.3.1',
+    version: '5.3.1',
     resources: ['dimensions', 'values', 'distributions', 'dimension-data/accounts'],
   },
   {
     id: 'documents',
     name: 'Documents',
     surface: 'openapi',
-    servicePath: 'documentsapi/v3.0.1',
-    version: '3.0.1',
+    servicePath: 'documentsapi/v4.0.2',
+    version: '4.0.2',
     resources: ['AttachedDocuments'],
   },
   {
     id: 'booked-entries',
     name: 'Booked Entries',
     surface: 'openapi',
-    servicePath: 'bookedEntriesapi/v4.0.0',
-    version: '4.0.0',
+    servicePath: 'bookedEntriesapi/v7.0.0',
+    version: '7.0.0',
     resources: ['booked-entries', 'booked-entries/matched-pairs'],
+    unpaged: ['booked-entries/matched-pairs'],
   },
   {
     id: 'accounting-years',
@@ -240,8 +249,12 @@ export function findService(serviceId: string): EconomicService {
   return service;
 }
 
-/** The page endpoint of an OpenAPI resource: `/{resource}/paged` unless the service says otherwise. */
-export function pagedPathTemplate(service: EconomicService, resource: string): string {
+/**
+ * The page endpoint of an OpenAPI resource: `/{resource}/paged` unless the
+ * service says otherwise, or undefined when the resource has none.
+ */
+export function pagedPathTemplate(service: EconomicService, resource: string): string | undefined {
+  if (service.unpaged?.includes(resource)) return undefined;
   return service.pagedPaths?.[resource] ?? `/${resource}/paged`;
 }
 
@@ -262,7 +275,8 @@ export function resolveReadPathTemplate(
   }
 
   const service = findService(serviceId);
-  return options.paged && service.surface === 'openapi' ? pagedPathTemplate(service, resource) : `/${resource}`;
+  const paged = options.paged && service.surface === 'openapi' ? pagedPathTemplate(service, resource) : undefined;
+  return paged ?? `/${resource}`;
 }
 
 export function findEndpoint(
@@ -367,16 +381,19 @@ function buildEndpointOperations(): EndpointOperation[] {
         continue;
       }
 
-      operations.push(
-        {
-          id: endpointId(service.id, 'GET', pagedPathTemplate(service, resource)),
+      const paged = pagedPathTemplate(service, resource);
+      if (paged) {
+        operations.push({
+          id: endpointId(service.id, 'GET', paged),
           serviceId: service.id,
           surface: service.surface,
           method: 'GET',
-          pathTemplate: pagedPathTemplate(service, resource),
+          pathTemplate: paged,
           summary: `Retrieve a page of ${resource}.`,
           risk: 'read',
-        },
+        });
+      }
+      operations.push(
         {
           id: endpointId(service.id, 'GET', `/${resource}`),
           serviceId: service.id,

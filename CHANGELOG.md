@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.3
+
+The catalog uses the OpenAPI versions e-conomic publishes (apis.e-conomic.com,
+read 20.11.2026), and two read targets that answered 404 are fixed (#72).
+
+- journalsapi v15.0.0 -> v16.0.1, q2capi v5.1.0 -> v7.0.0, bookedEntriesapi
+  v4.0.0 -> v7.0.0, documentsapi v3.0.1 -> v4.0.2, accountsapi v7.0.0 ->
+  v7.0.1, dimensionsapi v5.3.0 -> v5.3.1, productsapi v2.0.0 -> v2.1.0,
+  projectsapi v1.1.0 -> v1.1.1. The changelogs of these versions only add
+  fields, error codes and endpoints, or correct documentation; no endpoint the
+  server uses was removed or renamed. The old versions still answer and send no
+  deprecation or sunset header.
+- `accounting_entries` reads `booked-entries/matched-pairs` at
+  `/booked-entries/matched-pairs`: the API has no `/paged` endpoint for it.
+  The catalog marks such resources as `unpaged`.
+- `product_overview` no longer offers `products:specialprices`. Special prices
+  are not a top-level resource in productsapi; `/specialprices/paged` answered
+  404 (#63).
+- `npm run check:demo` calls every read tool of `./gateway` on every target it
+  may read against e-conomic's public demo agreement (tokens `demo`), and
+  prints one line per call, never the data. All targets answer with v0.10.3.
+
 ## 0.10.2
 
 Fix: `product_overview` read products at a path that does not exist.

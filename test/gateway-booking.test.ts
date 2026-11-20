@@ -285,7 +285,7 @@ describe('booking', () => {
     expect(result.content[0]?.text.split('\n\n')[0]).toBe('Booked 2 entries in journal 1.');
     expect(result.content[0]?.text).toBe(`Booked 2 entries in journal 1.\n\n${JSON.stringify(result.structuredContent)}`);
     expect(writes()).toEqual([
-      { method: 'POST', path: '/journalsapi/v15.0.0/journals/1/bookdraftentries', body: { entryNumbers: [11, 12] } },
+      { method: 'POST', path: '/journalsapi/v16.0.1/journals/1/bookdraftentries', body: { entryNumbers: [11, 12] } },
     ]);
   });
 
@@ -328,7 +328,7 @@ describe('booking', () => {
     const result = await gateway.callTool('match_open_items', { entryIds: [800001, 800002] }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
     expect(writes()).toEqual([
-      { method: 'POST', path: '/bookedEntriesapi/v4.0.0/booked-entries/match', body: { entryIds: [800001, 800002] } },
+      { method: 'POST', path: '/bookedEntriesapi/v7.0.0/booked-entries/match', body: { entryIds: [800001, 800002] } },
     ]);
     const one = await gateway.callTool('match_open_items', { entryIds: [800001] }, context);
     expect(one.isError).toBe(true);
