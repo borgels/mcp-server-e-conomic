@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkPolicy } from '../src/economic/policy.js';
+import { basePolicy, checkPolicy } from '../src/economic/policy.js';
 import { prepareOperation, verifyPreparedOperation } from '../src/economic/operations.js';
 
 const originalWrites = process.env.ECONOMIC_ENABLE_WRITES;
@@ -37,6 +37,18 @@ describe('write policy', () => {
         body: { name: 'Acme' },
       }),
     ).toMatchObject({ allowed: false, reason: 'writes disabled' });
+  });
+
+  it('never lets a raw call approve time entries, with or without booking; only the curated tool with booking', () => {
+    const raw = { capability: 'economic_call_endpoint', serviceId: 'projects', method: 'POST' as const, path: '/TimeEntries/approve', body: { numbers: [5] } };
+    for (const bookingEnabled of [false, true]) {
+      const policy = { ...basePolicy(), writesEnabled: true, bookingEnabled };
+      expect(checkPolicy(raw, policy), String(bookingEnabled)).toMatchObject({ allowed: false });
+      expect(checkPolicy({ ...raw, path: '/timeentries/approve' }, policy), String(bookingEnabled)).toMatchObject({ allowed: false });
+    }
+    const curated = { ...raw, capability: 'approve_time_entries' };
+    expect(checkPolicy(curated, { ...basePolicy(), writesEnabled: true, bookingEnabled: false })).toMatchObject({ allowed: false });
+    expect(checkPolicy(curated, { ...basePolicy(), writesEnabled: true, bookingEnabled: true })).toMatchObject({ allowed: true });
   });
 
   it('prepares stable hashable dry-run operations', () => {

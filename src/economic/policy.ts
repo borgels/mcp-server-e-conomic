@@ -44,6 +44,9 @@ export function basePolicy(): EconomicPolicy {
       '/journals/.*/book',
       '/entries/draft/.*/book',
       '/booked-entries/match',
+      // Approving time books its cost on the project and cannot be undone: only
+      // the curated approve_time_entries tool reaches it, with booking enabled.
+      '/TimeEntries/approve',
       // Classic REST books a draft invoice by POSTing it to /invoices/booked —
       // booking is irreversible, so it is denied alongside the journal book paths.
       '/invoices/booked',
