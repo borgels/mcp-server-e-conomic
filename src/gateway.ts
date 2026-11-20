@@ -4061,12 +4061,16 @@ async function setEntryDimensions(
   const current = items.find(item =>
     item.dimensionNumber === dimensionNumber && Object.entries(keys).every(([field, value]) => item[field] === value));
 
+  // A PUT needs the version read; without one nothing is sent (e-conomic would refuse it anyway).
+  if (current && (typeof current.objectVersion !== 'string' || current.objectVersion === '')) {
+    return errorResult(`e-conomic did not give the version of dimension ${dimensionNumber} on ${where}, so it was not changed. Try again.`);
+  }
   const body: GatewayJsonObject = {
     ...keys,
     dimensionNumber,
     dimensionKey,
     isDistribution: input.isDistribution === true,
-    ...(current && typeof current.objectVersion === 'string' ? { objectVersion: current.objectVersion } : {}),
+    ...(current ? { objectVersion: current.objectVersion as string } : {}),
   };
   const method = current ? 'PUT' : 'POST';
   const denied = writePolicyDenial(policy, { capability: 'set_entry_dimensions', serviceId: 'dimensions', method, path, body });
