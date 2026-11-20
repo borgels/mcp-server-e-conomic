@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.11.0
+
+Embedded gateway: a fixed fence for a broad app role (SuperUser), #73.
+
+- **Fence.** `GATEWAY_FENCE` (src/economic/fence.ts, exported from
+  `./gateway`) lists requests the gateway never sends, whatever the host
+  policy: every `DELETE` and `delete`/`deletebulk` path, writes to `/self`
+  (company record, bank information, user, settings), any write with `bank`
+  in the path, users, app roles, agreements and settings, webhooks, booking a
+  whole journal (`/book`, `bookWithDateInterval`), accounting years and the
+  chart of accounts. It is checked in the HTTP client right before `fetch`,
+  on the path decoded and lower-cased. The standalone server does not use it.
+- **Breaking:** `upsert_account` is always refused by the gateway (the chart
+  of accounts is behind the fence), before any request and in contract mode
+  too: a write tool whose every write is fenced is refused up front. Hosts
+  that already disabled it see no change.
+- **Breaking:** `additionalFields` is removed from `upsert_project`,
+  `create_time_entry`, `upsert_supplier`, `upsert_employee` and
+  `upsert_account`. Write tools accept only the fields in their schema;
+  nothing is passed through. `upsert_supplier` gains `phone`. Bank fields are
+  still refused first, with the bank message.
+- The credential headers (`X-AppSecretToken`, `X-AgreementGrantToken`) are
+  set after any headers given with a request, and a request that tries to
+  give either (in any letter case) is refused before it is sent.
+- Every gateway result, early refusals included, passes through the call's
+  redactor (the call's token is registered before any check), so a token
+  e-conomic echoes in an answer, or one given in the input, never reaches the
+  caller. Structured content is redacted as data and the text block's JSON is
+  written again from it, so it stays valid JSON equal to the structured
+  content.
+- Tests: each fenced path is refused before sending, every declared upstream
+  request passes the fence and is a catalog endpoint, no tool takes a method,
+  path or URL, every write schema is closed, and both tokens are redacted
+  from errors and answers that repeat them.
 ## 0.10.3
 
 The catalog uses the OpenAPI versions e-conomic publishes (apis.e-conomic.com,

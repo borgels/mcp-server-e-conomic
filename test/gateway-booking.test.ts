@@ -357,26 +357,26 @@ describe('bank details are never changed', () => {
       { registrationNumber: '9999' },
       { nested: { BankAccountNumber: '1' } },
     ];
-    for (const additionalFields of fields) {
+    for (const bankField of fields) {
       const bases: GatewayJsonObject[] = [
         { name: 'Ny leverandør', currency: 'DKK', supplierGroupNumber: 1, paymentTermsNumber: 1, vatZoneNumber: 1 },
         { supplierNumber: 2001 },
       ];
       for (const base of bases) {
-        const result = await gateway.callTool('upsert_supplier', { ...base, additionalFields }, context);
-        expect(result.isError, JSON.stringify(additionalFields)).toBe(true);
+        const result = await gateway.callTool('upsert_supplier', { ...base, ...bankField }, context);
+        expect(result.isError, JSON.stringify(bankField)).toBe(true);
         expect(result.content[0]?.text).toContain('Bank details');
       }
     }
     expect(requests).toEqual([]);
 
     const contract = createEconomicGateway({ contractMode: true, enableWrites: true });
-    expect((await contract.callTool('upsert_supplier', { supplierNumber: 2001, additionalFields: { bankAccount: '1' } })).isError).toBe(true);
+    expect((await contract.callTool('upsert_supplier', { supplierNumber: 2001, bankAccount: '1' })).isError).toBe(true);
   });
 
   it('updates a supplier and keeps its bank details as they are', async () => {
     const { gateway, writes: sent } = fakeEconomic(writes);
-    const result = await gateway.callTool('upsert_supplier', { supplierNumber: 2001, email: 'ny@example.test', additionalFields: { phone: '12345678' } }, context);
+    const result = await gateway.callTool('upsert_supplier', { supplierNumber: 2001, email: 'ny@example.test', phone: '12345678' }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
     expect(sent()[0]).toMatchObject({
       method: 'PUT',

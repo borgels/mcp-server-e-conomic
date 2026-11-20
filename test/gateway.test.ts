@@ -669,7 +669,7 @@ describe('e-conomic gateway export', () => {
     expect(employee.structuredContent).toMatchObject({ mode: 'contract', action: 'updated', employeeNumber: 12 });
   });
 
-  it('creates a ledger account and updates via read-merge-write', async () => {
+  it('refuses a ledger account at the fence, before any write', async () => {
     const calls: Array<{ method: string; url: string; body?: unknown }> = [];
     const gateway = createEconomicGateway({
       appSecretToken: 'app',
@@ -691,13 +691,13 @@ describe('e-conomic gateway export', () => {
       name: 'Ny omsaetningskonto',
       accountType: 'profitAndLoss',
     });
-    expect(result.isError).toBeUndefined();
-    const post = calls.find(call => call.method === 'POST');
-    expect(post?.url).toContain('/accounts');
-    expect(post?.body).toMatchObject({ accountNumber: 4010, name: 'Ny omsaetningskonto', accountType: 'profitAndLoss' });
+    // The chart of accounts is behind the gateway's fixed fence, whatever the host policy.
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('gateway fence');
+    expect(calls.filter(call => call.method !== 'GET')).toEqual([]);
   });
 
-  it('rejects account creation without name/accountType', async () => {
+  it('refuses account creation at the fence, also without name/accountType', async () => {
     const gateway = createEconomicGateway({
       appSecretToken: 'app',
       agreementGrantToken: 'grant',
@@ -712,7 +712,8 @@ describe('e-conomic gateway export', () => {
     });
     const result = await gateway.callTool('upsert_account', { accountNumber: 4011 });
     expect(result).toMatchObject({ isError: true });
-    expect(result.content[0]?.text).toMatch(/requires accountNumber, name, and accountType/);
+    // Behind the gateway fence, before any validation of the fields.
+    expect(result.content[0]?.text).toContain('gateway fence');
   });
 
   it('blocks account writes unless the embedder enables writes', async () => {

@@ -295,10 +295,17 @@ describe('declared upstream requests', () => {
       });
       for (const input of inputsFor(entry.name)) {
         const result = await gateway.callTool(entry.name, input, context('grant-token-for-tests'));
+        if (entry.name === 'upsert_account') {
+          // The chart of accounts is behind the fixed fence: refused before the write is sent.
+          expect(result.isError, JSON.stringify(input)).toBe(true);
+          expect(result.content[0]?.text).toContain('gateway fence');
+          continue;
+        }
         expect(result.isError, `${entry.name} ${JSON.stringify(input)}: ${result.content[0]?.text}`).toBeUndefined();
         expectDataInText(result, `${entry.name} ${JSON.stringify(input)}`);
       }
-      expect(requests.length, entry.name).toBeGreaterThan(0);
+      // upsert_account is refused before any request (the chart of accounts is behind the fence).
+      if (entry.name !== 'upsert_account') expect(requests.length, entry.name).toBeGreaterThan(0);
       for (const request of requests) {
         const url = new URL(request.url);
         const ok = declared.some(operation => operation.method === request.method && operation.pattern.test(url.pathname));

@@ -14,6 +14,7 @@ import { encodePathParam } from './economic/path-params.js';
 import { basePolicy, checkPolicy, type EconomicPolicy } from './economic/policy.js';
 import { assertMatchEntryIds, draftEntryNumbersForVouchers, validateBooking } from './economic/bookings.js';
 import { BANK_FIELDS_REFUSED, bankFieldPaths, changedBankFields } from './economic/bank-fields.js';
+import { fenceRule } from './economic/fence.js';
 import { EconomicHttpError, SecretRedactor, formatUnknownError } from './errors.js';
 import {
   economicGatewayContractEntity,
@@ -110,9 +111,13 @@ export interface EconomicGatewayOptions {
  * offered).
  *
  * What no policy can turn on: changes to bank details (supplier bank account,
- * payment details, the company's own record), deletion (no gateway tool sends
- * DELETE), and the paths the built-in write policy denies outside the booking
- * tools (journal booking without explicit entries, VAT, webhooks).
+ * payment details, the company's own record), the paths the built-in write
+ * policy denies outside the booking tools (VAT, payment), and the fixed fence
+ * in `GATEWAY_FENCE` (src/economic/fence.ts), checked in the HTTP client right
+ * before any request is sent: deletion, the company's own record, bank
+ * information, users, access and settings, webhooks, booking a whole journal,
+ * accounting years and the chart of accounts. `upsert_account` is therefore
+ * always refused by the gateway, also when a host offers it.
  */
 export interface EconomicHostPolicy {
   /** Allow the write-risk tools. Default false. */
@@ -383,9 +388,9 @@ const upsertProductInput = {
 // Projects add-on (projectsapi, OpenAPI). e-conomic upserts a project via the
 // collection: POST /Projects creates, PUT /Projects (full object incl. its
 // number) updates - item-level PUT returns 405. responsibleEmployee references
-// a Projects-add-on employee, not a REST employee. additionalFields is a
-// passthrough for less-common attributes so the tool covers the resource
-// without enumerating every field.
+// a Projects-add-on employee, not a REST employee. Only the fields below are
+// sent: there is no passthrough of other fields (with a broad app role it
+// would reach any attribute e-conomic accepts).
 const upsertProjectInput = {
   type: 'object',
   properties: {
@@ -399,11 +404,6 @@ const upsertProjectInput = {
     responsibleEmployeeNumber: { type: 'number', description: 'Responsible Projects employee number. Required when creating.' },
     description: { type: 'string' },
     barred: { type: 'boolean', description: 'Bar the project from new registrations.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional Projects API fields to set on the project (passthrough).',
-      additionalProperties: true,
-    },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -418,11 +418,6 @@ const createTimeEntryInput = {
     date: { type: 'string', description: 'Registration date (ISO 8601 date).' },
     hours: { type: 'number', description: 'Number of hours to register.' },
     description: { type: 'string', description: 'Optional note stored on the registration.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional TimeEntries API fields (passthrough).',
-      additionalProperties: true,
-    },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -448,11 +443,7 @@ const upsertSupplierInput = {
     city: { type: 'string' },
     country: { type: 'string' },
     corporateIdentificationNumber: { type: 'string', description: 'Company registration number (e.g. CVR).' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional supplier fields to set (passthrough). Bank fields (bankAccount, remittanceAdvice, IBAN, SWIFT/BIC, registration number, payment details) are refused.',
-      additionalProperties: true,
-    },
+    phone: { type: 'string' },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -468,11 +459,6 @@ const upsertEmployeeInput = {
     },
     name: { type: 'string', description: 'Employee name. Required when creating.' },
     barred: { type: 'boolean', description: 'Bar the employee from new registrations.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional Projects Employee fields (passthrough).',
-      additionalProperties: true,
-    },
   },
   additionalProperties: false,
 } satisfies GatewayJsonObject;
@@ -480,8 +466,8 @@ const upsertEmployeeInput = {
 // Chart-of-accounts write (classic REST /accounts). Elevated: editing the CoA
 // is a structural change, so this is risk 'destructive' and the hosting control
 // plane gates it behind approval. accountType-specific required fields vary, so
-// only the always-required keys are validated here; additionalFields carries the
-// rest and e-conomic validates on write.
+// only the always-required keys are validated here and e-conomic validates on
+// write. No other fields are sent.
 const upsertAccountInput = {
   type: 'object',
   properties: {
@@ -496,11 +482,6 @@ const upsertAccountInput = {
     },
     blockDirectEntries: { type: 'boolean', description: 'Block direct entries on the account.' },
     vatCode: { type: 'string', description: 'Default VAT code for the account.' },
-    additionalFields: {
-      type: 'object',
-      description: 'Optional additional account fields (accountType-specific, passthrough).',
-      additionalProperties: true,
-    },
   },
   required: ['accountNumber'],
   additionalProperties: false,
@@ -1125,6 +1106,8 @@ const TOOL_SPECS: ToolSpec[] = [
 
 const SPEC_BY_NAME = new Map(TOOL_SPECS.map(spec => [spec.name, spec]));
 
+export { GATEWAY_FENCE, fenceRule, type FenceRule } from './economic/fence.js';
+
 export const economicGatewayTools: GatewayToolDefinition[] = TOOL_SPECS.map(spec => ({
   name: spec.name,
   title: spec.title,
@@ -1167,6 +1150,18 @@ export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreez
       ...(spec.change ? { change: { ...spec.change, logFields: spec.change.logFields.map(field => ({ ...field })) } } : {}),
     };
     return entry;
+  }),
+);
+
+/**
+ * Write tools whose every write request is behind the fence, with the fence's reason: refused before anything else
+ * (also in contract mode). Derived from the catalog, so a new tool is covered as soon as it is declared.
+ */
+const FENCED_TOOLS: ReadonlyMap<string, string> = new Map(
+  economicToolCatalog.flatMap(entry => {
+    const writes = entry.upstream.filter(operation => operation.access === 'write');
+    const rules = writes.map(operation => fenceRule(operation.method, operation.path.replace(/\{[^}]+\}/g, '1')));
+    return writes.length > 0 && rules.every(rule => rule !== undefined) ? [[entry.name, rules[0]!.reason] as const] : [];
   }),
 );
 
@@ -1539,6 +1534,8 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
     timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     // Never read the environment on the embedded path.
     credentialEnv: {},
+    // The fixed fence (GATEWAY_FENCE) applies to every request, whatever the policy.
+    fence: true,
   };
   // Validates the base URLs at creation.
   new EconomicClient({ ...clientOptions, redactor: redactor.fork() });
@@ -1560,70 +1557,88 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
       context?: GatewayCallContext,
     ): Promise<GatewayToolResult> {
       const callRedactor = redactor.fork();
-      try {
-        const spec = typeof toolName === 'string' ? SPEC_BY_NAME.get(toolName) : undefined;
-        if (!spec) {
-          return errorResult(`Unsupported e-conomic gateway tool: ${String(toolName).slice(0, 100)}`);
-        }
-        const args: GatewayJsonObject = input ?? {};
-        if (typeof args !== 'object' || Array.isArray(args)) {
-          return errorResult('Input must be an object.');
-        }
-
-        // The host's choice of tools and booking applies before anything else,
-        // in contract mode too.
-        const refused = hostRefusal(hostPolicy, spec.name);
-        if (refused) {
-          return errorResult(refused);
-        }
-
-        let target: EconomicReadTarget | undefined;
-        if (spec.riskLevel === 'read') {
-          const resolution = resolveEconomicReadTarget(spec.name, args);
-          if (!resolution.ok) {
-            return errorResult(resolution.reason);
-          }
-          target = resolution.target;
-        } else {
-          const unknown = unknownInputFields(spec, args);
-          if (unknown.length > 0) {
-            return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
-          }
-          // Bank details are never changed, whatever the policy (also in contract mode).
-          const bankFields = bankFieldPaths(args);
-          if (bankFields.length > 0) {
-            return errorResult(`Write blocked: ${BANK_FIELDS_REFUSED} Fields: ${bankFields.slice(0, 10).join(', ')}.`);
-          }
-        }
-
-        // Refuse writes before any preparatory read (customer, layout, existing
-        // record), and before a contract fixture: contract mode answers only
-        // what live mode would allow. The full policy check still runs on the
-        // built request.
-        if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
-          return errorResult('Write blocked by policy: writes disabled');
-        }
-
-        if (contractMode) {
-          return contractToolResult(spec.name, args, target);
-        }
-
-        const grant = callGrantToken(context, options.agreementGrantToken);
-        if (!grant) {
-          return errorResult(
-            'Missing e-conomic agreement grant token: pass credentials.agreementGrantToken in the call context or agreementGrantToken in the gateway options.',
-          );
-        }
-        callRedactor.add(grant);
-        const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
-
-        if (target) {
-          return await readResult(client, spec.name, target, args);
-        }
-        return await writeResult(client, spec.name, args, writePolicy);
-      } catch (error) {
-        return errorResult(formatUnknownError(error, callRedactor));
+      // The call's token is known to the redactor from the start, so every answer below, early refusals included,
+      // passes through the same redaction at the end.
+      if (!contractMode) {
+        callRedactor.add(callGrantToken(context, options.agreementGrantToken));
       }
+      let result: GatewayToolResult;
+      try {
+        result = await (async (): Promise<GatewayToolResult> => {
+          const spec = typeof toolName === 'string' ? SPEC_BY_NAME.get(toolName) : undefined;
+          if (!spec) {
+            return errorResult(`Unsupported e-conomic gateway tool: ${String(toolName).slice(0, 100)}`);
+          }
+          const args: GatewayJsonObject = input ?? {};
+          if (typeof args !== 'object' || Array.isArray(args)) {
+            return errorResult('Input must be an object.');
+          }
+
+          // The host's choice of tools and booking applies before anything else,
+          // in contract mode too.
+          const refused = hostRefusal(hostPolicy, spec.name);
+          if (refused) {
+            return errorResult(refused);
+          }
+
+          let target: EconomicReadTarget | undefined;
+          if (spec.riskLevel === 'read') {
+            const resolution = resolveEconomicReadTarget(spec.name, args);
+            if (!resolution.ok) {
+              return errorResult(resolution.reason);
+            }
+            target = resolution.target;
+          } else {
+            // Bank details are never changed, whatever the policy (also in contract mode).
+            const bankFields = bankFieldPaths(args);
+            if (bankFields.length > 0) {
+              return errorResult(`Write blocked: ${BANK_FIELDS_REFUSED} Fields: ${bankFields.slice(0, 10).join(', ')}.`);
+            }
+            // Only the fields in the tool's schema are accepted; nothing is passed through.
+            const unknown = unknownInputFields(spec, args);
+            if (unknown.length > 0) {
+              return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
+            }
+          }
+
+          // Refuse writes before any preparatory read (customer, layout, existing
+          // record), and before a contract fixture: contract mode answers only
+          // what live mode would allow. The full policy check still runs on the
+          // built request.
+          if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
+            return errorResult('Write blocked by policy: writes disabled');
+          }
+
+          // A write tool whose every write is behind the fence (upsert_account) is refused here too, so contract
+          // mode never answers a change that live mode would refuse.
+          const fenced = FENCED_TOOLS.get(spec.name);
+          if (fenced) {
+            return errorResult(`Request blocked by the gateway fence (${fenced}).`);
+          }
+
+          if (contractMode) {
+            return contractToolResult(spec.name, args, target);
+          }
+
+          const grant = callGrantToken(context, options.agreementGrantToken);
+          if (!grant) {
+            return errorResult(
+              'Missing e-conomic agreement grant token: pass credentials.agreementGrantToken in the call context or agreementGrantToken in the gateway options.',
+            );
+          }
+          callRedactor.add(grant);
+          const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
+
+          return target
+            ? await readResult(client, spec.name, target, args)
+            : await writeResult(client, spec.name, args, writePolicy);
+        })();
+      } catch (error) {
+        result = errorResult(formatUnknownError(error, callRedactor));
+      }
+      // Defence in depth: a token in an answer (echoed by e-conomic, or in the input of an early refusal) never
+      // reaches the caller.
+      return redactResult(result, callRedactor);
     },
   };
 }
@@ -2069,6 +2084,7 @@ const SUPPLIER_FLAT_FIELDS = [
   'city',
   'country',
   'corporateIdentificationNumber',
+  'phone',
 ] as const;
 
 // Suppliers mirror customers on the classic REST surface: create via POST, full-
@@ -2086,7 +2102,6 @@ async function upsertSupplier(
       flat[field] = value;
     }
   }
-  const additional = objectValue(input.additionalFields) ?? {};
   const supplierGroupNumber = numberValue(input.supplierGroupNumber);
   const paymentTermsNumber = numberValue(input.paymentTermsNumber);
   const vatZoneNumber = numberValue(input.vatZoneNumber);
@@ -2110,7 +2125,7 @@ async function upsertSupplier(
       );
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat };
+    const body: GatewayJsonObject = { ...flat };
     applyRefs(body);
 
     const denied = writePolicyDenial(policy, { capability: 'upsert_supplier', method: 'POST', path: '/suppliers', body });
@@ -2136,7 +2151,7 @@ async function upsertSupplier(
     throw error;
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat };
+  const body: GatewayJsonObject = { ...existing, ...flat };
   applyRefs(body);
 
   const denied = writePolicyDenial(policy, {
@@ -2174,14 +2189,13 @@ async function upsertEmployee(
   if (typeof input.barred === 'boolean') {
     flat.barred = input.barred;
   }
-  const additional = objectValue(input.additionalFields) ?? {};
 
   if (employeeNumber === undefined) {
     if (!flat.name) {
       return errorResult('Creating an employee requires a name.');
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat };
+    const body: GatewayJsonObject = { ...flat };
     const denied = writePolicyDenial(policy, {
       capability: 'upsert_employee',
       serviceId: 'projects',
@@ -2216,7 +2230,7 @@ async function upsertEmployee(
     throw error;
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat, employeeNumber };
+  const body: GatewayJsonObject = { ...existing, ...flat, employeeNumber };
   const denied = writePolicyDenial(policy, {
     capability: 'upsert_employee',
     serviceId: 'projects',
@@ -2266,7 +2280,6 @@ async function upsertAccount(
   if (typeof input.blockDirectEntries === 'boolean') {
     flat.blockDirectEntries = input.blockDirectEntries;
   }
-  const additional = objectValue(input.additionalFields) ?? {};
 
   let existing: GatewayJsonObject | undefined;
   try {
@@ -2282,7 +2295,7 @@ async function upsertAccount(
       return errorResult('Creating an account requires accountNumber, name, and accountType.');
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat, accountNumber };
+    const body: GatewayJsonObject = { ...flat, accountNumber };
     const denied = writePolicyDenial(policy, { capability: 'upsert_account', method: 'POST', path: '/accounts', body });
     if (denied) {
       return denied;
@@ -2296,7 +2309,7 @@ async function upsertAccount(
     }));
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat };
+  const body: GatewayJsonObject = { ...existing, ...flat };
   const denied = writePolicyDenial(policy, {
     capability: 'upsert_account',
     method: 'PUT',
@@ -2377,7 +2390,6 @@ async function upsertProject(
   if (typeof input.barred === 'boolean') {
     flat.barred = input.barred;
   }
-  const additional = objectValue(input.additionalFields) ?? {};
   const projectGroupNumber = numberValue(input.projectGroupNumber);
   const customerNumber = numberValue(input.customerNumber);
   const responsibleEmployeeNumber = numberValue(input.responsibleEmployeeNumber);
@@ -2401,7 +2413,7 @@ async function upsertProject(
       );
     }
 
-    const body: GatewayJsonObject = { ...additional, ...flat };
+    const body: GatewayJsonObject = { ...flat };
     applyRefs(body);
 
     const denied = writePolicyDenial(policy, {
@@ -2438,7 +2450,7 @@ async function upsertProject(
     throw error;
   }
 
-  const body: GatewayJsonObject = { ...existing, ...additional, ...flat, projectNumber };
+  const body: GatewayJsonObject = { ...existing, ...flat, projectNumber };
   applyRefs(body);
 
   const denied = writePolicyDenial(policy, {
@@ -2479,9 +2491,7 @@ async function createTimeEntry(
     return errorResult('create_time_entry requires projectNumber, activityNumber, employeeNumber, date, and hours.');
   }
 
-  const additional = objectValue(input.additionalFields) ?? {};
   const body: GatewayJsonObject = {
-    ...additional,
     date,
     hours,
     project: { projectNumber },
@@ -2952,6 +2962,34 @@ function jsonResult(text: string, structuredContent: unknown): GatewayToolResult
     content: [{ type: 'text', text: `${text}\n\n${JSON.stringify(data)}` }],
     structuredContent: data,
   };
+}
+
+/** The result with every string (text and structured content) passed through the redactor. */
+function redactResult(result: GatewayToolResult, redactor: SecretRedactor): GatewayToolResult {
+  if (result.structuredContent === undefined) {
+    return { ...result, content: result.content.map(block => ({ ...block, text: redactor.redact(block.text) })) };
+  }
+  // The data is redacted as data, and the text block's JSON is written again from it, so the text stays valid JSON
+  // and exactly the structured content (a pattern match on serialized JSON could eat a closing quote).
+  const structuredContent = redactJson(result.structuredContent, redactor);
+  const original = JSON.stringify(result.structuredContent);
+  const content = result.content.map(block => {
+    const separator = block.text.lastIndexOf(`\n\n${original}`);
+    if (separator !== -1 && separator + 2 + original.length === block.text.length) {
+      return { ...block, text: `${redactor.redact(block.text.slice(0, separator))}\n\n${JSON.stringify(structuredContent)}` };
+    }
+    return { ...block, text: redactor.redact(block.text) };
+  });
+  return { ...result, content, structuredContent };
+}
+
+function redactJson(value: GatewayJsonValue, redactor: SecretRedactor): GatewayJsonValue {
+  if (typeof value === 'string') return redactor.redact(value);
+  if (Array.isArray(value)) return value.map(item => redactJson(item, redactor));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [redactor.redact(key), redactJson(nested, redactor)]));
+  }
+  return value;
 }
 
 function errorResult(text: string): GatewayToolResult {

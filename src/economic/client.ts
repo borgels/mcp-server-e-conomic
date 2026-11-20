@@ -1,5 +1,6 @@
 import { readEnvInteger, type Env } from '../config-env.js';
 import { EconomicHttpError, SecretRedactor, defaultRedactor } from '../errors.js';
+import { EconomicFenceError, fenceRule } from './fence.js';
 import { normalizeJsonBody } from './json.js';
 
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -24,7 +25,15 @@ export interface EconomicClientOptions {
    * (standalone server); the embedded gateway passes its own instance.
    */
   redactor?: SecretRedactor;
+  /**
+   * Refuse the requests in GATEWAY_FENCE before they are sent. The embedded
+   * gateway sets it; the standalone server does not.
+   */
+  fence?: boolean;
 }
+
+/** Headers a caller can never set: the credentials are the client's own. */
+const RESERVED_HEADERS = new Set(['x-appsecrettoken', 'x-agreementgranttoken']);
 
 export interface EconomicRequestOptions {
   method?: HttpMethod;
@@ -55,6 +64,7 @@ export class EconomicClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly redactor: SecretRedactor;
+  private readonly fence: boolean;
 
   constructor(options: EconomicClientOptions = {}) {
     const env = options.credentialEnv ?? process.env;
@@ -75,6 +85,7 @@ export class EconomicClient {
     this.timeoutMs =
       options.timeoutMs ?? readEnvInteger('ECONOMIC_TIMEOUT_MS', 30_000, { min: 1, max: 600_000 }, env);
     this.redactor = options.redactor ?? defaultRedactor();
+    this.fence = options.fence === true;
     this.redactor.add(this.appSecretToken);
     this.redactor.add(this.agreementGrantToken);
   }
@@ -118,11 +129,24 @@ export class EconomicClient {
     const method = options.method ?? 'GET';
     const url = options.url ?? this.buildRestUrl(options.path ?? '/', options.query);
     const resolvedUrl = options.url ? appendQuery(url, options.query) : url;
+    if (this.fence) {
+      const path = this.relativePath(resolvedUrl);
+      const rule = fenceRule(method, path);
+      if (rule) {
+        throw new EconomicFenceError(method, path, rule);
+      }
+    }
+    for (const name of Object.keys(options.headers ?? {})) {
+      if (RESERVED_HEADERS.has(name.toLowerCase())) {
+        throw new Error(`EconomicClient.request: the ${name} header is set by the client and cannot be given.`);
+      }
+    }
+    // The credential headers come last, so nothing given with a call replaces them.
     const headers: Record<string, string> = {
       Accept: 'application/json',
+      ...options.headers,
       'X-AppSecretToken': this.appSecretToken ?? '',
       'X-AgreementGrantToken': this.agreementGrantToken ?? '',
-      ...options.headers,
     };
 
     if (options.body !== undefined) {
@@ -182,6 +206,18 @@ export class EconomicClient {
   buildRestUrl(path: string, query?: Record<string, QueryValue>): string {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     return appendQuery(`${this.restBaseUrl}${normalizedPath}`, query);
+  }
+
+  /** The request path relative to the base URL it was built on (REST or OpenAPI). */
+  private relativePath(resolvedUrl: string): string {
+    const { pathname } = new URL(resolvedUrl);
+    for (const base of [this.openApiBaseUrl, this.restBaseUrl]) {
+      const basePath = trimTrailingSlash(new URL(base).pathname);
+      if (resolvedUrl.startsWith(base) && basePath && pathname.startsWith(basePath)) {
+        return pathname.slice(basePath.length) || '/';
+      }
+    }
+    return pathname;
   }
 
   private assertConfigured(): void {
