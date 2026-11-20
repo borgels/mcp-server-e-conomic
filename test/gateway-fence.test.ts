@@ -264,6 +264,26 @@ describe('tokens never reach the caller', () => {
       expect(result.isError, result.content[0]?.text).toBeUndefined();
       expectNoToken(result, echo);
       expect(result.content[0]!.text).toContain('[REDACTED]');
+      // The text block still carries exactly the structured content, as valid JSON.
+      const [, json] = result.content[0]!.text.split('\n\n');
+      expect(JSON.parse(json!)).toEqual(result.structuredContent);
     }
+  });
+
+  it('redacts a token from an early refusal that repeats the input', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({}));
+    const gateway = createEconomicGateway({ appSecretToken: APP_SECRET, policy: { enableWrites: true }, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const calls: Array<[string, Record<string, GatewayJsonValue>]> = [
+      ['customer_overview', { [APP_SECRET]: 1 }],
+      ['get_entity', { serviceId: GRANT }],
+      ['upsert_supplier', { supplierNumber: 1, [GRANT]: 'x' }],
+      [`tool-${APP_SECRET}`, {}],
+    ];
+    for (const [tool, input] of calls) {
+      const result = await gateway.callTool(tool, input, { credentials: { agreementGrantToken: GRANT } });
+      expect(result.isError, tool).toBe(true);
+      expectNoToken(result, tool);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

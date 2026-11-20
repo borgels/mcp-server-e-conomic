@@ -23,9 +23,12 @@ Embedded gateway: a fixed fence for a broad app role (SuperUser), #73.
 - The credential headers (`X-AppSecretToken`, `X-AgreementGrantToken`) are
   set after any headers given with a request, and a request that tries to
   give either (in any letter case) is refused before it is sent.
-- Every gateway result (text and structured content) passes through the
-  call's redactor, so a token e-conomic echoes in an answer never reaches the
-  caller. Errors were already redacted.
+- Every gateway result, early refusals included, passes through the call's
+  redactor (the call's token is registered before any check), so a token
+  e-conomic echoes in an answer, or one given in the input, never reaches the
+  caller. Structured content is redacted as data and the text block's JSON is
+  written again from it, so it stays valid JSON equal to the structured
+  content.
 - Tests: each fenced path is refused before sending, every declared upstream
   request passes the fence and is a catalog endpoint, no tool takes a method,
   path or URL, every write schema is closed, and both tokens are redacted

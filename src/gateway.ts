@@ -1544,72 +1544,81 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
       context?: GatewayCallContext,
     ): Promise<GatewayToolResult> {
       const callRedactor = redactor.fork();
-      try {
-        const spec = typeof toolName === 'string' ? SPEC_BY_NAME.get(toolName) : undefined;
-        if (!spec) {
-          return errorResult(`Unsupported e-conomic gateway tool: ${String(toolName).slice(0, 100)}`);
-        }
-        const args: GatewayJsonObject = input ?? {};
-        if (typeof args !== 'object' || Array.isArray(args)) {
-          return errorResult('Input must be an object.');
-        }
-
-        // The host's choice of tools and booking applies before anything else,
-        // in contract mode too.
-        const refused = hostRefusal(hostPolicy, spec.name);
-        if (refused) {
-          return errorResult(refused);
-        }
-
-        let target: EconomicReadTarget | undefined;
-        if (spec.riskLevel === 'read') {
-          const resolution = resolveEconomicReadTarget(spec.name, args);
-          if (!resolution.ok) {
-            return errorResult(resolution.reason);
-          }
-          target = resolution.target;
-        } else {
-          // Bank details are never changed, whatever the policy (also in contract mode).
-          const bankFields = bankFieldPaths(args);
-          if (bankFields.length > 0) {
-            return errorResult(`Write blocked: ${BANK_FIELDS_REFUSED} Fields: ${bankFields.slice(0, 10).join(', ')}.`);
-          }
-          // Only the fields in the tool's schema are accepted; nothing is passed through.
-          const unknown = unknownInputFields(spec, args);
-          if (unknown.length > 0) {
-            return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
-          }
-        }
-
-        // Refuse writes before any preparatory read (customer, layout, existing
-        // record), and before a contract fixture: contract mode answers only
-        // what live mode would allow. The full policy check still runs on the
-        // built request.
-        if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
-          return errorResult('Write blocked by policy: writes disabled');
-        }
-
-        if (contractMode) {
-          return contractToolResult(spec.name, args, target);
-        }
-
-        const grant = callGrantToken(context, options.agreementGrantToken);
-        if (!grant) {
-          return errorResult(
-            'Missing e-conomic agreement grant token: pass credentials.agreementGrantToken in the call context or agreementGrantToken in the gateway options.',
-          );
-        }
-        callRedactor.add(grant);
-        const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
-
-        const result = target
-          ? await readResult(client, spec.name, target, args)
-          : await writeResult(client, spec.name, args, writePolicy);
-        // Defence in depth: a token e-conomic echoes in an answer never reaches the caller.
-        return redactResult(result, callRedactor);
-      } catch (error) {
-        return errorResult(formatUnknownError(error, callRedactor));
+      // The call's token is known to the redactor from the start, so every answer below, early refusals included,
+      // passes through the same redaction at the end.
+      if (!contractMode) {
+        callRedactor.add(callGrantToken(context, options.agreementGrantToken));
       }
+      let result: GatewayToolResult;
+      try {
+        result = await (async (): Promise<GatewayToolResult> => {
+          const spec = typeof toolName === 'string' ? SPEC_BY_NAME.get(toolName) : undefined;
+          if (!spec) {
+            return errorResult(`Unsupported e-conomic gateway tool: ${String(toolName).slice(0, 100)}`);
+          }
+          const args: GatewayJsonObject = input ?? {};
+          if (typeof args !== 'object' || Array.isArray(args)) {
+            return errorResult('Input must be an object.');
+          }
+
+          // The host's choice of tools and booking applies before anything else,
+          // in contract mode too.
+          const refused = hostRefusal(hostPolicy, spec.name);
+          if (refused) {
+            return errorResult(refused);
+          }
+
+          let target: EconomicReadTarget | undefined;
+          if (spec.riskLevel === 'read') {
+            const resolution = resolveEconomicReadTarget(spec.name, args);
+            if (!resolution.ok) {
+              return errorResult(resolution.reason);
+            }
+            target = resolution.target;
+          } else {
+            // Bank details are never changed, whatever the policy (also in contract mode).
+            const bankFields = bankFieldPaths(args);
+            if (bankFields.length > 0) {
+              return errorResult(`Write blocked: ${BANK_FIELDS_REFUSED} Fields: ${bankFields.slice(0, 10).join(', ')}.`);
+            }
+            // Only the fields in the tool's schema are accepted; nothing is passed through.
+            const unknown = unknownInputFields(spec, args);
+            if (unknown.length > 0) {
+              return errorResult(`Unknown input field(s) for ${spec.name}: ${unknown.map(key => key.slice(0, 40)).join(', ')}.`);
+            }
+          }
+
+          // Refuse writes before any preparatory read (customer, layout, existing
+          // record), and before a contract fixture: contract mode answers only
+          // what live mode would allow. The full policy check still runs on the
+          // built request.
+          if (spec.riskLevel !== 'read' && !writePolicy.writesEnabled) {
+            return errorResult('Write blocked by policy: writes disabled');
+          }
+
+          if (contractMode) {
+            return contractToolResult(spec.name, args, target);
+          }
+
+          const grant = callGrantToken(context, options.agreementGrantToken);
+          if (!grant) {
+            return errorResult(
+              'Missing e-conomic agreement grant token: pass credentials.agreementGrantToken in the call context or agreementGrantToken in the gateway options.',
+            );
+          }
+          callRedactor.add(grant);
+          const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
+
+          return target
+            ? await readResult(client, spec.name, target, args)
+            : await writeResult(client, spec.name, args, writePolicy);
+        })();
+      } catch (error) {
+        result = errorResult(formatUnknownError(error, callRedactor));
+      }
+      // Defence in depth: a token in an answer (echoed by e-conomic, or in the input of an early refusal) never
+      // reaches the caller.
+      return redactResult(result, callRedactor);
     },
   };
 }
@@ -2937,14 +2946,21 @@ function jsonResult(text: string, structuredContent: unknown): GatewayToolResult
 
 /** The result with every string (text and structured content) passed through the redactor. */
 function redactResult(result: GatewayToolResult, redactor: SecretRedactor): GatewayToolResult {
-  const redacted: GatewayToolResult = {
-    ...result,
-    content: result.content.map(block => ({ ...block, text: redactor.redact(block.text) })),
-  };
-  if (result.structuredContent !== undefined) {
-    redacted.structuredContent = redactJson(result.structuredContent, redactor);
+  if (result.structuredContent === undefined) {
+    return { ...result, content: result.content.map(block => ({ ...block, text: redactor.redact(block.text) })) };
   }
-  return redacted;
+  // The data is redacted as data, and the text block's JSON is written again from it, so the text stays valid JSON
+  // and exactly the structured content (a pattern match on serialized JSON could eat a closing quote).
+  const structuredContent = redactJson(result.structuredContent, redactor);
+  const original = JSON.stringify(result.structuredContent);
+  const content = result.content.map(block => {
+    const separator = block.text.lastIndexOf(`\n\n${original}`);
+    if (separator !== -1 && separator + 2 + original.length === block.text.length) {
+      return { ...block, text: `${redactor.redact(block.text.slice(0, separator))}\n\n${JSON.stringify(structuredContent)}` };
+    }
+    return { ...block, text: redactor.redact(block.text) };
+  });
+  return { ...result, content, structuredContent };
 }
 
 function redactJson(value: GatewayJsonValue, redactor: SecretRedactor): GatewayJsonValue {
