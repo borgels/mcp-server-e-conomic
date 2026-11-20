@@ -186,7 +186,17 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     surface: 'openapi',
     servicePath: 'dimensionsapi/v5.3.1',
     version: '5.3.1',
-    resources: ['dimensions', 'values', 'distributions', 'dimension-data/accounts'],
+    resources: [
+      'dimensions',
+      'values',
+      'distributions',
+      'dimension-data/accounts',
+      // Dimension values set on draft entries, sales document lines, booked entries and booked invoice lines.
+      'dimension-data/draft-entries',
+      'dimension-data/sales-document-lines',
+      'dimension-data/booked-entries',
+      'dimension-data/booked-invoice-lines',
+    ],
   },
   {
     id: 'documents',

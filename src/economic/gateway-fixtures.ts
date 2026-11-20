@@ -214,6 +214,21 @@ export function economicGatewayContractFixture(
     case 'project_overview':
       return collectionFixture('Fetched e-conomic contract projects.', input, projects);
 
+    case 'dimension_overview':
+      return collectionFixture('Fetched e-conomic contract dimensions.', input, [
+        { number: 1, name: 'Afdeling', active: true },
+      ]);
+
+    case 'set_entry_dimensions':
+      return {
+        text: 'Set a contract dimension value.',
+        structuredContent: {
+          mode: 'contract',
+          dimensionNumber: numberOr(input.dimensionNumber, 0),
+          dimensionKey: numberOr(input.dimensionKey, 0),
+        },
+      };
+
     case 'subscription_overview':
       return collectionFixture('Fetched e-conomic contract subscriptions.', input, [
         { number: 1, name: 'Serviceaftale, kvartal', interval: 3, isBarred: false },
