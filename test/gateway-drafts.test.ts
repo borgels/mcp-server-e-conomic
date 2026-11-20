@@ -29,12 +29,16 @@ const draft = {
   lastUpdated: '2026-03-01T10:00:00Z',
   date: '2026-03-01',
   currency: 'DKK',
-  paymentTerms: { paymentTermsNumber: 1 },
-  customer: { customerNumber: 1001 },
-  recipient: { name: 'Kunde A/S', vatZone: { vatZoneNumber: 1 } },
+  netAmount: 100,
+  grossAmount: 125,
+  vatAmount: 25,
+  paymentTerms: { paymentTermsNumber: 1, self: 'https://restapi.e-conomic.com/payment-terms/1' },
+  customer: { customerNumber: 1001, self: 'https://restapi.e-conomic.com/customers/1001' },
+  recipient: { name: 'Kunde A/S', vatZone: { vatZoneNumber: 1, self: 'https://restapi.e-conomic.com/vat-zones/1' } },
+  notes: { heading: 'Faktura', textLine1: 'Linje et', textLine2: 'Linje to' },
   layout: { layoutNumber: 19 },
   references: { salesPerson: { employeeNumber: 1 } },
-  lines: [{ lineNumber: 1, product: { productNumber: 'P1' }, quantity: 1, unitNetPrice: 100 }],
+  lines: [{ lineNumber: 1, product: { productNumber: 'P1', self: 'https://restapi.e-conomic.com/products/P1' }, quantity: 1, unitNetPrice: 100, totalNetAmount: 100, marginInBaseCurrency: 40 }],
 };
 
 const booked = {
@@ -66,13 +70,13 @@ describe('update_draft_invoice', () => {
     const put = requests.find(request => request.method === 'PUT')!;
     expect(put.path).toBe('/invoices/drafts/7');
     expect(put.body).toEqual({
-      draftInvoiceNumber: 7,
       date: '2026-03-01',
       dueDate: '2026-03-15',
       currency: 'DKK',
       paymentTerms: { paymentTermsNumber: 1 },
       customer: { customerNumber: 1001 },
       recipient: { name: 'Kunde A/S', vatZone: { vatZoneNumber: 1 } },
+      notes: { heading: 'Faktura', textLine1: 'Linje et', textLine2: 'Linje to' },
       layout: { layoutNumber: 19 },
       references: { salesPerson: { employeeNumber: 1 }, other: 'PO 12' },
       lines: [
@@ -80,6 +84,16 @@ describe('update_draft_invoice', () => {
         { lineNumber: 2, product: { productNumber: 'P2' }, quantity: 1, unitNetPrice: 50 },
       ],
     });
+  });
+
+  it('keeps the draft’s other notes when only the heading changes, and sends no computed line fields', async () => {
+    const { gateway, requests } = fakeEconomic(request => (request.method === 'GET' ? Response.json(draft) : undefined));
+    const result = await gateway.callTool('update_draft_invoice', { draftInvoiceNumber: 7, notes: { heading: 'Ny overskrift' } }, context);
+    expect(result.isError, result.content[0]?.text).toBeUndefined();
+    const put = requests.find(request => request.method === 'PUT')!.body as GatewayJsonObject;
+    expect(put.notes).toEqual({ heading: 'Ny overskrift', textLine1: 'Linje et', textLine2: 'Linje to' });
+    expect(put.lines).toEqual([{ lineNumber: 1, product: { productNumber: 'P1' }, quantity: 1, unitNetPrice: 100 }]);
+    expect(JSON.stringify(put)).not.toMatch(/self|netAmount|grossAmount|vatAmount|margin/);
   });
 
   it('refuses an empty change, bad fields, and a draft that is gone; nothing is sent', async () => {
@@ -130,6 +144,17 @@ describe('create_credit_note_draft', () => {
         },
       },
     ]);
+  });
+
+  it('sends a due date when the invoice’s payment terms are of the type dueDate', async () => {
+    const dueTerms = { ...booked, paymentTerms: { paymentTermsNumber: 4, paymentTermsType: 'dueDate' } };
+    const { gateway, requests } = fakeEconomic(request => (request.method === 'GET' ? Response.json(dueTerms) : undefined));
+    await gateway.callTool('create_credit_note_draft', { bookedInvoiceNumber: 70001, date: '2026-03-02' }, context);
+    expect(requests.at(-1)?.body).toMatchObject({ date: '2026-03-02', dueDate: '2026-03-02', paymentTerms: { paymentTermsNumber: 4 } });
+    const given = fakeEconomic(request => (request.method === 'GET' ? Response.json(dueTerms) : undefined));
+    await given.gateway.callTool('create_credit_note_draft', { bookedInvoiceNumber: 70001, date: '2026-03-02', dueDate: '2026-03-30' }, context);
+    expect(given.requests.at(-1)?.body).toMatchObject({ dueDate: '2026-03-30' });
+    expect((await given.gateway.callTool('create_credit_note_draft', { bookedInvoiceNumber: 70001, dueDate: 'soon' }, context)).isError).toBe(true);
   });
 
   it('credits only the chosen lines, and refuses a line the invoice does not have', async () => {

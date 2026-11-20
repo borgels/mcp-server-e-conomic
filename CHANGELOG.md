@@ -8,12 +8,15 @@ Changing draft invoices, and credit notes as drafts, in the embedded gateway
 - Write tool `update_draft_invoice`: changes the date, due date, payment
   terms, layout, reference or notes of a draft invoice, or replaces all its
   lines (same line shape as `create_draft_invoice`). Read-merge-write with
-  REST `GET`/`PUT /invoices/drafts/{n}`; links and computed fields are not
-  sent back. Log values: the draft number, the dates and the line count.
+  REST `GET`/`PUT /invoices/drafts/{n}`: only the schema's writable fields
+  go back (no links, amounts or margins), and notes given are merged into the
+  draft's notes. Log values: the draft number, the dates and the line count.
 - Write tool `create_credit_note_draft`: a draft invoice that credits a booked
   invoice, with its customer, recipient, currency, terms and layout, and its
   product lines (or the chosen `lineNumbers`) at negative quantities. The
-  reference is the credited invoice's number unless one is given. It is booked
+  reference is the credited invoice's number unless one is given. With
+  payment terms of the type `dueDate`, the draft gets `dueDate` (given, or the
+  credit note's date). It is booked
   like any draft with `book_invoice`. Log values: the invoice number, the date
   and the line count.
 - Not offered: deleting drafts or lines, and

@@ -398,6 +398,11 @@ const createCreditNoteDraftInput = {
       description: 'Credit only these lines of the invoice (their full quantity). Default: every line.',
     },
     date: { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$`, description: 'Date of the credit note (YYYY-MM-DD). Default: today.' },
+    dueDate: {
+      type: 'string',
+      pattern: String.raw`^\d{4}-\d{2}-\d{2}$`,
+      description: 'Due date (YYYY-MM-DD), sent when the invoice\'s payment terms are of the type dueDate. Default: the date of the credit note.',
+    },
     reference: { type: 'string', maxLength: 250, description: 'Reference on the draft. Default: the number of the credited invoice.' },
   },
   additionalProperties: false,
@@ -1394,7 +1399,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Create an e-conomic credit note as a draft',
     description: `Create a draft invoice that credits a booked invoice: the same customer, recipient, currency, terms and layout, with the invoice's lines (or the chosen ones) at negative quantities. It is a draft: nothing is booked or sent; book it with book_invoice. ${WRITE_NOTE}`,
     inputSchema: createCreditNoteDraftInput,
-    change: change('create', 'credit-note-draft', { bookedInvoiceNumber: 'recordNumber', date: 'date' }),
+    change: change('create', 'credit-note-draft', { bookedInvoiceNumber: 'recordNumber', date: 'date', dueDate: 'date' }),
     upstream: [
       operation('read', 'GET', 'rest', 'invoices/booked', '/invoices/booked/{number}'),
       operation('write', 'POST', 'rest', 'invoices/drafts', '/invoices/drafts'),
@@ -2564,8 +2569,38 @@ function draftLines(rawLines: GatewayJsonValue[]): { lines: GatewayJsonObject[] 
   return { lines };
 }
 
-/** Fields of a REST draft invoice that are links or computed, never sent back on PUT. */
-const DRAFT_INVOICE_LINKS = ['soap', 'templates', 'attachment', 'pdf', 'lastUpdated', 'self'];
+/** The fields of a REST draft invoice a PUT may carry (invoices.drafts.draftInvoiceNumber.put schema). */
+const DRAFT_INVOICE_FIELDS = [
+  'date', 'dueDate', 'currency', 'exchangeRate', 'paymentTerms', 'customer', 'recipient',
+  'deliveryLocation', 'delivery', 'notes', 'references', 'layout', 'project', 'lines',
+];
+/** The fields of a line a PUT may carry; amounts and margins are computed by e-conomic. */
+const DRAFT_LINE_FIELDS = [
+  'lineNumber', 'sortKey', 'description', 'accrual', 'unit', 'product', 'quantity',
+  'unitNetPrice', 'discountPercentage', 'unitCostPrice', 'departmentalDistribution',
+];
+
+/** A copy without `self` links at any depth. */
+function withoutSelf(value: GatewayJsonValue): GatewayJsonValue {
+  if (Array.isArray(value)) return value.map(withoutSelf);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'self').map(([key, inner]) => [key, withoutSelf(inner)]));
+}
+
+/** What of a draft invoice read with GET can go back in a PUT: its writable fields, without links or computed amounts. */
+function writableDraft(existing: GatewayJsonObject): GatewayJsonObject {
+  const body: GatewayJsonObject = {};
+  for (const field of DRAFT_INVOICE_FIELDS) {
+    if (existing[field] !== undefined) body[field] = withoutSelf(existing[field] as GatewayJsonValue);
+  }
+  if (Array.isArray(body.lines)) {
+    body.lines = body.lines.map(line => {
+      const source = asObject(line);
+      return Object.fromEntries(DRAFT_LINE_FIELDS.filter(field => source[field] !== undefined).map(field => [field, source[field] as GatewayJsonValue]));
+    });
+  }
+  return body;
+}
 
 /** Changes a draft invoice (REST read-merge-write: GET then PUT /invoices/drafts/{n}). */
 async function updateDraftInvoice(
@@ -2627,8 +2662,9 @@ async function updateDraftInvoice(
     }
     throw error;
   }
-  const body: GatewayJsonObject = { ...existing, ...changes };
-  for (const field of DRAFT_INVOICE_LINKS) delete body[field];
+  const body: GatewayJsonObject = { ...writableDraft(existing), ...changes };
+  // Notes given are merged into the draft's notes: a new heading keeps the text lines.
+  if (changes.notes) body.notes = { ...asObject(withoutSelf(existing.notes as GatewayJsonValue)), ...asObject(changes.notes) } as GatewayJsonObject;
   if (reference.value !== undefined) body.references = { ...asObject(existing.references), other: reference.value } as GatewayJsonObject;
 
   const denied = writePolicyDenial(policy, { capability: 'update_draft_invoice', method: 'PUT', path, body, current: existing });
@@ -2663,6 +2699,8 @@ async function createCreditNoteDraft(
   }
   const date = input.date === undefined ? new Date().toISOString().slice(0, 10) : isoDateValue(input.date);
   if (!date) return errorResult('date must be a date (YYYY-MM-DD).');
+  const dueDate = input.dueDate === undefined ? undefined : isoDateValue(input.dueDate);
+  if (input.dueDate !== undefined && !dueDate) return errorResult('dueDate must be a date (YYYY-MM-DD).');
   const reference = shortText(input.reference, 250);
   if (!reference.ok) return errorResult('reference must be at most 250 characters.');
 
@@ -2710,8 +2748,11 @@ async function createCreditNoteDraft(
     || typeof recipient.name !== 'string' || typeof vatZoneNumber !== 'number' || typeof invoice.currency !== 'string') {
     return errorResult(`Booked invoice ${number} lacks the customer, terms, layout, recipient or currency a draft needs.`);
   }
+  // Payment terms of the type dueDate need a due date on the draft (e-conomic's schema).
+  const needsDueDate = asObject(invoice.paymentTerms).paymentTermsType === 'dueDate';
   const body: GatewayJsonObject = {
     date,
+    ...(dueDate || needsDueDate ? { dueDate: dueDate ?? date } : {}),
     currency: invoice.currency,
     paymentTerms: { paymentTermsNumber },
     customer: { customerNumber },
