@@ -125,7 +125,25 @@ export const ECONOMIC_SERVICES: EconomicService[] = [
     surface: 'openapi',
     servicePath: 'projectsapi/v1.1.1',
     version: '1.1.1',
-    resources: ['Projects', 'ProjectGroups', 'CostTypes', 'ProjectStatuses', 'Employees', 'EmployeeGroups', 'TimeEntries', 'Activities', 'ActivityGroups'],
+    resources: [
+      'Projects',
+      'ProjectGroups',
+      'CostTypes',
+      'ProjectStatuses',
+      'Employees',
+      'EmployeeGroups',
+      'TimeEntries',
+      'Activities',
+      'ActivityGroups',
+      'project-activities',
+      'Mileages',
+      'MileagePrices',
+      'TimeEntryPrices',
+      // What an employee may register on (query employeeNumber, and projectNumber for activities).
+      'Activities/allowed',
+      'Projects/allowed',
+    ],
+    unpaged: ['Activities/allowed', 'Projects/allowed'],
   },
   {
     id: 'journals',
@@ -505,6 +523,8 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('journals', 'POST', '/journals/{journalNumber}/bookdraftentries', 'Book specific draft entries (irreversible).', 'dangerous'),
     customEndpoint('q2c', 'POST', '/invoices/drafts/{documentId}/lines/bulk', 'Bulk update draft invoice lines.', 'commit'),
     customEndpoint('documents', 'GET', '/AttachedDocuments/{number}/pdf', 'Fetch attached document PDF.', 'read'),
+    // Approving time entries books their cost on the project; the API has no way back.
+    customEndpoint('projects', 'POST', '/TimeEntries/approve', 'Approve time entries (no API undo).', 'dangerous'),
     // PDFs of draft and booked invoices (classic REST).
     customEndpoint('rest', 'GET', '/invoices/booked/{number}/pdf', 'Fetch the PDF of a booked invoice.', 'read'),
     // Totals per account for an accounting year or one of its periods, and

@@ -408,7 +408,7 @@ is the default. Anything else is refused before a request is sent.
 | `quote_overview` | `rest:quotes/drafts`, `rest:quotes/sent`, `rest:quotes/archived` (one quote by `number` includes its lines) |
 | `order_overview` | `rest:orders/drafts`, `rest:orders/sent`, `rest:orders/archived` (one order by `number` includes its lines) |
 | `invoice_overview` | `rest:invoices/booked`, `rest:invoices/unpaid`, `rest:invoices/overdue`, `rest:invoices/paid`, `rest:invoices/sent`, `rest:invoices/drafts` |
-| `project_overview` | `projects:Projects`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
+| `project_overview` | `projects:Projects`, `projects:project-activities`, `projects:Activities/allowed` (query `employeeNumber`, `projectNumber`), `projects:Projects/allowed` (query `employeeNumber`), `projects:Mileages`, `projects:MileagePrices`, `projects:TimeEntryPrices`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
 | `get_document` | `documents:AttachedDocuments`, `rest:invoices/booked`, `rest:invoices/drafts`; with `number` and `pdf: true` the record's PDF as base64 (at most 4 MB) |
 | `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
 | `get_entity` | **Broad** (`broad: true`): one record from any read endpoint in the service catalog, by `serviceId`/`resource`/`number` or a self URL. Give it only to callers that may read all of the agreement's data. |
@@ -423,6 +423,9 @@ Write gateway tools, disabled by default:
 | `attach_voucher_file` | write | Attaches a PDF, JPEG or PNG (at most 9 MB, type checked by its first bytes) to a voucher by voucher number and accounting year (documentsapi). Fails when the voucher already has a document, unless `onConflict: merge`. The file is never logged |
 | `upsert_customer`, `upsert_product`, `upsert_project` | write | Master data, read-merge-write |
 | `create_time_entry` | write | Project time |
+| `update_time_entry` | write | Changes a time entry that is not approved (date, hours, activity, project, note), read-merge-write |
+| `create_mileage_entry` | write | A trip in kilometres on a project |
+| `approve_time_entries` | write, booking | Approves time entries, which books their cost on the project (no API undo) |
 | `upsert_supplier` | write | Supplier master data; bank fields are refused |
 | `upsert_employee` | write | Projects add-on employee |
 | `upsert_account` | destructive | Chart of accounts. Always refused by the gateway's fence (below) |

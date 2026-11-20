@@ -12,6 +12,12 @@ const EXPECTED_MISSING = new Set<string>(process.env.ECONOMIC_DEMO_EXPECTED_MISS
 /** The summary line ends where the JSON starts (a blank line). */
 const SUMMARY_END = String.fromCharCode(10, 10);
 
+// Targets that need query parameters (the demo agreement's employee 1 and project 1).
+const REQUIRED_QUERY: Record<string, GatewayJsonObject> = {
+  'projects:Activities/allowed': { employeeNumber: 1, projectNumber: 1 },
+  'projects:Projects/allowed': { employeeNumber: 1 },
+};
+
 async function main(): Promise<void> {
   const gateway = createEconomicGateway({ appSecretToken: 'demo', agreementGrantToken: 'demo' });
   let failed = 0;
@@ -21,7 +27,7 @@ async function main(): Promise<void> {
     const pairs = /pairs: ([^.]+)\./.exec(schema.properties?.serviceId?.description ?? '')?.[1]?.split(', ') ?? [''];
     for (const pair of pairs) {
       const [serviceId, resource] = pair ? pair.split(':') : [];
-      const query: GatewayJsonObject = serviceId === 'rest' ? { pagesize: 1 } : { pageSize: 1 };
+      const query: GatewayJsonObject = serviceId === 'rest' ? { pagesize: 1 } : { pageSize: 1, ...(REQUIRED_QUERY[pair] ?? {}) };
       const input: GatewayJsonObject = serviceId && resource ? { serviceId, resource, query } : {};
       const result = await gateway.callTool(tool.name, input);
       // Only the summary line or the HTTP status: never data, never an error body.
