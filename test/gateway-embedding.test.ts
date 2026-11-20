@@ -304,6 +304,23 @@ describe('declared upstream requests', () => {
     return readTargets(name).flatMap(target => [{ ...target }, { ...target, number: 7 }, { ...target, paged: false }]);
   }
 
+  it('passes a refused access (HTTP 401) on as e-conomic\'s own error, for every tool that sends a request', async () => {
+    for (const entry of economicToolCatalog) {
+      if (entry.name === 'upsert_account') continue;
+      const gateway = createEconomicGateway({
+        appSecretToken: 'app-secret-for-tests',
+        policy: { enableWrites: true, allowBooking: true },
+        fetchImpl: (async () => new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401, headers: { 'content-type': 'application/json' } })) as typeof fetch,
+      });
+      for (const input of inputsFor(entry.name)) {
+        const result = await gateway.callTool(entry.name, input, context('grant-token-for-tests'));
+        expect(result.isError, `${entry.name} ${JSON.stringify(input)}`).toBe(true);
+        // A host recognises a withdrawn grant by this text; no tool may turn it into its own message.
+        expect(result.content[0]?.text, `${entry.name} ${JSON.stringify(input)}`).toMatch(/^e-conomic API request failed with HTTP 401(?!\d)/);
+      }
+    }
+  });
+
   it('makes only requests its catalog entry declares, for every tool', async () => {
     for (const entry of economicToolCatalog) {
       const declared = entry.upstream.map(operation => ({ method: operation.method, pattern: pattern(operation.path) }));

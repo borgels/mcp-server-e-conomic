@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.1
+
+Fix: a refused access is never hidden behind a tool's own message (#73,
+borgels/letmcp#550).
+
+- `create_draft_invoice` answered every failure of its customer lookup with
+  `Customer … could not be read from e-conomic.`, also an HTTP 401 when the
+  agreement grant had been withdrawn. Only a 404 gets that message now; any
+  other error goes on as e-conomic's own HTTP error, as in every other tool,
+  so an embedding host can tell that the access was taken back.
+- Test: every tool that sends a request answers an HTTP 401 with
+  `e-conomic API request failed with HTTP 401`.
+
 ## 0.14.0
 
 Key figures in the embedded gateway (#66). Additive for embedders.
