@@ -372,6 +372,39 @@ export function economicGatewayContractFixture(
         },
       };
 
+    case 'book_journal':
+      return {
+        text: 'Booked e-conomic contract journal.',
+        structuredContent: {
+          mode: 'contract',
+          action: 'booked',
+          journalNumber: numberOr(input.journalNumber, 1),
+          entryCount: numberOr(input.entryCount, 0),
+        },
+      };
+
+    case 'delete_journal_entry':
+      return {
+        text: 'Deleted e-conomic contract draft entry.',
+        structuredContent: {
+          mode: 'contract',
+          action: 'deleted',
+          journalNumber: numberOr(input.journalNumber, 1),
+          entryNumber: numberOr(input.entryNumber, 0),
+        },
+      };
+
+    case 'delete_draft_invoice':
+    case 'delete_draft_quote':
+    case 'delete_draft_order':
+    case 'delete_time_entry': {
+      const field = { delete_draft_invoice: 'draftInvoiceNumber', delete_draft_quote: 'quoteNumber', delete_draft_order: 'orderNumber', delete_time_entry: 'timeEntryNumber' }[toolName];
+      return {
+        text: `Deleted e-conomic contract record (${toolName}).`,
+        structuredContent: { mode: 'contract', action: 'deleted', [field]: numberOr(input[field], 0) },
+      };
+    }
+
     case 'book_invoice':
       return {
         text: 'Booked e-conomic contract draft invoice.',

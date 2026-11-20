@@ -6,6 +6,9 @@ import { prepareOperation, type PreparedOperation } from './operations.js';
 
 export const MAX_BOOKING_ENTRIES = 25;
 
+/** The most draft entries the gateway's book_journal books in one call (a whole journal). */
+export const MAX_JOURNAL_BOOKING_ENTRIES = 100;
+
 export const BOOKING_CAPABILITIES = new Set([
   'economic_prepare_booking',
   'economic_prepare_open_item_match',
@@ -115,8 +118,9 @@ export async function validateBooking(
    * server's policy (loadPolicy, which reads ECONOMIC_* settings). The embedded
    * gateway passes its own value and never reads the environment.
    */
-  limits?: { maxAmount?: number },
+  limits?: { maxAmount?: number; maxEntries?: number },
 ): Promise<BookingValidation> {
+  const maxEntries = limits?.maxEntries ?? MAX_BOOKING_ENTRIES;
   if (!Number.isInteger(input.journalNumber) || input.journalNumber < 1) {
     throw new Error('journalNumber must be a positive integer.');
   }
@@ -124,8 +128,8 @@ export async function validateBooking(
     throw new Error('entryNumbers must be positive integers.');
   }
   const entryNumbers = [...new Set(input.entryNumbers)];
-  if (entryNumbers.length === 0 || entryNumbers.length > MAX_BOOKING_ENTRIES) {
-    throw new Error(`entryNumbers must contain 1-${MAX_BOOKING_ENTRIES} unique draft entry numbers.`);
+  if (entryNumbers.length === 0 || entryNumbers.length > maxEntries) {
+    throw new Error(`entryNumbers must contain 1-${maxEntries} unique draft entry numbers.`);
   }
 
   const drafts = await fetchDraftEntries(client);
@@ -333,6 +337,23 @@ export async function draftEntryNumbersForVouchers(
     );
   }
   return wanted.flatMap(voucher => found.get(voucher) ?? []);
+}
+
+/**
+ * The draft entry numbers of one journal, read from the full list of draft
+ * entries (never from a partial list: fetchDraftEntries throws instead).
+ */
+export async function draftEntryNumbersOfJournal(client: EconomicClient, journalNumber: number): Promise<number[]> {
+  if (!Number.isInteger(journalNumber) || journalNumber < 1) {
+    throw new Error('journalNumber must be a positive integer.');
+  }
+  const drafts = await fetchDraftEntries(client);
+  const numbers: number[] = [];
+  for (const draft of drafts) {
+    const journal = draft.journalNumber ?? draft.journal?.journalNumber;
+    if (journal === journalNumber && draft.entryNumber !== undefined) numbers.push(draft.entryNumber);
+  }
+  return [...new Set(numbers)];
 }
 
 async function fetchDraftEntries(client: EconomicClient): Promise<DraftEntry[]> {

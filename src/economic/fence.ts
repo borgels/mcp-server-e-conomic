@@ -10,6 +10,8 @@ import type { HttpMethod } from './client.js';
  * The standalone server does not use the fence (its raw endpoint tool has its
  * own policy, and its time-entry tool may delete a registration).
  *
+ * DELETE is refused on every path but the few in `GATEWAY_DELETABLE`.
+ *
  * Rules are matched case-insensitively against the request path relative to
  * the base URL: `/self/company/bankinformation` on the REST API, and
  * `/<servicePath>/<path>` on the OpenAPI host, e.g.
@@ -25,16 +27,34 @@ export interface FenceRule {
 
 const WRITES: readonly HttpMethod[] = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
+/**
+ * The only paths a DELETE may reach: one record that has had no effect outside
+ * e-conomic yet. A draft journal entry (journalsapi), a draft invoice, quote or
+ * order (classic REST), and a project time entry (projectsapi). The gateway's
+ * delete tools read the record's status right before the DELETE and refuse
+ * anything booked, sent, approved or reconciled; the fence only keeps every
+ * other path out of reach. Matched against the lower-cased, decoded path.
+ */
+export const GATEWAY_DELETABLE: readonly RegExp[] = Object.freeze([
+  /^\/journalsapi\/v\d+(\.\d+)*\/draft-entries\/\d+$/,
+  /^\/invoices\/drafts\/\d+$/,
+  /^\/quotes\/drafts\/\d+$/,
+  /^\/orders\/drafts\/\d+$/,
+  /^\/projectsapi\/v\d+(\.\d+)*\/timeentries\/\d+$/,
+]);
+
+const NOT_DELETABLE = new RegExp(`^(?!(${GATEWAY_DELETABLE.map(pattern => pattern.source).join('|')})).`);
+
 export const GATEWAY_FENCE: readonly FenceRule[] = Object.freeze([
   {
     methods: ['DELETE'],
-    pattern: /./,
-    reason: 'deletion (no gateway tool deletes anything)',
+    pattern: NOT_DELETABLE,
+    reason: 'deletion (only a draft journal entry, a draft invoice, quote or order, or a time entry can be deleted)',
   },
   {
     methods: '*',
     pattern: /(^|\/)(delete|deletebulk)(\/|$)/i,
-    reason: 'deletion (no gateway tool deletes anything)',
+    reason: 'bulk deletion',
   },
   {
     methods: WRITES,
@@ -59,7 +79,7 @@ export const GATEWAY_FENCE: readonly FenceRule[] = Object.freeze([
   {
     methods: WRITES,
     pattern: /(^|\/)(book|bookwithdateinterval)(\/|$)/i,
-    reason: 'booking a whole journal (only explicit entries are booked)',
+    reason: 'booking whatever a journal holds at the time (only entries that were read and checked are booked)',
   },
   {
     methods: WRITES,

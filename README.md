@@ -209,8 +209,8 @@ a `PUT` is a full replace (omitted fields are cleared). Project status, cost typ
 and activities are read-only via the API and managed in the e-conomic UI. A time
 entry can be changed until it is approved: in the embedded gateway with
 `update_time_entry`, and `approve_time_entries` approves entries (a booking tool:
-it books their cost and cannot be undone through the API). Deleting time is never
-offered by the gateway.
+it books their cost and cannot be undone through the API). `delete_time_entry`
+deletes a time entry that is neither approved nor reconciled (invoiced).
 
 Long-tail coverage:
 
@@ -440,9 +440,18 @@ Write gateway tools, disabled by default:
 | `upsert_account` | destructive | Chart of accounts. Always refused by the gateway's fence (below) |
 | `create_journal_entries` | write | One voucher with draft lines in a journal (kassekladde): ledger lines and supplier invoices. Not booked |
 | `register_payment` | write | A customer or supplier payment as a draft journal line. Not booked; records the payment, does not move money |
+| `book_journal` | write, booking | Books every draft entry of one journal (max 100). The caller gives the number of entries (`entryCount`); when the journal holds another number, nothing is booked. Exactly the entries read and checked are booked, through `bookdraftentries`, with the same guardrails as `book_journal_entries`. Log values: the journal number and the number of entries |
 | `book_journal_entries` | write, booking | Books explicit draft entries (by entry or voucher numbers, max 25) with the booking guardrails: entries must exist in the journal; vouchers need an attached document unless `requireVoucher: false` |
 | `book_invoice` | write, booking | Books a draft invoice (`POST /invoices/booked`, `sendBy: none`: never sent electronically) |
 | `match_open_items` | write, booking | Matches booked open items (no API undo) |
+| `delete_journal_entry` | write | Deletes one draft entry (not booked) from a journal: it must be found as a draft entry of that journal |
+| `delete_draft_invoice` | write | Deletes a draft invoice (a draft is neither booked nor sent) |
+| `delete_draft_quote`, `delete_draft_order` | write | Deletes a draft quote or draft order that is neither sent nor archived |
+| `delete_time_entry` | write | Deletes a time entry that is neither approved nor reconciled (invoiced) |
+
+The delete tools read the record's status at e-conomic right before the
+`DELETE`. When the record is not found as a draft, or the status cannot be
+read (any other error, or an answer without a body), nothing is deleted.
 
 In the embedding, one call is one change: there is no prepare/commit step,
 because the host logs the change (`resolveEconomicChange`) before it calls.
@@ -451,11 +460,15 @@ The prepare and commit tools remain on the full MCP server surface.
 The fence (`GATEWAY_FENCE`, exported): requests the gateway never sends,
 whatever the host policy or the app's role at e-conomic. It is checked in the
 HTTP client right before a request goes out, so a new tool cannot open one by
-mistake: every `DELETE`, any path with a `delete`/`deletebulk` segment, and
+mistake: every `DELETE` except on the five draft paths in `GATEWAY_DELETABLE`
+(a draft journal entry, a draft invoice, quote or order, and a time entry),
+any path with a `delete`/`deletebulk` segment, and
 writes to the company record (`/self`, including bank information, the user
 and settings), anything with `bank` in the path, users, app roles, agreements
-and settings, webhooks, booking a whole journal (`/book`,
-`bookWithDateInterval`; explicit entries go through `bookdraftentries`),
+and settings, webhooks, the whole-journal booking paths (`/book`,
+`bookWithDateInterval`, which book whatever the journal holds when e-conomic
+runs them; `book_journal` and `book_journal_entries` book checked entries
+through `bookdraftentries`),
 accounting years and the chart of accounts (`/accounts`). Write tools accept
 only the fields in their schema; nothing is passed through to e-conomic. The
 credential headers are set by the client and cannot be given with a request,
@@ -493,9 +506,11 @@ What no policy turns on:
   the company record (`/self`) are denied by the built-in policy. The
   standalone server's `economic_call_endpoint` and
   `economic_commit_prepared_operation` apply the same guard.
-- **Deletion.** No gateway tool sends `DELETE`; the built-in policy allows
-  only POST, PUT and PATCH.
-- **Other booking paths.** Booking a whole journal, VAT and webhooks stay
+- **Deletion.** Only the five delete tools send `DELETE`, each on its one
+  draft endpoint, after reading the record's status. Booked or sent records,
+  customers, suppliers, products, accounts and everything else cannot be
+  deleted; the built-in policy allows only POST, PUT and PATCH otherwise.
+- **Other booking paths.** The whole-journal booking paths, VAT and webhooks stay
   denied by the built-in write policy; the booking tools are allowed only on
   their exact endpoint.
 

@@ -503,9 +503,14 @@ function buildEndpointOperations(): EndpointOperation[] {
 
   operations.push(
     customEndpoint('rest', 'POST', '/invoices/drafts', 'Create a draft (unbooked) sales invoice.', 'draft'),
+    // Deleting a draft sales document: it has not been booked or sent. The
+    // gateway's delete tools read its status right before the DELETE.
+    customEndpoint('rest', 'DELETE', '/invoices/drafts/{number}', 'Delete a draft (unbooked, unsent) invoice.', 'draft'),
+    customEndpoint('rest', 'DELETE', '/quotes/drafts/{number}', 'Delete a draft quote.', 'draft'),
+    customEndpoint('rest', 'DELETE', '/orders/drafts/{number}', 'Delete a draft order.', 'draft'),
     // Quotes and orders: drafts are created and upgraded (quote -> order ->
     // draft invoice) by POSTing the upgrade template e-conomic returns. Sending
-    // (/quotes/sent, /orders/sent) and deleting are not offered.
+    // (/quotes/sent, /orders/sent) is not offered; a draft can be deleted (above).
     customEndpoint('rest', 'POST', '/quotes/drafts', 'Create a draft quote.', 'draft'),
     customEndpoint('rest', 'POST', '/orders/drafts', 'Create a draft order.', 'draft'),
     customEndpoint('rest', 'GET', '/quotes/drafts/{number}/templates/upgrade-instructions/order', 'Template that turns a draft quote into a draft order.', 'read'),

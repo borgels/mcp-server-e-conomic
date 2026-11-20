@@ -170,12 +170,14 @@ describe('upgrade_quote and upgrade_order', () => {
   });
 });
 
-describe('no sending and no deleting of quotes and orders', () => {
-  it('has no write endpoint for sent quotes or orders and no DELETE of drafts', () => {
+describe('no sending of quotes and orders, and deleting only drafts', () => {
+  it('has no write endpoint for sent or archived quotes or orders; a draft can be deleted', () => {
     const writes = economicServiceCatalog.endpoints.filter(
       endpoint => endpoint.serviceId === 'rest' && endpoint.access === 'write' && /^\/(quotes|orders)\//.test(endpoint.pathTemplate),
     );
     expect(writes.map(endpoint => `${endpoint.method} ${endpoint.pathTemplate}`).sort()).toEqual([
+      'DELETE /orders/drafts/{number}',
+      'DELETE /quotes/drafts/{number}',
       'POST /orders/drafts',
       'POST /quotes/drafts',
     ]);
