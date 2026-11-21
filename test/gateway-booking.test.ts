@@ -303,6 +303,20 @@ describe('booking', () => {
     expect(writes()).toHaveLength(1);
   });
 
+  it('keeps the HTTP status of a failed document check as failure metadata, and books nothing', async () => {
+    const requestId = '3f2b8c1e-9a4d-4e6f-8b7a-1c2d3e4f5a6b';
+    const { gateway, writes } = fakeEconomic(booking, request =>
+      new URL(request.url).pathname.endsWith('/AttachedDocuments')
+        ? new Response('{}', { status: 403, headers: { 'x-request-id': requestId } })
+        : undefined,
+    );
+    const result = await gateway.callTool('book_journal_entries', { journalNumber: 1, entryNumbers: [13] }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('Booking blocked');
+    expect(result.failure).toEqual({ httpStatus: 403, requestId });
+    expect(writes()).toHaveLength(0);
+  });
+
   it('refuses both or neither of entryNumbers and voucherNumbers', async () => {
     const { gateway, requests } = fakeEconomic(booking);
     expect((await gateway.callTool('book_journal_entries', { journalNumber: 1 }, context)).isError).toBe(true);

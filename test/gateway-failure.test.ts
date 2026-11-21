@@ -113,6 +113,32 @@ describe('gateway error results', () => {
     expect(result.failure).toEqual({ httpStatus: 404, requestId: UUID });
   });
 
+  it('carry them when a delete tool finds no record to delete', async () => {
+    const result = await gatewayWith(answering(404, { 'x-request-id': UUID }), GRANT, { enableWrites: true }).callTool(
+      'delete_time_entry',
+      { timeEntryNumber: 5 },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('Time entry 5 does not exist');
+    expect(result.failure).toEqual({ httpStatus: 404, requestId: UUID });
+  });
+
+  it('carry them when the module is not enabled', async () => {
+    const fetchImpl = (async (input: string | URL | Request) =>
+      new URL(String(input)).pathname === '/self'
+        ? Response.json({ modules: [] })
+        : new Response('{}', { status: 403, headers: { 'x-request-id': UUID } })) as typeof fetch;
+    const result = await gatewayWith(fetchImpl, GRANT, { enableWrites: true }).callTool('add_subscriber', {
+      subscriptionNumber: 1,
+      customerNumber: 2,
+      startDate: '2026-01-01',
+      endDate: '2026-01-31',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain('module is not enabled');
+    expect(result.failure).toEqual({ httpStatus: 403, requestId: UUID });
+  });
+
   it('keep the status and request id when reading the error body fails', async () => {
     const fetchImpl = (async () =>
       new Response(

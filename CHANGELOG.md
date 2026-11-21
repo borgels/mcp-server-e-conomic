@@ -16,7 +16,8 @@
   `requestIdFrom`, `failureMetadata`).
 - Covered: every HTTP error of the client, a refused redirect, a missing
   record answered in our own words (404, for example "Draft invoice 5 does
-  not exist"), a module that is not enabled, and a booking blocked because
+  not exist", also when a delete tool finds no record), a module that is not
+  enabled, and a booking blocked because
   the attached documents could not be read (the HTTP error is kept as the
   cause). When an error body cannot be read (a timeout or a dropped
   connection), the error is now e-conomic's status alone instead of a

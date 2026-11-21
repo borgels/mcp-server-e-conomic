@@ -4651,28 +4651,31 @@ async function bookJournal(
   return jsonResult(`Booked journal ${journalNumber}: ${count}.`, { validation, result: booked ?? null });
 }
 
+/** A delete tool's status read: the record, or none (a 404) with the failure metadata of that answer. */
+type DeleteRead = { record: GatewayJsonObject; failure?: undefined } | { record?: undefined; failure?: GatewayFailure };
+
 /**
  * Reads one record for a delete tool's status check. A 404 is "not there"
- * (undefined); any other failure throws, so nothing is deleted when the status
- * cannot be read.
+ * (no record, with the 404's failure metadata for the error result); any other
+ * failure throws, so nothing is deleted when the status cannot be read.
  */
 async function readForDelete(
   client: EconomicClient,
   serviceId: string,
   pathTemplate: string,
   number: number,
-): Promise<GatewayJsonObject | undefined> {
+): Promise<DeleteRead> {
   let answer: unknown;
   try {
     answer = await callEndpoint(client, { serviceId, method: 'GET', pathTemplate, pathParams: { number } });
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return undefined;
+    if (error instanceof EconomicHttpError && error.status === 404) return { failure: failureMetadata(error) };
     throw error;
   }
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) {
     throw new Error(`e-conomic gave no readable status for ${pathTemplate.replace('{number}', String(number))}. Nothing was deleted.`);
   }
-  return answer as GatewayJsonObject;
+  return { record: answer as GatewayJsonObject };
 }
 
 /** Deletes one draft journal entry (journalsapi DELETE /draft-entries/{n}) after reading it as a draft of that journal. */
@@ -4695,9 +4698,9 @@ async function deleteJournalEntry(
   if (early) return early;
 
   // Only a draft entry is found here: a booked entry is no longer a draft entry.
-  const draft = await readForDelete(client, 'journals', '/draft-entries/{number}', entryNumber);
+  const { record: draft, failure } = await readForDelete(client, 'journals', '/draft-entries/{number}', entryNumber);
   if (!draft) {
-    return errorResult(`Draft entry ${entryNumber} does not exist (booked, deleted, or never there). Nothing was deleted.`);
+    return errorResult(`Draft entry ${entryNumber} does not exist (booked, deleted, or never there). Nothing was deleted.`, failure);
   }
   if (draft.entryNumber !== entryNumber) {
     return errorResult(`e-conomic did not answer with draft entry ${entryNumber}. Nothing was deleted.`);
@@ -4762,16 +4765,16 @@ async function deleteSalesDraft(
   const early = writePolicyDenial(policy, { capability: toolName, method: 'DELETE', path: `${kind.drafts}/${number}` });
   if (early) return early;
 
-  const draft = await readForDelete(client, 'rest', `${kind.drafts}/{number}`, number);
+  const { record: draft, failure } = await readForDelete(client, 'rest', `${kind.drafts}/{number}`, number);
   if (!draft) {
-    return errorResult(`The ${kind.noun} ${number} does not exist (booked, sent, deleted, or never there). Nothing was deleted.`);
+    return errorResult(`The ${kind.noun} ${number} does not exist (booked, sent, deleted, or never there). Nothing was deleted.`, failure);
   }
   // The answer must name the draft asked for: anything else is no proof of its status.
   if (draft[kind.field] !== number) {
     return errorResult(`e-conomic did not answer with the ${kind.noun} ${number}. Nothing was deleted.`);
   }
   for (const other of kind.notIn) {
-    if (await readForDelete(client, 'rest', `${other.path}/{number}`, number)) {
+    if ((await readForDelete(client, 'rest', `${other.path}/{number}`, number)).record) {
       return errorResult(`The ${kind.noun} ${number} is ${other.state}. Nothing was deleted.`);
     }
   }
@@ -4796,8 +4799,8 @@ async function deleteTimeEntry(
   });
   if (early) return early;
 
-  const entry = await readForDelete(client, 'projects', '/TimeEntries/{number}', number);
-  if (!entry) return errorResult(`Time entry ${number} does not exist. Nothing was deleted.`);
+  const { record: entry, failure } = await readForDelete(client, 'projects', '/TimeEntries/{number}', number);
+  if (!entry) return errorResult(`Time entry ${number} does not exist. Nothing was deleted.`, failure);
   if (entry.number !== number) return errorResult(`e-conomic did not answer with time entry ${number}. Nothing was deleted.`);
   // Both flags must be read as false: a missing or unexpected value is no proof that the entry is unused.
   if (entry.isApproved !== false || entry.isReconciled !== false) {
