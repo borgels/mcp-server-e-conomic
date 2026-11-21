@@ -421,9 +421,11 @@ async function assertVoucherHasAttachment(
   voucherNumber: number,
   accountingYear: string | undefined,
 ): Promise<void> {
-  const blocked = (why: string) =>
+  const blocked = (why: string, cause?: unknown) =>
     new Error(
       `Booking blocked: voucher ${voucherNumber} has no verifiable attached document (${why}). Attach the document first, or pass requireVoucher=false if documentation is verified elsewhere.`,
+      // An HTTP error of e-conomic's as the cause keeps its status and request id for the result's failure metadata.
+      cause === undefined ? undefined : { cause },
     );
   if (!accountingYear) {
     throw blocked('the accounting year of its entries could not be determined');
@@ -439,7 +441,7 @@ async function assertVoucherHasAttachment(
   } catch (error) {
     // A refused access (401) goes on as e-conomic's own error, so an embedding host can tell that it was taken back.
     if (error instanceof EconomicHttpError && error.status === 401) throw error;
-    throw blocked(error instanceof Error ? error.message : String(error));
+    throw blocked(error instanceof Error ? error.message : String(error), error);
   }
   const items = Array.isArray(response)
     ? response

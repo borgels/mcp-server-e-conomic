@@ -21,7 +21,14 @@ import {
 } from './economic/bookings.js';
 import { BANK_FIELDS_REFUSED, bankFieldPaths, changedBankFields } from './economic/bank-fields.js';
 import { fenceRule } from './economic/fence.js';
-import { EconomicHttpError, SecretRedactor, formatUnknownError } from './errors.js';
+import {
+  EconomicHttpError,
+  SecretRedactor,
+  failureMetadata,
+  formatUnknownError,
+  vendorRequestId,
+  type FailureMetadata,
+} from './errors.js';
 import {
   economicGatewayContractEntity,
   economicGatewayContractFixture,
@@ -54,10 +61,19 @@ export interface GatewayToolDefinition {
   inputSchema: GatewayJsonObject;
 }
 
+/**
+ * Metadata about a failed call, on an error result whose cause is known: the HTTP status e-conomic answered with, and
+ * its own request id when a response header gives one as a UUID or hex id. For a host that counts failures without
+ * reading their text. Never the response body, the vendor's error code or message, or the input.
+ */
+export type GatewayFailure = FailureMetadata;
+
 export interface GatewayToolResult {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: GatewayJsonValue;
   isError?: boolean;
+  /** On an error result from e-conomic's HTTP answer only: its status and request id (see GatewayFailure). */
+  failure?: GatewayFailure;
 }
 
 /** Per-tenant credential passed with a call. */
@@ -2396,16 +2412,16 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
             // A refused access (401) always goes on as e-conomic's own error: a module answer must not hide it.
             const refused = error instanceof EconomicHttpError && error.status === 401;
             const missing = spec.module && !refused ? await moduleMissing(client, spec.module) : undefined;
-            if (missing) return errorResult(missing);
+            if (missing) return errorResult(missing, failureMetadata(error));
             throw error;
           }
         })();
       } catch (error) {
-        result = errorResult(formatUnknownError(error, callRedactor));
+        result = errorResult(formatUnknownError(error, callRedactor), failureMetadata(error));
       }
       // Defence in depth: a token in an answer (echoed by e-conomic, or in the input of an early refusal) never
-      // reaches the caller.
-      return redactResult(result, callRedactor);
+      // reaches the caller. The failure metadata is checked last, against the same redactor.
+      return withFailureInForm(redactResult(result, callRedactor), callRedactor);
     },
   };
 }
@@ -2737,7 +2753,7 @@ async function updateDraftInvoice(
     })) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Draft invoice ${number} does not exist (already booked or deleted?).`);
+      return errorResult(`Draft invoice ${number} does not exist (already booked or deleted?).`, failureMetadata(error));
     }
     throw error;
   }
@@ -2795,7 +2811,7 @@ async function createCreditNoteDraft(
       pathParams: { number },
     })) as GatewayJsonObject;
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Booked invoice ${number} does not exist.`);
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Booked invoice ${number} does not exist.`, failureMetadata(error));
     throw error;
   }
 
@@ -2896,7 +2912,7 @@ async function createSalesDraft(
     // Only a missing customer is answered here. Anything else, a refused access (401) above all, goes on as e-conomic's
     // own HTTP error, so an embedding host can tell that the access was taken back.
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Customer ${customerNumber} could not be read from e-conomic.`);
+      return errorResult(`Customer ${customerNumber} could not be read from e-conomic.`, failureMetadata(error));
     }
     throw error;
   }
@@ -2993,7 +3009,7 @@ async function upgradeSalesDocument(
     });
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Draft ${sourceNoun} ${number} does not exist.`);
+      return errorResult(`Draft ${sourceNoun} ${number} does not exist.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3398,7 +3414,7 @@ async function upsertCustomer(
     existing = (await client.rest(`/customers/${customerNumber}`)) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Customer ${customerNumber} does not exist; omit customerNumber to create a new customer.`);
+      return errorResult(`Customer ${customerNumber} does not exist; omit customerNumber to create a new customer.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3606,7 +3622,7 @@ async function upsertSupplier(
     existing = (await client.rest(`/suppliers/${supplierNumber}`)) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Supplier ${supplierNumber} does not exist; omit supplierNumber to create a new supplier.`);
+      return errorResult(`Supplier ${supplierNumber} does not exist; omit supplierNumber to create a new supplier.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3685,7 +3701,7 @@ async function upsertEmployee(
     })) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Employee ${employeeNumber} does not exist; omit employeeNumber to create a new employee.`);
+      return errorResult(`Employee ${employeeNumber} does not exist; omit employeeNumber to create a new employee.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3904,7 +3920,7 @@ async function upsertProject(
     })) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Project ${projectNumber} does not exist; omit projectNumber to create a new project.`);
+      return errorResult(`Project ${projectNumber} does not exist; omit projectNumber to create a new project.`, failureMetadata(error));
     }
     throw error;
   }
@@ -4028,7 +4044,7 @@ async function updateTimeEntry(
       pathParams: { number },
     })) as GatewayJsonObject;
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Time entry ${number} does not exist.`);
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Time entry ${number} does not exist.`, failureMetadata(error));
     throw error;
   }
   if (existing.isApproved === true) {
@@ -4259,7 +4275,7 @@ async function endSubscriber(
       pathParams: { number },
     })) as GatewayJsonObject;
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Subscriber ${number} does not exist.`);
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Subscriber ${number} does not exist.`, failureMetadata(error));
     throw error;
   }
   if (typeof existing.startDate === 'string' && expiryDate < existing.startDate.slice(0, 10)) {
@@ -4815,7 +4831,7 @@ async function bookInvoice(
     });
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Draft invoice ${draftInvoiceNumber} does not exist (already booked or deleted?).`);
+      return errorResult(`Draft invoice ${draftInvoiceNumber} does not exist (already booked or deleted?).`, failureMetadata(error));
     }
     throw error;
   }
@@ -4963,11 +4979,27 @@ function redactJson(value: GatewayJsonValue, redactor: SecretRedactor): GatewayJ
   return value;
 }
 
-function errorResult(text: string): GatewayToolResult {
+function errorResult(text: string, failure?: GatewayFailure): GatewayToolResult {
   return {
     isError: true,
     content: [{ type: 'text', text }],
+    ...(failure ? { failure } : {}),
   };
+}
+
+/**
+ * The failure metadata as it must be after redaction: on an error result only, a status of 100-599 and a request id
+ * still in the form of one that redaction leaves as it is and that holds no piece of a credential. Anything else is
+ * dropped, never passed on.
+ */
+function withFailureInForm(result: GatewayToolResult, redactor: SecretRedactor): GatewayToolResult {
+  const { failure, ...rest } = result;
+  if (!result.isError || failure === undefined || failure === null || typeof failure !== 'object') return rest;
+  const status = failure.httpStatus;
+  if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) return rest;
+  const id = vendorRequestId(failure.requestId);
+  const requestId = id !== undefined && redactor.redact(id) === id && !redactor.sharesPiece(id) ? id : undefined;
+  return { ...rest, failure: requestId === undefined ? { httpStatus: status } : { httpStatus: status, requestId } };
 }
 
 function toGatewayJson(value: unknown): GatewayJsonValue {

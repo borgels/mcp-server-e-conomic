@@ -1,5 +1,5 @@
 import { readEnvInteger, type Env } from '../config-env.js';
-import { EconomicHttpError, SecretRedactor, defaultRedactor } from '../errors.js';
+import { EconomicHttpError, SecretRedactor, defaultRedactor, requestIdFrom } from '../errors.js';
 import { EconomicFenceError, fenceRule } from './fence.js';
 import { normalizeJsonBody } from './json.js';
 
@@ -194,6 +194,7 @@ export class EconomicClient {
         url: resolvedUrl,
         fallbackMessage: 'redirect not followed (check ECONOMIC_BASE_URL_REST / ECONOMIC_BASE_URL_OPENAPI)',
         redactor: this.redactor,
+        requestId: requestIdFrom(response.headers),
       });
     }
 
@@ -201,9 +202,10 @@ export class EconomicClient {
       return (await readBinaryBody(response, options.binary.maxBytes)) as T;
     }
 
-    const body = await readResponseBody(response);
-
     if (!response.ok) {
+      // e-conomic has answered with its status: a body that cannot be read (a timeout or a dropped connection) is
+      // left out, so the error is the status alone and keeps its status and request id.
+      const body = await readResponseBody(response).catch(() => undefined);
       throw new EconomicHttpError({
         status: response.status,
         method,
@@ -212,8 +214,11 @@ export class EconomicClient {
         retryAfter: response.headers.get('retry-after') ?? undefined,
         fallbackMessage: typeof body === 'string' ? body : undefined,
         redactor: this.redactor,
+        requestId: requestIdFrom(response.headers),
       });
     }
+
+    const body = await readResponseBody(response);
 
     return body as T;
   }
