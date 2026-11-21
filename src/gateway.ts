@@ -21,7 +21,14 @@ import {
 } from './economic/bookings.js';
 import { BANK_FIELDS_REFUSED, bankFieldPaths, changedBankFields } from './economic/bank-fields.js';
 import { fenceRule } from './economic/fence.js';
-import { EconomicHttpError, SecretRedactor, formatUnknownError } from './errors.js';
+import {
+  EconomicHttpError,
+  SecretRedactor,
+  failureMetadata,
+  formatUnknownError,
+  vendorRequestId,
+  type FailureMetadata,
+} from './errors.js';
 import {
   economicGatewayContractEntity,
   economicGatewayContractFixture,
@@ -54,10 +61,19 @@ export interface GatewayToolDefinition {
   inputSchema: GatewayJsonObject;
 }
 
+/**
+ * Metadata about a failed call, on an error result whose cause is known: the HTTP status e-conomic answered with, and
+ * its own request id when a response header gives one as a UUID or hex id. For a host that counts failures without
+ * reading their text. Never the response body, the vendor's error code or message, or the input.
+ */
+export type GatewayFailure = FailureMetadata;
+
 export interface GatewayToolResult {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: GatewayJsonValue;
   isError?: boolean;
+  /** On an error result from e-conomic's HTTP answer only: its status and request id (see GatewayFailure). */
+  failure?: GatewayFailure;
 }
 
 /** Per-tenant credential passed with a call. */
@@ -2396,16 +2412,16 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
             // A refused access (401) always goes on as e-conomic's own error: a module answer must not hide it.
             const refused = error instanceof EconomicHttpError && error.status === 401;
             const missing = spec.module && !refused ? await moduleMissing(client, spec.module) : undefined;
-            if (missing) return errorResult(missing);
+            if (missing) return errorResult(missing, failureMetadata(error));
             throw error;
           }
         })();
       } catch (error) {
-        result = errorResult(formatUnknownError(error, callRedactor));
+        result = errorResult(formatUnknownError(error, callRedactor), failureMetadata(error));
       }
       // Defence in depth: a token in an answer (echoed by e-conomic, or in the input of an early refusal) never
-      // reaches the caller.
-      return redactResult(result, callRedactor);
+      // reaches the caller. The failure metadata is checked last, against the same redactor.
+      return withFailureInForm(redactResult(result, callRedactor), callRedactor);
     },
   };
 }
@@ -2737,7 +2753,7 @@ async function updateDraftInvoice(
     })) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Draft invoice ${number} does not exist (already booked or deleted?).`);
+      return errorResult(`Draft invoice ${number} does not exist (already booked or deleted?).`, failureMetadata(error));
     }
     throw error;
   }
@@ -2795,7 +2811,7 @@ async function createCreditNoteDraft(
       pathParams: { number },
     })) as GatewayJsonObject;
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Booked invoice ${number} does not exist.`);
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Booked invoice ${number} does not exist.`, failureMetadata(error));
     throw error;
   }
 
@@ -2896,7 +2912,7 @@ async function createSalesDraft(
     // Only a missing customer is answered here. Anything else, a refused access (401) above all, goes on as e-conomic's
     // own HTTP error, so an embedding host can tell that the access was taken back.
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Customer ${customerNumber} could not be read from e-conomic.`);
+      return errorResult(`Customer ${customerNumber} could not be read from e-conomic.`, failureMetadata(error));
     }
     throw error;
   }
@@ -2993,7 +3009,7 @@ async function upgradeSalesDocument(
     });
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Draft ${sourceNoun} ${number} does not exist.`);
+      return errorResult(`Draft ${sourceNoun} ${number} does not exist.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3398,7 +3414,7 @@ async function upsertCustomer(
     existing = (await client.rest(`/customers/${customerNumber}`)) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Customer ${customerNumber} does not exist; omit customerNumber to create a new customer.`);
+      return errorResult(`Customer ${customerNumber} does not exist; omit customerNumber to create a new customer.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3467,17 +3483,20 @@ async function upsertProduct(
 
   // The product number is its key, so existence decides create vs update.
   let existing: GatewayJsonObject | undefined;
+  let notFound: GatewayFailure | undefined;
   try {
     existing = (await client.rest(`/products/${encodePathParam(productNumber, 'productNumber')}`)) as GatewayJsonObject;
   } catch (error) {
     if (!(error instanceof EconomicHttpError) || error.status !== 404) {
       throw error;
     }
+    // Not there: a create follows. Should the create be refused here, the 404 is the failure behind it.
+    notFound = failureMetadata(error);
   }
 
   if (!existing) {
     if (!flat.name || productGroupNumber === undefined) {
-      return errorResult('Creating a product requires name and productGroupNumber.');
+      return errorResult('Creating a product requires name and productGroupNumber.', notFound);
     }
 
     const body: GatewayJsonObject = {
@@ -3606,7 +3625,7 @@ async function upsertSupplier(
     existing = (await client.rest(`/suppliers/${supplierNumber}`)) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Supplier ${supplierNumber} does not exist; omit supplierNumber to create a new supplier.`);
+      return errorResult(`Supplier ${supplierNumber} does not exist; omit supplierNumber to create a new supplier.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3685,7 +3704,7 @@ async function upsertEmployee(
     })) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Employee ${employeeNumber} does not exist; omit employeeNumber to create a new employee.`);
+      return errorResult(`Employee ${employeeNumber} does not exist; omit employeeNumber to create a new employee.`, failureMetadata(error));
     }
     throw error;
   }
@@ -3742,17 +3761,20 @@ async function upsertAccount(
   }
 
   let existing: GatewayJsonObject | undefined;
+  let notFound: GatewayFailure | undefined;
   try {
     existing = (await client.rest(`/accounts/${accountNumber}`)) as GatewayJsonObject;
   } catch (error) {
     if (!(error instanceof EconomicHttpError) || error.status !== 404) {
       throw error;
     }
+    // Not there: a create follows. Should the create be refused here, the 404 is the failure behind it.
+    notFound = failureMetadata(error);
   }
 
   if (!existing) {
     if (!flat.name || !flat.accountType) {
-      return errorResult('Creating an account requires accountNumber, name, and accountType.');
+      return errorResult('Creating an account requires accountNumber, name, and accountType.', notFound);
     }
 
     const body: GatewayJsonObject = { ...flat, accountNumber };
@@ -3904,7 +3926,7 @@ async function upsertProject(
     })) as GatewayJsonObject;
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Project ${projectNumber} does not exist; omit projectNumber to create a new project.`);
+      return errorResult(`Project ${projectNumber} does not exist; omit projectNumber to create a new project.`, failureMetadata(error));
     }
     throw error;
   }
@@ -4028,7 +4050,7 @@ async function updateTimeEntry(
       pathParams: { number },
     })) as GatewayJsonObject;
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Time entry ${number} does not exist.`);
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Time entry ${number} does not exist.`, failureMetadata(error));
     throw error;
   }
   if (existing.isApproved === true) {
@@ -4259,7 +4281,7 @@ async function endSubscriber(
       pathParams: { number },
     })) as GatewayJsonObject;
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Subscriber ${number} does not exist.`);
+    if (error instanceof EconomicHttpError && error.status === 404) return errorResult(`Subscriber ${number} does not exist.`, failureMetadata(error));
     throw error;
   }
   if (typeof existing.startDate === 'string' && expiryDate < existing.startDate.slice(0, 10)) {
@@ -4635,28 +4657,31 @@ async function bookJournal(
   return jsonResult(`Booked journal ${journalNumber}: ${count}.`, { validation, result: booked ?? null });
 }
 
+/** A delete tool's status read: the record, or none (a 404) with the failure metadata of that answer. */
+type DeleteRead = { record: GatewayJsonObject; failure?: undefined } | { record?: undefined; failure?: GatewayFailure };
+
 /**
  * Reads one record for a delete tool's status check. A 404 is "not there"
- * (undefined); any other failure throws, so nothing is deleted when the status
- * cannot be read.
+ * (no record, with the 404's failure metadata for the error result); any other
+ * failure throws, so nothing is deleted when the status cannot be read.
  */
 async function readForDelete(
   client: EconomicClient,
   serviceId: string,
   pathTemplate: string,
   number: number,
-): Promise<GatewayJsonObject | undefined> {
+): Promise<DeleteRead> {
   let answer: unknown;
   try {
     answer = await callEndpoint(client, { serviceId, method: 'GET', pathTemplate, pathParams: { number } });
   } catch (error) {
-    if (error instanceof EconomicHttpError && error.status === 404) return undefined;
+    if (error instanceof EconomicHttpError && error.status === 404) return { failure: failureMetadata(error) };
     throw error;
   }
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) {
     throw new Error(`e-conomic gave no readable status for ${pathTemplate.replace('{number}', String(number))}. Nothing was deleted.`);
   }
-  return answer as GatewayJsonObject;
+  return { record: answer as GatewayJsonObject };
 }
 
 /** Deletes one draft journal entry (journalsapi DELETE /draft-entries/{n}) after reading it as a draft of that journal. */
@@ -4679,9 +4704,9 @@ async function deleteJournalEntry(
   if (early) return early;
 
   // Only a draft entry is found here: a booked entry is no longer a draft entry.
-  const draft = await readForDelete(client, 'journals', '/draft-entries/{number}', entryNumber);
+  const { record: draft, failure } = await readForDelete(client, 'journals', '/draft-entries/{number}', entryNumber);
   if (!draft) {
-    return errorResult(`Draft entry ${entryNumber} does not exist (booked, deleted, or never there). Nothing was deleted.`);
+    return errorResult(`Draft entry ${entryNumber} does not exist (booked, deleted, or never there). Nothing was deleted.`, failure);
   }
   if (draft.entryNumber !== entryNumber) {
     return errorResult(`e-conomic did not answer with draft entry ${entryNumber}. Nothing was deleted.`);
@@ -4746,16 +4771,16 @@ async function deleteSalesDraft(
   const early = writePolicyDenial(policy, { capability: toolName, method: 'DELETE', path: `${kind.drafts}/${number}` });
   if (early) return early;
 
-  const draft = await readForDelete(client, 'rest', `${kind.drafts}/{number}`, number);
+  const { record: draft, failure } = await readForDelete(client, 'rest', `${kind.drafts}/{number}`, number);
   if (!draft) {
-    return errorResult(`The ${kind.noun} ${number} does not exist (booked, sent, deleted, or never there). Nothing was deleted.`);
+    return errorResult(`The ${kind.noun} ${number} does not exist (booked, sent, deleted, or never there). Nothing was deleted.`, failure);
   }
   // The answer must name the draft asked for: anything else is no proof of its status.
   if (draft[kind.field] !== number) {
     return errorResult(`e-conomic did not answer with the ${kind.noun} ${number}. Nothing was deleted.`);
   }
   for (const other of kind.notIn) {
-    if (await readForDelete(client, 'rest', `${other.path}/{number}`, number)) {
+    if ((await readForDelete(client, 'rest', `${other.path}/{number}`, number)).record) {
       return errorResult(`The ${kind.noun} ${number} is ${other.state}. Nothing was deleted.`);
     }
   }
@@ -4780,8 +4805,8 @@ async function deleteTimeEntry(
   });
   if (early) return early;
 
-  const entry = await readForDelete(client, 'projects', '/TimeEntries/{number}', number);
-  if (!entry) return errorResult(`Time entry ${number} does not exist. Nothing was deleted.`);
+  const { record: entry, failure } = await readForDelete(client, 'projects', '/TimeEntries/{number}', number);
+  if (!entry) return errorResult(`Time entry ${number} does not exist. Nothing was deleted.`, failure);
   if (entry.number !== number) return errorResult(`e-conomic did not answer with time entry ${number}. Nothing was deleted.`);
   // Both flags must be read as false: a missing or unexpected value is no proof that the entry is unused.
   if (entry.isApproved !== false || entry.isReconciled !== false) {
@@ -4815,7 +4840,7 @@ async function bookInvoice(
     });
   } catch (error) {
     if (error instanceof EconomicHttpError && error.status === 404) {
-      return errorResult(`Draft invoice ${draftInvoiceNumber} does not exist (already booked or deleted?).`);
+      return errorResult(`Draft invoice ${draftInvoiceNumber} does not exist (already booked or deleted?).`, failureMetadata(error));
     }
     throw error;
   }
@@ -4963,11 +4988,27 @@ function redactJson(value: GatewayJsonValue, redactor: SecretRedactor): GatewayJ
   return value;
 }
 
-function errorResult(text: string): GatewayToolResult {
+function errorResult(text: string, failure?: GatewayFailure): GatewayToolResult {
   return {
     isError: true,
     content: [{ type: 'text', text }],
+    ...(failure ? { failure } : {}),
   };
+}
+
+/**
+ * The failure metadata as it must be after redaction: on an error result only, a status of 100-599 and a request id
+ * still in the form of one that redaction leaves as it is and that holds no piece of a credential. Anything else is
+ * dropped, never passed on.
+ */
+function withFailureInForm(result: GatewayToolResult, redactor: SecretRedactor): GatewayToolResult {
+  const { failure, ...rest } = result;
+  if (!result.isError || failure === undefined || failure === null || typeof failure !== 'object') return rest;
+  const status = failure.httpStatus;
+  if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) return rest;
+  const id = vendorRequestId(failure.requestId);
+  const requestId = id !== undefined && redactor.redact(id) === id && !redactor.sharesPiece(id) ? id : undefined;
+  return { ...rest, failure: requestId === undefined ? { httpStatus: status } : { httpStatus: status, requestId } };
 }
 
 function toGatewayJson(value: unknown): GatewayJsonValue {

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.23.0
+
+- Gateway error results carry failure metadata: when e-conomic answered with
+  an HTTP error (or a redirect, which is refused), the result has
+  `failure: { httpStatus, requestId? }`, so a host can count failures by
+  status without reading their text. `requestId` is e-conomic's own id from a
+  response header (`REQUEST_ID_HEADERS`), kept only when it is a hex id of 8
+  to 64 characters (one run of hex digits, or groups of four or more joined by
+  single hyphens, as in a UUID) and does not hold the shape of a personal
+  number. It is checked again after redaction, and an id that shares a piece
+  with a credential is dropped (`SecretRedactor.sharesPiece`). Never the body
+  (nor its `logId`), the vendor's error code or message. The error text is
+  unchanged. The shared helpers are in `src/errors.ts` (`vendorRequestId`,
+  `requestIdFrom`, `failureMetadata`).
+- Covered: every HTTP error of the client, a refused redirect, a missing
+  record answered in our own words (404, for example "Draft invoice 5 does
+  not exist", also when a delete tool finds no record, and the 404 behind a refused
+  create of an upsert), a module that is not
+  enabled, and a booking blocked because
+  the attached documents could not be read (the HTTP error is kept as the
+  cause). When an error body cannot be read (a timeout or a dropped
+  connection), the error is now e-conomic's status alone instead of a
+  transport error.
+
 ## 0.22.1
 
 Fix: the policy `maxAmount` treated identifiers as amounts (#46, by

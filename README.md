@@ -394,7 +394,15 @@ The embedded gateway never reads `ECONOMIC_*` environment variables
 standalone server only. Token values are redacted by a redactor owned by the
 gateway instance (and per call for a per-call token), not by process-wide
 state. Errors, including upstream HTTP failures, are returned as `isError`
-results with a redacted message.
+results with a redacted message. When e-conomic answered with an HTTP error
+(or a redirect, which is refused), the error result also has
+`failure: { httpStatus, requestId? }`: the status, and e-conomic's request id
+from a response header (`REQUEST_ID_HEADERS` in `src/errors.ts`) only when it
+is a hex id of 8 to 64 characters (one run of hex digits, or groups of four or
+more joined by single hyphens, as in a UUID), does not hold the shape of a
+personal number and shares no piece with a credential. A host can count
+failures from it without reading their text. Never the response body (nor its
+`logId`), the vendor's error code or message.
 
 Read gateway tools. Each narrow tool reads only its listed targets; the first
 is the default. Anything else is refused before a request is sent.
@@ -523,7 +531,7 @@ a blank line, and then `structuredContent` serialized as compact JSON, as the
 MCP specification recommends for tools that return structured content. Many
 clients, Claude among them, read only the text block. The JSON is exactly
 `structuredContent`: bank details, user data and other fields the gateway
-removes are absent from both. Error results have only the text.
+removes are absent from both. Error results have only the text (and `failure`, see above).
 
 For review automation without live e-conomic credentials, set
 `contractMode: true` when creating the gateway:

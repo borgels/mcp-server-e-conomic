@@ -19,6 +19,11 @@ export class EconomicHttpError extends Error {
   readonly payload?: EconomicErrorPayload | unknown;
   readonly retryAfter?: string;
   readonly logId?: string;
+  /**
+   * e-conomic's own id for the request, from a response header, only in the form such ids have (see requestIdFrom).
+   * Not part of the message.
+   */
+  readonly requestId?: string;
 
   constructor(input: {
     status: number;
@@ -28,6 +33,7 @@ export class EconomicHttpError extends Error {
     retryAfter?: string;
     fallbackMessage?: string;
     redactor?: SecretRedactor;
+    requestId?: string;
   }) {
     super(formatEconomicHttpError(input));
     this.name = 'EconomicHttpError';
@@ -37,7 +43,76 @@ export class EconomicHttpError extends Error {
     this.payload = input.payload;
     this.retryAfter = input.retryAfter;
     this.logId = isEconomicErrorPayload(input.payload) ? input.payload.logId : undefined;
+    this.requestId = vendorRequestId(input.requestId);
   }
+}
+
+/**
+ * Response headers that carry the vendor's own id for a request, most specific first. Add the vendor's documented
+ * header in front when it has one.
+ */
+export const REQUEST_ID_HEADERS: readonly string[] = [
+  'x-request-id',
+  'request-id',
+  'x-correlation-id',
+  'correlation-id',
+  'x-ms-request-id',
+  'x-amzn-requestid',
+];
+
+/**
+ * A hex id: one run of hex digits, or groups of at least four hex digits joined by single hyphens (a UUID is one),
+ * 8 to 64 characters in all. A name, a sentence or an e-mail address never fits.
+ */
+const REQUEST_ID_FORM = /^[0-9A-Fa-f]{4,}(?:-[0-9A-Fa-f]{4,})*$/;
+/** Six digits and four more: the shape of a Danish personal number. An id that holds it is dropped. */
+const PERSONAL_NUMBER_SHAPE = /\d{6}-?\d{4}/;
+
+/**
+ * The vendor's request id, only in the form such ids have (a UUID or a hex id of 8 to 64 characters), or
+ * undefined. Anything else, and an id that holds the shape of a personal number, is dropped: the value comes from
+ * the vendor and is kept only when it cannot be text.
+ */
+export function vendorRequestId(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const id = value.trim();
+  return id.length >= 8 && id.length <= 64 && REQUEST_ID_FORM.test(id) && !PERSONAL_NUMBER_SHAPE.test(id) ? id : undefined;
+}
+
+/** The vendor's request id from the first of REQUEST_ID_HEADERS a response has in the right form, or undefined. */
+export function requestIdFrom(headers: Headers, names: readonly string[] = REQUEST_ID_HEADERS): string | undefined {
+  for (const name of names) {
+    const id = vendorRequestId(headers.get(name));
+    if (id !== undefined) return id;
+  }
+  return undefined;
+}
+
+/**
+ * Metadata about a failed call, for a host that counts failures: the HTTP status e-conomic answered with and its
+ * request id. Never the response body (not its logId either), the vendor's error code or message, or the input.
+ */
+export interface FailureMetadata {
+  /** The HTTP status of e-conomic's answer (100-599). */
+  httpStatus: number;
+  /** The vendor's own id for the request, as a UUID or hex id only. */
+  requestId?: string;
+}
+
+/**
+ * The failure metadata of an error: an HTTP error from e-conomic (a refused redirect included) gives its status and
+ * request id; so does an error of ours that has one as its cause.
+ */
+export function failureMetadata(error: unknown): FailureMetadata | undefined {
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error && !(current instanceof EconomicHttpError); depth += 1) {
+    current = current.cause;
+  }
+  if (!(current instanceof EconomicHttpError)) return undefined;
+  const status = current.status;
+  if (!Number.isInteger(status) || status < 100 || status > 599) return undefined;
+  const requestId = vendorRequestId(current.requestId);
+  return requestId === undefined ? { httpStatus: status } : { httpStatus: status, requestId };
 }
 
 export function formatUnknownError(error: unknown, redactor?: SecretRedactor): string {
@@ -95,6 +170,20 @@ export class SecretRedactor {
 
   get size(): number {
     return this.values.size;
+  }
+
+  /**
+   * True when `value` holds a piece of a credential value (MIN_SECRET_LENGTH characters or more), or a credential
+   * holds it whole: such a value is not passed on, even where redaction would leave it unchanged.
+   */
+  sharesPiece(value: string): boolean {
+    for (const secret of this.values) {
+      if (secret.includes(value) || value.includes(secret)) return true;
+      for (let start = 0; start + MIN_SECRET_LENGTH <= value.length; start += 1) {
+        if (secret.includes(value.slice(start, start + MIN_SECRET_LENGTH))) return true;
+      }
+    }
+    return false;
   }
 
   redact(value: string): string {
