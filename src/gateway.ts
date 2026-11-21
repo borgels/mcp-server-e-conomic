@@ -3483,17 +3483,20 @@ async function upsertProduct(
 
   // The product number is its key, so existence decides create vs update.
   let existing: GatewayJsonObject | undefined;
+  let notFound: GatewayFailure | undefined;
   try {
     existing = (await client.rest(`/products/${encodePathParam(productNumber, 'productNumber')}`)) as GatewayJsonObject;
   } catch (error) {
     if (!(error instanceof EconomicHttpError) || error.status !== 404) {
       throw error;
     }
+    // Not there: a create follows. Should the create be refused here, the 404 is the failure behind it.
+    notFound = failureMetadata(error);
   }
 
   if (!existing) {
     if (!flat.name || productGroupNumber === undefined) {
-      return errorResult('Creating a product requires name and productGroupNumber.');
+      return errorResult('Creating a product requires name and productGroupNumber.', notFound);
     }
 
     const body: GatewayJsonObject = {
@@ -3758,17 +3761,20 @@ async function upsertAccount(
   }
 
   let existing: GatewayJsonObject | undefined;
+  let notFound: GatewayFailure | undefined;
   try {
     existing = (await client.rest(`/accounts/${accountNumber}`)) as GatewayJsonObject;
   } catch (error) {
     if (!(error instanceof EconomicHttpError) || error.status !== 404) {
       throw error;
     }
+    // Not there: a create follows. Should the create be refused here, the 404 is the failure behind it.
+    notFound = failureMetadata(error);
   }
 
   if (!existing) {
     if (!flat.name || !flat.accountType) {
-      return errorResult('Creating an account requires accountNumber, name, and accountType.');
+      return errorResult('Creating an account requires accountNumber, name, and accountType.', notFound);
     }
 
     const body: GatewayJsonObject = { ...flat, accountNumber };

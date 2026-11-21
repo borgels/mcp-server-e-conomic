@@ -113,6 +113,14 @@ describe('gateway error results', () => {
     expect(result.failure).toEqual({ httpStatus: 404, requestId: UUID });
   });
 
+  it('carry the 404 when upsert_product finds no product and the create is refused', async () => {
+    const gw = gatewayWith(answering(404, { 'x-request-id': UUID }), GRANT, { enableWrites: true });
+    const product = await gw.callTool('upsert_product', { productNumber: 'P1', salesPrice: 10 });
+    expect(product.isError).toBe(true);
+    expect(product.content[0]!.text).toContain('Creating a product requires');
+    expect(product.failure).toEqual({ httpStatus: 404, requestId: UUID });
+  });
+
   it('carry them when a delete tool finds no record to delete', async () => {
     const result = await gatewayWith(answering(404, { 'x-request-id': UUID }), GRANT, { enableWrites: true }).callTool(
       'delete_time_entry',
