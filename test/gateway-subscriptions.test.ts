@@ -48,7 +48,7 @@ describe('subscription_overview', () => {
   it('says plainly that the module is off when a request fails and /self has no subscription module', async () => {
     const { gateway, requests } = fakeEconomic(request =>
       new URL(request.url).pathname === '/self'
-        ? Response.json({ modules: [{ moduleNumber: 4, name: 'Projektstyring' }] })
+        ? Response.json({ application: { requiredRoles: [{ roleNumber: 2, name: 'SuperUser' }] }, modules: [{ moduleNumber: 4, name: 'Projektstyring' }] })
         : new Response('{"message":"Forbidden"}', { status: 403 }));
     const result = await gateway.callTool('subscription_overview', {}, context);
     expect(result).toMatchObject({

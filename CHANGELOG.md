@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.25.1
+
+The answer for a missing add-on module (0.25.0) was given in two cases where
+it must not be (#101). Both are fixed; a host that does not count a marked
+answer as a failure would otherwise lose the failure.
+
+- Only a refusal (HTTP 403) is asked about, as a positive list. In 0.25.0 the
+  agreement was read after any HTTP error but 401, 408 and 429, so an outage
+  at e-conomic (500, 502, 503, 504) on an agreement without the module was
+  answered as a missing module. Now every other status goes on as e-conomic's
+  own error, unmarked, and `/self` is not read: a 5xx, a 404 ("Time entry 5
+  does not exist" stays that), a 400, a 409. e-conomic's documentation names
+  no status for a missing module; it describes 403 as access denied "even
+  though you were authorized", and 403 is the status seen for it.
+- A refusal that the app's roles explain is no longer overruled by the module
+  answer. The same `/self` answer must show that the app's roles in the grant
+  (`application.requiredRoles`) include one that reaches the resource of each
+  request e-conomic refused in the call. The roles follow the concrete
+  resource, as e-conomic's OpenAPI documents for the projects, subscriptions
+  and dimensions APIs name them (`src/economic/app-roles.ts`): `SuperUser` or
+  `ProjectEmployee` for projects, time and mileage; `SuperUser` or `Sales`
+  for employees, employee groups and subscriptions; all four roles for the
+  dimensions themselves, their values and distributions; `SuperUser` or
+  `Bookkeeping` for dimensions on draft and booked entries; `SuperUser` or
+  `Sales` for dimensions on sales document lines and booked invoice lines.
+  `set_entry_dimensions` therefore goes by the role of its `target`. When
+  the roles do not reach the refused resource, the refusal is of something
+  outside the module, or the answer does not say which roles the app has,
+  e-conomic's own error stands.
+- The table of roles is held to e-conomic's documents by a test: the roles of
+  every operation of the three APIs are in
+  `test/fixtures/economic-app-roles.json` (`npm run fixture:app-roles` writes
+  it from the documents of the versions the catalog pins).
+- A list of modules with an entry that names no module (`null`, `{}`, a
+  string, a number that is not an integer) shows nothing about the module:
+  e-conomic's own error stands. In 0.25.0 such a list was read as "the module
+  is not there".
+- The client records the requests e-conomic refused with 403
+  (`EconomicClient.refused`: method, API and path, never the query), which is
+  what the role check goes by.
+
 ## 0.25.0
 
 An agreement without an add-on module gets a plain, marked answer from every

@@ -67,6 +67,15 @@ export interface EconomicRawBodyOptions {
   idempotencyKey?: string;
 }
 
+/** A request e-conomic refused with HTTP 403: its method, the API it was sent to and its path there. */
+export interface EconomicRefusedRequest {
+  readonly method: string;
+  /** Classic REST or the OpenAPI services; undefined when the URL is on neither base URL. */
+  readonly surface: 'rest' | 'openapi' | undefined;
+  /** The path relative to the base URL, without the query: "/projectsapi/v1.1.1/Projects/paged", "/departments/3". */
+  readonly path: string;
+}
+
 export class EconomicClient {
   private readonly appSecretToken?: string;
   private readonly agreementGrantToken?: string;
@@ -76,6 +85,15 @@ export class EconomicClient {
   private readonly timeoutMs: number;
   private readonly redactor: SecretRedactor;
   private readonly fence: boolean;
+  private readonly refusedRequests: EconomicRefusedRequest[] = [];
+
+  /**
+   * The requests of this client that e-conomic refused with HTTP 403, in the order they were answered: what was
+   * asked for, so a caller can tell which resource a refusal was about. Paths only, never a query or an answer.
+   */
+  get refused(): readonly EconomicRefusedRequest[] {
+    return [...this.refusedRequests];
+  }
 
   constructor(options: EconomicClientOptions = {}) {
     const env = options.credentialEnv ?? process.env;
@@ -206,6 +224,13 @@ export class EconomicClient {
       // e-conomic has answered with its status: a body that cannot be read (a timeout or a dropped connection) is
       // left out, so the error is the status alone and keeps its status and request id.
       const body = await readResponseBody(response).catch(() => undefined);
+      if (response.status === 403) {
+        this.refusedRequests.push({
+          method,
+          surface: this.surfaceOf(resolvedUrl),
+          path: this.relativePath(resolvedUrl),
+        });
+      }
       throw new EconomicHttpError({
         status: response.status,
         method,
@@ -221,6 +246,16 @@ export class EconomicClient {
     const body = await readResponseBody(response);
 
     return body as T;
+  }
+
+  /** Which of the two base URLs a request was built on; undefined for a URL on neither. */
+  private surfaceOf(resolvedUrl: string): 'rest' | 'openapi' | undefined {
+    const on = (base: string) => resolvedUrl === base || resolvedUrl.startsWith(`${trimTrailingSlash(base)}/`);
+    const openApi = on(this.openApiBaseUrl);
+    const rest = on(this.restBaseUrl);
+    // Both on the same base (a proxy in front of e-conomic): the surface cannot be told from the URL.
+    if (openApi === rest) return undefined;
+    return openApi ? 'openapi' : 'rest';
   }
 
   buildRestUrl(path: string, query?: Record<string, QueryValue>): string {

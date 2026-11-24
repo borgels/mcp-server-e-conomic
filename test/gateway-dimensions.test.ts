@@ -90,7 +90,7 @@ describe('set_entry_dimensions', () => {
   it('says plainly that the dimension module is off, and keeps e-conomic’s own error when it is on', async () => {
     const off = fakeEconomic(request =>
       new URL(request.url).pathname === '/self'
-        ? Response.json({ modules: [{ moduleNumber: 4, name: 'Projektstyring' }] })
+        ? Response.json({ application: { requiredRoles: [{ roleNumber: 2, name: 'SuperUser' }] }, modules: [{ moduleNumber: 4, name: 'Projektstyring' }] })
         : new Response('{"message":"Forbidden"}', { status: 403 }));
     const result = await off.gateway.callTool('dimension_overview', {}, context);
     expect(result.isError).toBe(true);

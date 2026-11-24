@@ -134,7 +134,7 @@ describe('gateway error results', () => {
   it('carry them when the module is not enabled', async () => {
     const fetchImpl = (async (input: string | URL | Request) =>
       new URL(String(input)).pathname === '/self'
-        ? Response.json({ modules: [] })
+        ? Response.json({ application: { requiredRoles: [{ roleNumber: 2, name: 'SuperUser' }] }, modules: [] })
         : new Response('{}', { status: 403, headers: { 'x-request-id': UUID } })) as typeof fetch;
     const result = await gatewayWith(fetchImpl, GRANT, { enableWrites: true }).callTool('add_subscriber', {
       subscriptionNumber: 1,

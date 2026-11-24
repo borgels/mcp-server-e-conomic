@@ -1,4 +1,5 @@
-import { EconomicClient, type EconomicBinaryBody, type QueryValue } from './economic/client.js';
+import { appRoleKey, economicAppRolesFor, type EconomicAppRole } from './economic/app-roles.js';
+import { EconomicClient, type EconomicBinaryBody, type EconomicRefusedRequest, type QueryValue } from './economic/client.js';
 import {
   ECONOMIC_SERVICES,
   ENDPOINT_OPERATIONS,
@@ -75,10 +76,11 @@ export interface GatewayToolResult {
   /** On an error result from e-conomic's HTTP answer only: its status and request id (see GatewayFailure). */
   failure?: GatewayFailure;
   /**
-   * On an error result only: the add-on module the agreement does not have, when e-conomic answered a request of the
-   * tool with an error and the agreement's modules (GET /self) do not list the module the request needs. A fixed id,
-   * so a host can answer in its own words without reading the text, and can tell it from a refused access and from
-   * a failure. `failure` still carries the status e-conomic answered with.
+   * On an error result only: the add-on module the agreement does not have, when e-conomic refused a request of the
+   * tool (HTTP 403) and the agreement's own answer (GET /self) shows that its modules do not list the module the
+   * request needs and that the app's roles reach what was asked for. A fixed id, so a host can answer in its own
+   * words without reading the text, and can tell it from a refused access and from a failure. Never on another
+   * status: an outage (5xx) is always e-conomic's own error. `failure` still carries the status (403).
    */
   missingModule?: EconomicModuleId;
 }
@@ -223,10 +225,10 @@ export interface GatewayToolCatalogEntry {
   readonly defaultRead?: EconomicResourceRef;
   /**
    * e-conomic addition: the add-on module the tool belongs to, when all of it does. An agreement without the module
-   * gets `missingModule` on the tool's error results. Absent for a tool that reads such a module only among other
-   * things (`search_entities`, `get_entity`) and for `upsert_employee`, whose employees e-conomic also gives without
-   * the Project module; their results carry `missingModule` all the same. `project_overview` has it although it
-   * also reads employees and employee groups.
+   * gets `missingModule` on the tool's refused requests (403). Absent for a tool that reads such a module only among
+   * other things (`search_entities`, `get_entity`) and for `upsert_employee`, whose employees e-conomic also gives
+   * without the Project module; their results carry `missingModule` all the same. `project_overview` has it although
+   * it also reads employees and employee groups.
    */
   readonly module?: EconomicModuleId;
   /**
@@ -1166,18 +1168,19 @@ interface ToolSpec extends GatewayToolDefinition {
   /** Write tools: what the change does, for the host's log. */
   change?: EconomicChangeSpec;
   /**
-   * Write tools: the e-conomic module the tool needs. When e-conomic answers
-   * a request of the tool with an error, the gateway reads the agreement's
-   * modules (GET /self) and answers plainly if the module is not enabled.
-   * Read tools get theirs from the target they read (moduleOfTarget).
+   * Write tools: the e-conomic module the tool needs. When e-conomic refuses
+   * a request of the tool (HTTP 403), the gateway reads the agreement in
+   * GET /self and answers plainly if the module is not enabled and the app's
+   * roles are not the reason (moduleMissing). Read tools get theirs from the
+   * target they read (moduleOfTarget).
    */
   module?: EconomicModule;
   /**
-   * With `module`: the agreement's modules are read only when e-conomic
-   * refused the request (403), because the tool's resource is also there
-   * without the module (see PROJECT_RESOURCES_WITHOUT_MODULE).
+   * With `module`: the tool changes employees, which are also there without
+   * the module (e-conomic documents them for the Sales role, not the project
+   * role). The catalog then names no module for the tool.
    */
-  moduleWhenRefused?: boolean;
+  moduleEmployees?: boolean;
 }
 
 interface EconomicModule {
@@ -1204,6 +1207,17 @@ const SUBSCRIPTION_MODULE: EconomicModule = {
 };
 const DIMENSION_MODULE: EconomicModule = { id: 'dimension', moduleNumber: 14, pattern: /dimension/i, name: 'Dimension' };
 
+/**
+ * The statuses e-conomic can answer a request with because the agreement
+ * does not have the module the request needs: a refusal (403), and nothing
+ * else. e-conomic's documentation names no status for a missing module; it
+ * says a 403 is access that is denied "even though you were authorized", and
+ * 403 is the status seen for it. A positive list, so that an outage (5xx), a
+ * record that does not exist (404), an input e-conomic does not accept (400)
+ * and a refused access (401) always go on as e-conomic's own error.
+ */
+const MODULE_OFF_STATUSES: ReadonlySet<number> = new Set([403]);
+
 /** The module every resource of a service belongs to. */
 const SERVICE_MODULES: Readonly<Record<string, EconomicModule>> = {
   projects: PROJECT_MODULE,
@@ -1217,39 +1231,54 @@ const REST_MODULES: Readonly<Record<string, EconomicModule>> = {
   'departmental-distributions': DIMENSION_MODULE,
 };
 
-/**
- * Resources of the projects service that e-conomic documents as open to an
- * app with the Sales role too, not only the project role: employees are also
- * used on sales documents, so an agreement without the Project module may
- * have them. For these the agreement's modules are read only when e-conomic
- * refused the request (403), so another error (a filter it does not accept,
- * a number that does not exist) is never answered as a missing module.
- */
-const PROJECT_RESOURCES_WITHOUT_MODULE: ReadonlySet<string> = new Set(['Employees', 'EmployeeGroups']);
-
-/** The module a request needs, and whether it is asked about only after a refusal (403). */
-interface ModuleNeed {
-  readonly module: EconomicModule;
-  readonly whenRefused: boolean;
+/** The module a read target belongs to, if any. */
+function moduleOfTarget(target: EconomicResourceRef): EconomicModule | undefined {
+  return target.serviceId === 'rest' ? REST_MODULES[target.resource] : SERVICE_MODULES[target.serviceId];
 }
 
-/** The module a read target belongs to, if any. */
-function moduleOfTarget(target: EconomicResourceRef): ModuleNeed | undefined {
-  const module = target.serviceId === 'rest' ? REST_MODULES[target.resource] : SERVICE_MODULES[target.serviceId];
-  if (!module) return undefined;
-  return { module, whenRefused: module === PROJECT_MODULE && PROJECT_RESOURCES_WITHOUT_MODULE.has(target.resource) };
+/** The OpenAPI services of the modules, by their path under the base URL ("projectsapi/v1.1.1"). */
+const MODULE_SERVICE_PATHS: ReadonlyArray<{ readonly serviceId: string; readonly prefix: string }> = ECONOMIC_SERVICES.filter(
+  service => service.servicePath !== undefined && Object.hasOwn(SERVICE_MODULES, service.id),
+).map(service => ({ serviceId: service.id, prefix: `/${service.servicePath!.toLowerCase()}/` }));
+
+/**
+ * What a refused request (403) was about: the module its resource belongs to
+ * and the app roles e-conomic documents for that resource
+ * (economic/app-roles.ts). Undefined for a request that belongs to no module,
+ * or to a resource with no documented roles: such a refusal says nothing
+ * about a module.
+ */
+function moduleOfRefusal(
+  refused: EconomicRefusedRequest,
+): { readonly module: EconomicModule; readonly roles: readonly EconomicAppRole[] } | undefined {
+  if (refused.surface === 'openapi') {
+    const path = refused.path.toLowerCase();
+    const service = MODULE_SERVICE_PATHS.find(candidate => path.startsWith(candidate.prefix));
+    if (!service) return undefined;
+    const roles = economicAppRolesFor(service.serviceId, refused.path.slice(service.prefix.length - 1));
+    const module = SERVICE_MODULES[service.serviceId];
+    return roles && module ? { module, roles } : undefined;
+  }
+  if (refused.surface === 'rest') {
+    const resource = refused.path.split('/').find(segment => segment !== '') ?? '';
+    const module = Object.hasOwn(REST_MODULES, resource) ? REST_MODULES[resource] : undefined;
+    const roles = economicAppRolesFor('rest', refused.path);
+    return roles && module ? { module, roles } : undefined;
+  }
+  return undefined;
 }
 
 /**
  * The module a tool belongs to, when all of it does: a write tool's own, or
- * the one every target of a narrow read tool has. Not a tool whose resource
- * is also there without the module (moduleWhenRefused): a host that goes by
- * the catalog must not take it for unusable on an agreement without it.
+ * the one every target of a narrow read tool has. Not a tool that changes
+ * employees, which are also there without the module (moduleEmployees): a
+ * host that goes by the catalog must not take it for unusable on an
+ * agreement without it.
  */
 function moduleOfSpec(spec: ToolSpec): EconomicModule | undefined {
-  if (spec.module) return spec.moduleWhenRefused ? undefined : spec.module;
+  if (spec.module) return spec.moduleEmployees ? undefined : spec.module;
   if (spec.broad || spec.reads.length === 0) return undefined;
-  const modules = new Set(spec.reads.map(target => moduleOfTarget(target)?.module));
+  const modules = new Set(spec.reads.map(target => moduleOfTarget(target)));
   return modules.size === 1 ? [...modules][0] : undefined;
 }
 
@@ -1338,9 +1367,9 @@ function narrowReadTool(name: string, title: string, description: string): ToolS
 }
 
 function writeTool(
-  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads' | 'booking' | 'change' | 'module' | 'moduleWhenRefused'> & {
+  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads' | 'booking' | 'change' | 'module' | 'moduleEmployees'> & {
     module?: EconomicModule;
-    moduleWhenRefused?: boolean;
+    moduleEmployees?: boolean;
     riskLevel?: GatewayRiskLevel;
     booking?: boolean;
     change: EconomicChangeSpec;
@@ -1753,9 +1782,9 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). ${WRITE_NOTE}`,
     inputSchema: upsertEmployeeInput,
     change: change('upsert', 'project-employee', { employeeNumber: 'recordNumber' }),
-    // Employees are also there without the Project module: asked about only after a refusal.
+    // Employees are also there without the Project module: not a tool of the module in the catalog.
     module: PROJECT_MODULE,
-    moduleWhenRefused: true,
+    moduleEmployees: true,
     upstream: [
       operation('read', 'GET', 'projects', 'Employees', '/Employees/{number}'),
       operation('write', 'POST', 'projects', 'Employees', '/Employees'),
@@ -2508,22 +2537,25 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
 
           // The module the request needs: the read target's, or the write tool's own.
-          const need: ModuleNeed | undefined = target
-            ? moduleOfTarget(target)
-            : spec.module
-              ? { module: spec.module, whenRefused: spec.moduleWhenRefused === true }
-              : undefined;
-          // After e-conomic answered a request with an error (thrown, or answered in our own words such as "Time
-          // entry 5 does not exist"): the plain answer when the agreement does not have the module. A refused access
-          // (401) always goes on as e-conomic's own error: a module answer must not hide it.
+          const need: EconomicModule | undefined = target ? moduleOfTarget(target) : spec.module;
+          // After e-conomic refused a request (403, thrown or answered in our own words): the plain answer when
+          // the agreement does not have the module and the app's roles are not the reason. Every other status goes
+          // on as e-conomic's own error: an outage (5xx), a refused access (401) and a record that does not exist
+          // say nothing about what the agreement has, and a module answer must not hide them.
           const moduleOff = async (failure: GatewayFailure | undefined): Promise<GatewayToolResult | undefined> => {
             const status = failure?.httpStatus;
-            if (need === undefined || status === undefined || status === 401) return undefined;
-            // Too many requests, or a request e-conomic gave up waiting for: says nothing about a module, and
-            // another request would only add to the load.
-            if (status === 408 || status === 429) return undefined;
-            if (need.whenRefused && status !== 403) return undefined;
-            return (await moduleMissing(client, need.module)) ? moduleMissingResult(need.module, failure) : undefined;
+            if (need === undefined || status === undefined || !MODULE_OFF_STATUSES.has(status)) return undefined;
+            // The roles follow the requests e-conomic refused in this call, each by its own resource: a dimension
+            // on a draft entry asks for another role than one on a sales line. A refusal of something outside the
+            // module, or of a resource with no documented roles, is not about the module.
+            const refusals = client.refused.map(moduleOfRefusal);
+            if (refusals.length === 0) return undefined;
+            const roles: Array<readonly EconomicAppRole[]> = [];
+            for (const refusal of refusals) {
+              if (refusal?.module !== need) return undefined;
+              roles.push(refusal.roles);
+            }
+            return (await moduleMissing(client, need, roles)) ? moduleMissingResult(need, failure) : undefined;
           };
 
           try {
@@ -4255,22 +4287,59 @@ async function approveTimeEntries(
 }
 
 /**
- * After a failed request: true when the agreement does not have the module
- * the request needs (from GET /self, by the module's number or its name).
- * A failure to read /self, or an answer without a list of modules, says
- * nothing: then e-conomic's own error stands.
+ * After refused requests: true when the agreement's own answer (GET /self)
+ * shows that the module they need is the reason. Both must hold:
+ *
+ * - the app's roles in the grant (`application.requiredRoles`) include, for
+ *   each refused request, one of the roles e-conomic documents for its
+ *   resource (`reaching`, one list per refused request), so no refusal is
+ *   about the roles (e-conomic: a 403 "depends on the roles asked for when
+ *   the grant was issued");
+ * - the agreement's modules (`modules`) are a list in which every entry can
+ *   be read (a module number or a name), and the module is not on it, by its
+ *   number or its name.
+ *
+ * A failure to read /self (a timeout included), an answer without the roles
+ * or without a list of modules, an entry in the list that cannot be read, or
+ * roles that do not reach a refused resource say nothing about the module:
+ * then e-conomic's own error stands.
  */
-async function moduleMissing(client: EconomicClient, module: EconomicModule): Promise<boolean> {
+async function moduleMissing(
+  client: EconomicClient,
+  module: EconomicModule,
+  reaching: ReadonlyArray<readonly EconomicAppRole[]>,
+): Promise<boolean> {
   try {
-    const modules = asObject(await client.rest('/self')).modules;
+    const self = asObject(await client.rest('/self'));
+    const requiredRoles = asObject(self.application).requiredRoles;
+    if (!Array.isArray(requiredRoles)) return false;
+    const granted = new Set(requiredRoles.map(item => appRoleKey(asObject(item).name)));
+    if (reaching.length === 0 || !reaching.every(roles => roles.some(role => granted.has(appRoleKey(role))))) return false;
+    const modules = self.modules;
     if (!Array.isArray(modules)) return false;
-    return !modules.some(item => {
-      const entry = asObject(item);
-      return entry.moduleNumber === module.moduleNumber || module.pattern.test(String(entry.name ?? ''));
-    });
+    let listed = false;
+    for (const item of modules) {
+      const entry = moduleEntry(item);
+      // An entry that cannot be read may be the module: the list then shows nothing.
+      if (!entry) return false;
+      if (entry.moduleNumber === module.moduleNumber || (entry.name !== undefined && module.pattern.test(entry.name))) listed = true;
+    }
+    return !listed;
   } catch {
     return false;
   }
+}
+
+/** One entry of `modules` in /self, when it names a module: an integer number, a name, or both. */
+function moduleEntry(item: unknown): { readonly moduleNumber?: number; readonly name?: string } | undefined {
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return undefined;
+  const { moduleNumber, name } = item as { moduleNumber?: unknown; name?: unknown };
+  const number = typeof moduleNumber === 'number' && Number.isInteger(moduleNumber) ? moduleNumber : undefined;
+  const text = typeof name === 'string' && name.trim() !== '' ? name : undefined;
+  if (moduleNumber !== undefined && number === undefined) return undefined;
+  if (name !== undefined && name !== null && text === undefined) return undefined;
+  if (number === undefined && text === undefined) return undefined;
+  return { ...(number === undefined ? {} : { moduleNumber: number }), ...(text === undefined ? {} : { name: text }) };
 }
 
 /** The plain answer for a module the agreement does not have, marked with the module's id for the host. */
