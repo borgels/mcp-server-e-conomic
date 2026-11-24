@@ -32,7 +32,8 @@
     "prepare": "npm run build",
     "prepack": "npm run typecheck && npm test && npm run build",
     "smoke:live": "tsx test/live-smoke.ts",
-    "check:demo": "tsx test/demo-check.ts"
+    "check:demo": "tsx test/demo-check.ts",
+    "fixture:app-roles": "tsx test/app-roles-fixture.ts"
   },
   "repository": {
     "type": "git",

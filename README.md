@@ -416,18 +416,37 @@ result, when that answer shows both of these:
 - the module is not in the agreement's `modules`, by its number (4, 14 and
   74) or its name;
 - the app's roles in the grant (`application.requiredRoles`) include one that
-  reaches what was asked for, so the roles are not the reason for the
-  refusal: `SuperUser`, or `ProjectEmployee` for projects, or `Sales` for
-  subscriptions and for employees and employee groups. The dimensions service
-  names different roles per resource, so there only `SuperUser` counts.
+  reaches the resource of each request e-conomic refused, so the roles are
+  not the reason for the refusal. The roles are the ones e-conomic's OpenAPI
+  documents name per resource (`src/economic/app-roles.ts`):
+
+  | Resource | Roles that reach it |
+  |---|---|
+  | Projects, time, mileage, activities, cost types | `SuperUser`, `ProjectEmployee` |
+  | Employees and employee groups | `SuperUser`, `Sales` |
+  | Subscriptions, subscribers, subscription lines | `SuperUser`, `Sales` |
+  | Dimensions, their values and distributions | all four roles |
+  | Dimensions on draft and booked entries, accounts, budget figures | `SuperUser`, `Bookkeeping` |
+  | Dimensions on sales document lines and booked invoice lines | `SuperUser`, `Sales` |
+  | Classic REST `departments` | `SuperUser`, `Bookkeeping`, `Sales` |
+  | Classic REST `departmental-distributions` | `SuperUser`, `Bookkeeping` |
+
+  So `set_entry_dimensions` on a draft entry goes by the bookkeeping role and
+  on a sales document line by the sales role. A test holds the table to the
+  roles of every operation in the three documents
+  (`test/fixtures/economic-app-roles.json`, written by
+  `npm run fixture:app-roles`); the two REST rows are from e-conomic's
+  [table of roles](https://www.e-conomic.com/developer/permissions).
 
 A host can answer in its own words from the marker, and can tell a missing
 module from a refused access and from a failure; `failure` still carries
 e-conomic's status. In every other case e-conomic's own error stands and
 nothing is marked: any status other than 403 (an outage with a 5xx, a record
 that does not exist, an input e-conomic does not accept, a refused access
-with a 401), roles that do not reach the resource, and a `/self` that cannot
-be read or does not say which roles and modules there are. e-conomic's
+with a 401), roles that do not reach the refused resource, a refusal of
+something outside the module, and a `/self` that cannot be read (a timeout
+included), does not say which roles the app has, or has a list of modules
+with an entry that names no module. e-conomic's
 documentation names no status for a missing module; it says a 403 "depends on
 the roles asked for when the grant was issued", and 403 is the status seen
 for a missing module, so that is the only one asked about. This covers the

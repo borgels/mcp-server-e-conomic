@@ -16,16 +16,30 @@ answer as a failure would otherwise lose the failure.
   though you were authorized", and 403 is the status seen for it.
 - A refusal that the app's roles explain is no longer overruled by the module
   answer. The same `/self` answer must show that the app's roles in the grant
-  (`application.requiredRoles`) include one that reaches what was asked for:
-  `SuperUser`, or `ProjectEmployee` for projects, or `Sales` for
-  subscriptions and for employees and employee groups (the roles e-conomic's
-  documentation names per resource; the dimensions service names different
-  roles per resource, so there only `SuperUser` counts). When the roles do
-  not reach the resource, or the answer does not say which roles the app has,
+  (`application.requiredRoles`) include one that reaches the resource of each
+  request e-conomic refused in the call. The roles follow the concrete
+  resource, as e-conomic's OpenAPI documents for the projects, subscriptions
+  and dimensions APIs name them (`src/economic/app-roles.ts`): `SuperUser` or
+  `ProjectEmployee` for projects, time and mileage; `SuperUser` or `Sales`
+  for employees, employee groups and subscriptions; all four roles for the
+  dimensions themselves, their values and distributions; `SuperUser` or
+  `Bookkeeping` for dimensions on draft and booked entries; `SuperUser` or
+  `Sales` for dimensions on sales document lines and booked invoice lines.
+  `set_entry_dimensions` therefore goes by the role of its `target`. When
+  the roles do not reach the refused resource, the refusal is of something
+  outside the module, or the answer does not say which roles the app has,
   e-conomic's own error stands.
-- Employees and employee groups follow the same rule as everything else (a
-  403 was already the only status asked about for them); what differs is the
-  roles that reach them.
+- The table of roles is held to e-conomic's documents by a test: the roles of
+  every operation of the three APIs are in
+  `test/fixtures/economic-app-roles.json` (`npm run fixture:app-roles` writes
+  it from the documents of the versions the catalog pins).
+- A list of modules with an entry that names no module (`null`, `{}`, a
+  string, a number that is not an integer) shows nothing about the module:
+  e-conomic's own error stands. In 0.25.0 such a list was read as "the module
+  is not there".
+- The client records the requests e-conomic refused with 403
+  (`EconomicClient.refused`: method, API and path, never the query), which is
+  what the role check goes by.
 
 ## 0.25.0
 

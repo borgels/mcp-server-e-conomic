@@ -45,7 +45,14 @@ const MODULE_CALLS: Array<[string, GatewayJsonObject, 'project' | 'dimension' | 
 function agreement(
   modules: unknown,
   status = 403,
-  options: { policy?: EconomicHostPolicy; self?: () => Response; roles?: readonly string[]; application?: unknown } = {},
+  options: {
+    policy?: EconomicHostPolicy;
+    self?: () => Response;
+    roles?: readonly string[];
+    application?: unknown;
+    /** An answer of its own for a request; undefined leaves the request to the stand-in. */
+    respond?: (path: string, method: string) => Response | undefined;
+  } = {},
 ) {
   const paths: string[] = [];
   const application =
@@ -56,8 +63,11 @@ function agreement(
     appSecretToken: 'app-secret-for-tests',
     policy: options.policy ?? { enableWrites: true, allowBooking: true },
     fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(new Request(input, init).url).pathname;
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
       paths.push(path);
+      const own = options.respond?.(path, request.method);
+      if (own) return own;
       if (path === '/self') return options.self ? options.self() : Response.json({ agreementNumber: 1, application, modules });
       return new Response('{"message":"Forbidden"}', { status, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch,
@@ -224,60 +234,105 @@ describe('only a refusal (403) can mean that the module is missing', () => {
 });
 
 describe('a refusal that the app’s roles explain', () => {
-  // e-conomic: a 403 "depends on the roles asked for when the grant was issued". The roles per resource are the ones
-  // e-conomic's documentation names.
-  it('stays e-conomic’s own error when the roles do not reach the resource, whatever the agreement has', async () => {
-    const lacking: Record<string, readonly string[]> = {
-      project: ['Sales', 'Bookkeeping'],
-      // The dimensions service names different roles per resource, so only SuperUser reaches all of it.
-      dimension: ['Bookkeeping', 'Sales', 'ProjectEmployee'],
-      subscription: ['Bookkeeping', 'ProjectEmployee'],
-    };
-    for (const [tool, input, module] of MODULE_CALLS) {
-      const { gateway, paths } = agreement([], 403, { roles: lacking[module]! });
-      const result = await gateway.callTool(tool, input, context);
-      const label = `${tool} ${JSON.stringify(input)}`;
-      expect(result.isError, label).toBe(true);
-      expect(result.missingModule, label).toBeUndefined();
-      expect(result.content[0]!.text, label).toContain('e-conomic API request failed with HTTP 403');
-      expect(result.failure, label).toEqual({ httpStatus: 403 });
-      // The agreement was asked: it is its answer that shows the roles.
-      expect(paths.at(-1), label).toBe('/self');
+  // e-conomic: a 403 "depends on the roles asked for when the grant was issued". The roles follow the resource the
+  // refused request asked for, as e-conomic's OpenAPI documents name them (test/app-roles.test.ts holds the table to
+  // the documents): each call below with the roles that reach what it asks for.
+  const ROLES = ['SuperUser', 'Bookkeeping', 'Sales', 'ProjectEmployee'] as const;
+  const ALL = ROLES;
+  const BOOKKEEPING = ['SuperUser', 'Bookkeeping'] as const;
+  const SALES = ['SuperUser', 'Sales'] as const;
+  const PROJECTS = ['SuperUser', 'ProjectEmployee'] as const;
+  const CALLS: Array<[string, GatewayJsonObject, 'project' | 'dimension' | 'subscription', readonly string[]]> = [
+    ['project_overview', {}, 'project', PROJECTS],
+    ['project_overview', { resource: 'TimeEntries' }, 'project', PROJECTS],
+    ['get_entity', { serviceId: 'projects', resource: 'Projects', number: 1 }, 'project', PROJECTS],
+    ['search_entities', { serviceId: 'projects', resource: 'Projects' }, 'project', PROJECTS],
+    ['upsert_project', { name: 'Tagrenovering', projectGroupNumber: 1 }, 'project', PROJECTS],
+    ['create_time_entry', { projectNumber: 1, activityNumber: 2, employeeNumber: 3, date: '2026-03-02', hours: 7.5 }, 'project', PROJECTS],
+    ['delete_time_entry', { timeEntryNumber: 5 }, 'project', PROJECTS],
+    // Employees and employee groups: the Sales role, not the project role.
+    ['project_overview', { resource: 'Employees' }, 'project', SALES],
+    ['project_overview', { resource: 'EmployeeGroups' }, 'project', SALES],
+    ['get_entity', { serviceId: 'projects', resource: 'Employees', number: 3 }, 'project', SALES],
+    ['upsert_employee', { name: 'Ny kollega' }, 'project', SALES],
+    ['upsert_employee', { employeeNumber: 9, name: 'Ny kollega' }, 'project', SALES],
+    // The dimensions themselves, their values and distributions: every role.
+    ['dimension_overview', {}, 'dimension', ALL],
+    ['dimension_overview', { resource: 'values' }, 'dimension', ALL],
+    ['dimension_overview', { resource: 'distributions' }, 'dimension', ALL],
+    ['get_entity', { serviceId: 'dimensions', resource: 'dimensions', number: 1 }, 'dimension', ALL],
+    // What a dimension is set on follows the role of that record: entries are bookkeeping, sales lines are sales.
+    ['dimension_overview', { resource: 'dimension-data/draft-entries' }, 'dimension', BOOKKEEPING],
+    ['dimension_overview', { resource: 'dimension-data/booked-entries' }, 'dimension', BOOKKEEPING],
+    ['dimension_overview', { resource: 'dimension-data/sales-document-lines' }, 'dimension', SALES],
+    ['dimension_overview', { resource: 'dimension-data/booked-invoice-lines' }, 'dimension', SALES],
+    ['set_entry_dimensions', { target: 'draftEntry', journalNumber: 3, entryNumber: 27, dimensionNumber: 1, dimensionKey: 2 }, 'dimension', BOOKKEEPING],
+    ['set_entry_dimensions', { target: 'salesDocumentLine', documentNumber: 7, lineNumber: 1, dimensionNumber: 1, dimensionKey: 4 }, 'dimension', SALES],
+    // Classic REST, by e-conomic's table of roles: departments, and the distributions between them.
+    ['get_entity', { serviceId: 'rest', resource: 'departments', number: 1 }, 'dimension', ['SuperUser', 'Bookkeeping', 'Sales']],
+    ['get_entity', { serviceId: 'rest', resource: 'departmental-distributions', number: 1 }, 'dimension', BOOKKEEPING],
+    ['subscription_overview', {}, 'subscription', SALES],
+    ['subscription_overview', { resource: 'subscriptionlines' }, 'subscription', SALES],
+    ['get_entity', { serviceId: 'subscriptions', resource: 'Subscribers', number: 1 }, 'subscription', SALES],
+    ['add_subscriber', { subscriptionNumber: 1, customerNumber: 2, startDate: '2026-01-01', endDate: '2026-01-31' }, 'subscription', SALES],
+    ['end_subscriber', { subscriberNumber: 3, expiryDate: '2026-06-30' }, 'subscription', SALES],
+  ];
+
+  it('is the module’s for each role that reaches the refused resource, and e-conomic’s own error for each that does not', async () => {
+    for (const [tool, input, module, reaching] of CALLS) {
+      for (const role of ROLES) {
+        // The agreement has no modules at all, and the app this one role.
+        const { gateway, paths } = agreement([], 403, { roles: [role] });
+        const result = await gateway.callTool(tool, input, context);
+        const label = `${tool} ${JSON.stringify(input)} with ${role}`;
+        expect(result.isError, label).toBe(true);
+        expect(result.failure, label).toEqual({ httpStatus: 403 });
+        // The agreement was asked: it is its answer that shows the roles.
+        expect(paths.at(-1), label).toBe('/self');
+        if (reaching.includes(role)) {
+          expect(result.missingModule, label).toBe(module);
+        } else {
+          expect(result.missingModule, label).toBeUndefined();
+          expect(result.content[0]!.text, label).toContain('e-conomic API request failed with HTTP 403');
+        }
+      }
     }
   });
 
-  it('is the module’s when a role reaches the resource and the module is not there', async () => {
-    const reaching: Array<[string, GatewayJsonObject, readonly string[], string]> = [
-      ['project_overview', {}, ['ProjectEmployee'], 'project'],
-      ['project_overview', {}, ['Sales', 'SuperUser'], 'project'],
-      // The name is compared without regard to case and spaces.
-      ['project_overview', {}, ['Project Employee'], 'project'],
-      ['project_overview', {}, ['superuser'], 'project'],
-      ['upsert_project', { name: 'Tagrenovering', projectGroupNumber: 1 }, ['ProjectEmployee'], 'project'],
-      ['subscription_overview', {}, ['Sales'], 'subscription'],
-      ['add_subscriber', { subscriptionNumber: 1, customerNumber: 2, startDate: '2026-01-01', endDate: '2026-01-31' }, ['Sales'], 'subscription'],
-      ['dimension_overview', {}, ['SuperUser'], 'dimension'],
+  it('counts every role the app has, and compares the names without regard to case and spaces', async () => {
+    const calls: Array<[readonly string[], string | undefined]> = [
+      [['Sales', 'ProjectEmployee'], 'project'],
+      [['Bookkeeping', 'Sales'], undefined],
+      [['Project Employee'], 'project'],
+      [['projectemployee'], 'project'],
+      [['superuser'], 'project'],
+      [['Super User'], 'project'],
+      [['Project'], undefined],
     ];
-    for (const [tool, input, roles, module] of reaching) {
+    for (const [roles, expected] of calls) {
       const { gateway } = agreement([], 403, { roles });
-      expect((await gateway.callTool(tool, input, context)).missingModule, `${tool} ${roles.join('+')}`).toBe(module);
+      expect((await gateway.callTool('project_overview', {}, context)).missingModule, roles.join('+')).toBe(expected);
     }
   });
 
-  it('goes by the employees’ own roles for employees and employee groups (SuperUser or Sales)', async () => {
-    const calls: Array<[string, GatewayJsonObject]> = [
-      ['project_overview', { resource: 'Employees' }],
-      ['project_overview', { resource: 'EmployeeGroups' }],
-      ['upsert_employee', { name: 'Ny kollega' }],
-    ];
-    for (const [tool, input] of calls) {
-      const sales = agreement([OTHER], 403, { roles: ['Sales'] });
-      expect((await sales.gateway.callTool(tool, input, context)).missingModule, `${tool} Sales`).toBe('project');
-      // The project role does not reach employees: the refusal is about the roles.
-      const project = agreement([OTHER], 403, { roles: ['ProjectEmployee'] });
-      const kept = await project.gateway.callTool(tool, input, context);
-      expect(kept.missingModule, `${tool} ProjectEmployee`).toBeUndefined();
-      expect(kept.failure, `${tool} ProjectEmployee`).toEqual({ httpStatus: 403 });
+  it('goes by the request that was refused, also when it is the change after a read that went through', async () => {
+    const input = { target: 'draftEntry', journalNumber: 3, entryNumber: 27, dimensionNumber: 1, dimensionKey: 2 };
+    for (const [role, expected] of [
+      ['Bookkeeping', 'dimension'],
+      ['Sales', undefined],
+    ] as const) {
+      const { gateway, paths } = agreement([], 403, {
+        roles: [role],
+        respond: (path, method) => (method === 'GET' && path !== '/self' ? Response.json({ items: [] }) : undefined),
+      });
+      const result = await gateway.callTool('set_entry_dimensions', input, context);
+      expect(paths, role).toEqual([
+        '/dimensionsapi/v5.3.1/dimension-data/draft-entries',
+        '/dimensionsapi/v5.3.1/dimension-data/draft-entries',
+        '/self',
+      ]);
+      expect(result.failure, role).toEqual({ httpStatus: 403 });
+      expect(result.missingModule, role).toBe(expected);
     }
   });
 
@@ -358,9 +413,16 @@ describe('an agreement with the Project module', () => {
 });
 
 describe('when the agreement cannot be read', () => {
-  it('e-conomic’s own error stands when /self fails or has no list of modules', async () => {
+  it('e-conomic’s own error stands when /self fails, times out or has no list of modules', async () => {
     const application = { requiredRoles: [{ roleNumber: 2, name: 'SuperUser' }] };
-    const answers = [
+    const answers: Array<() => Response> = [
+      // A timeout, as the client's own time limit ends a request, and a connection that drops.
+      () => {
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      },
+      () => {
+        throw new TypeError('fetch failed');
+      },
       () => new Response('{}', { status: 500 }),
       () => new Response('{}', { status: 401 }),
       () => new Response('{}', { status: 403 }),
@@ -370,11 +432,49 @@ describe('when the agreement cannot be read', () => {
       () => new Response('not json', { status: 200 }),
     ];
     for (const self of answers) {
-      const { gateway } = agreement([], 403, { self });
+      const { gateway, paths } = agreement([], 403, { self });
       const result = await gateway.callTool('project_overview', {}, context);
       expect(result.missingModule).toBeUndefined();
       expect(result.content[0]!.text).toContain('e-conomic API request failed with HTTP 403');
       expect(result.failure).toEqual({ httpStatus: 403 });
+      expect(paths).toEqual(['/projectsapi/v1.1.1/Projects/paged', '/self']);
+    }
+  });
+
+  it('e-conomic’s own error stands when an entry in the list of modules cannot be read', async () => {
+    // One entry that names no module may be the module asked for: the list then shows nothing, whatever else is on it.
+    const lists: unknown[][] = [
+      [null],
+      [{}],
+      ['malformed'],
+      [4],
+      [[]],
+      [{ self: 'https://restapi.e-conomic.com/modules/4' }],
+      [{ moduleNumber: '4' }],
+      [{ moduleNumber: 4.5 }],
+      [{ moduleNumber: null }],
+      [{ name: '' }],
+      [{ name: '   ' }],
+      [{ name: 4 }],
+      [{ moduleNumber: 3, name: 7 }],
+      [OTHER, null],
+      [OTHER, {}, DIMENSION],
+      [{}, OTHER],
+    ];
+    for (const modules of lists) {
+      for (const [tool, input] of MODULE_CALLS) {
+        const { gateway } = agreement(modules);
+        const result = await gateway.callTool(tool, input, context);
+        const label = `${tool} with ${JSON.stringify(modules)}`;
+        expect(result.isError, label).toBe(true);
+        expect(result.missingModule, label).toBeUndefined();
+        expect(result.content[0]!.text, label).toContain('e-conomic API request failed with HTTP 403');
+        expect(result.failure, label).toEqual({ httpStatus: 403 });
+      }
+    }
+    // Entries that can be read, none of them the module: the module is not there.
+    for (const modules of [[OTHER], [{ moduleNumber: 3 }], [{ name: 'Indscanning' }], [{ moduleNumber: 3, name: null }]]) {
+      expect((await agreement(modules).gateway.callTool('project_overview', {}, context)).missingModule, JSON.stringify(modules)).toBe('project');
     }
   });
 });

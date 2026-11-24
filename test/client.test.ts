@@ -267,3 +267,51 @@ describe('environment source', () => {
     }
   });
 });
+
+describe('refused requests', () => {
+  it('records what e-conomic refused with 403: the method, the API and the path, never the query', async () => {
+    const statuses: Record<string, number> = {
+      '/projectsapi/v1.1.1/Projects/paged': 403,
+      '/departments/3': 403,
+      '/customers': 404,
+      '/self': 200,
+      '/dimensionsapi/v5.3.1/dimension-data/draft-entries': 403,
+      '/accounts': 500,
+    };
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret',
+      agreementGrantToken: 'grant-token',
+      fetchImpl: (async (input: string | URL | Request) =>
+        new Response('{}', { status: statuses[new URL(String(input)).pathname] ?? 200 })) as typeof fetch,
+    });
+    expect(client.refused).toEqual([]);
+    await expect(
+      client.openApi('projectsapi/v1.1.1', '/Projects/paged', { query: { pagesize: 1, filter: 'name$like:Tagrenovering' } }),
+    ).rejects.toThrow('HTTP 403');
+    await expect(client.rest('/departments/3')).rejects.toThrow('HTTP 403');
+    // Other statuses, and requests that went through, are not refusals.
+    await expect(client.rest('/customers')).rejects.toThrow('HTTP 404');
+    await expect(client.rest('/accounts')).rejects.toThrow('HTTP 500');
+    await client.rest('/self');
+    await expect(
+      client.request({ method: 'POST', url: 'https://apis.e-conomic.com/dimensionsapi/v5.3.1/dimension-data/draft-entries', body: {} }),
+    ).rejects.toThrow('HTTP 403');
+    expect(client.refused).toEqual([
+      { method: 'GET', surface: 'openapi', path: '/projectsapi/v1.1.1/Projects/paged' },
+      { method: 'GET', surface: 'rest', path: '/departments/3' },
+      { method: 'POST', surface: 'openapi', path: '/dimensionsapi/v5.3.1/dimension-data/draft-entries' },
+    ]);
+  });
+
+  it('cannot tell the API when both are behind the same base URL, and says so', async () => {
+    const client = new EconomicClient({
+      appSecretToken: 'app-secret',
+      agreementGrantToken: 'grant-token',
+      restBaseUrl: 'https://proxy.example.test/e-conomic',
+      openApiBaseUrl: 'https://proxy.example.test/e-conomic',
+      fetchImpl: (async () => new Response('{}', { status: 403 })) as typeof fetch,
+    });
+    await expect(client.openApi('projectsapi/v1.1.1', '/Projects/paged')).rejects.toThrow('HTTP 403');
+    expect(client.refused).toEqual([{ method: 'GET', surface: undefined, path: '/projectsapi/v1.1.1/Projects/paged' }]);
+  });
+});
