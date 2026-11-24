@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.25.0
+
+An agreement without an add-on module gets a plain, marked answer from every
+tool that reads or changes the module's data (#99).
+
+- The project tools (`project_overview`, `upsert_project`,
+  `create_time_entry`, `update_time_entry`, `create_mileage_entry`,
+  `approve_time_entries`, `delete_time_entry`) now answer "The Project module
+  is not enabled for this agreement in e-conomic" when e-conomic answers a
+  request with an error and the agreement's modules (`GET /self`) do not list
+  the module, as the subscription and dimension tools already did. Before,
+  they passed on e-conomic's own error (for example HTTP 403), which a host
+  could not tell from an access that does not cover the resource.
+- The same answer for reads of a module's data through `search_entities` and
+  `get_entity` (the projects, dimensions and subscriptions services, and the
+  classic REST `departments` and `departmental-distributions`): the module is
+  taken from the target that is read, not from the tool.
+- New on such an error result: `missingModule: 'project' | 'dimension' |
+  'subscription'` (`EconomicModuleId`), so a host can answer in its own words
+  and need not count the call as a failure. `failure` still carries the
+  status e-conomic answered with. New on a catalog entry: `module`, for the
+  tools that belong to one module.
+- A module is recognised by its number in `/self` (`moduleNumber` 4, 14 and
+  74) as well as by its name, so a name in another language is not taken as a
+  missing module.
+- The modules are read only when e-conomic answered with an HTTP error: no
+  longer after a request that got no answer (a timeout), and now also when the
+  tool answers the error in its own words ("Time entry 5 does not exist").
+  For employees and employee groups, which e-conomic also gives without the
+  Project module, only after a 403 (`upsert_employee` too). As before, a
+  refused access (401) is never turned into a module answer, and e-conomic's
+  own error stands when the modules cannot be read.
+- `upstream` in the catalog declares the read of `/self` for every tool that
+  may make it, now including the project tools, `search_entities` and
+  `get_entity`.
+
 ## 0.24.1
 
 - Licensor and copyright holder corrected to Borgels Services ApS in `LICENSE`,

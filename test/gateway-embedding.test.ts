@@ -157,9 +157,14 @@ describe('fixed read targets per tool', () => {
     const broad = economicToolCatalog.filter(tool => tool.broad).map(tool => tool.name);
     expect(broad).toEqual(['get_entity']);
     expect(readTargets('get_entity')).toEqual(allResources);
-    expect(catalogEntry('get_entity').upstream).toHaveLength(
+    // Every read endpoint, plus the read of the agreement's modules (/self) after a failed read of a module's data.
+    const upstream = catalogEntry('get_entity').upstream;
+    expect(upstream.filter(operation => operation.path !== '/self')).toHaveLength(
       economicServiceCatalog.endpoints.filter(endpoint => endpoint.access === 'read').length,
     );
+    expect(upstream.filter(operation => operation.path === '/self')).toEqual([
+      { access: 'read', method: 'GET', path: '/self', serviceId: 'rest', resource: 'self' },
+    ]);
     expect(catalogEntry('get_entity').title).toMatch(/broad/i);
 
     const { gateway, requests } = recordingGateway(() => Response.json({ entryNumber: 1 }));
