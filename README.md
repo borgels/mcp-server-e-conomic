@@ -363,7 +363,9 @@ The gateway exports:
   base URL, or to the OpenAPI base URL including the service path). For a
   narrow read tool, `upstream` is exactly what its enforced target list allows,
   and a test checks that every request any tool makes is declared there.
-  e-conomic additions: `broad` (true only for `get_entity`) and `defaultRead`.
+  e-conomic additions: `broad` (true only for `get_entity`), `defaultRead` and
+  `module` (the add-on module a tool belongs to: `project`, `dimension` or
+  `subscription`).
 - `economicServiceCatalog`: the frozen service catalog: services, their
   resources, and every allowlisted endpoint with `access: 'read' | 'write'`.
 - `resolveEconomicReadTarget(tool, input)`: what a read call will read, with
@@ -404,6 +406,24 @@ personal number and shares no piece with a credential. A host can count
 failures from it without reading their text. Never the response body (nor its
 `logId`), the vendor's error code or message.
 
+Add-on modules. Projects, dimensions and subscriptions are add-on modules that
+many agreements do not have. When e-conomic answers a request for a module's
+data with an error, the gateway reads the agreement's modules (`GET /self`,
+`modules`) and, if the module is not listed, answers
+`The Project module is not enabled for this agreement in e-conomic. ...`
+with `missingModule: 'project' | 'dimension' | 'subscription'` on the error
+result. A host can answer in its own words from the marker, and can tell a
+missing module from a refused access and from a failure; `failure` still
+carries e-conomic's status. A module is recognised by its number in `/self`
+(4, 14 and 74) or by its name. This covers the tools whose catalog entry has
+`module`, and `search_entities` and `get_entity` when they read a module's data
+(the classic REST `departments` and `departmental-distributions` count as
+dimensions). Employees and employee groups also exist without the Project
+module, so for them (and `upsert_employee`, which therefore has no `module` in
+the catalog) the modules are read only after a 403. A refused access (401) is
+never turned into a module answer, the modules are not read after a 408 or a
+429, and when the modules cannot be read, e-conomic's own error stands.
+
 Read gateway tools. Each narrow tool reads only its listed targets; the first
 is the default. Anything else is refused before a request is sent.
 
@@ -423,7 +443,7 @@ is the default. Anything else is refused before a request is sent.
 | `vat_overview` | `rest:vat-accounts` (VAT codes, rates and accounts), `rest:vat-types`, `rest:vat-zones`; with `rest:vat-types`, `number` and `reportSetups: true`, the VAT return fields of a VAT type. Read only: nothing is reported |
 | `dimension_overview` | `dimensions:dimensions`, `dimensions:values`, `dimensions:distributions`, `dimensions:dimension-data/draft-entries`, `dimensions:dimension-data/sales-document-lines`, `dimensions:dimension-data/booked-entries`, `dimensions:dimension-data/booked-invoice-lines` (needs the dimension module) |
 | `subscription_overview` | `subscriptions:Subscriptions`, `subscriptions:Subscribers`, `subscriptions:subscriptionlines` (needs the subscription module; a 401 is never turned into a module answer) |
-| `project_overview` | `projects:Projects`, `projects:project-activities`, `projects:Activities/allowed` (query `employeeNumber`, `projectNumber`), `projects:Projects/allowed` (query `employeeNumber`), `projects:Mileages`, `projects:MileagePrices`, `projects:TimeEntryPrices`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` |
+| `project_overview` | `projects:Projects`, `projects:project-activities`, `projects:Activities/allowed` (query `employeeNumber`, `projectNumber`), `projects:Projects/allowed` (query `employeeNumber`), `projects:Mileages`, `projects:MileagePrices`, `projects:TimeEntryPrices`, `projects:ProjectGroups`, `projects:ProjectStatuses`, `projects:CostTypes`, `projects:Activities`, `projects:ActivityGroups`, `projects:Employees`, `projects:EmployeeGroups`, `projects:TimeEntries` (needs the project module) |
 | `get_document` | `documents:AttachedDocuments`, `rest:invoices/booked`, `rest:invoices/drafts`; with `number` and `pdf: true` the record's PDF as base64 (at most 4 MB) |
 | `accounting_entries` | `booked-entries:booked-entries`, `booked-entries:booked-entries/matched-pairs`, `journals:draft-entries` |
 | `get_entity` | **Broad** (`broad: true`): one record from any read endpoint in the service catalog, by `serviceId`/`resource`/`number` or a self URL. Give it only to callers that may read all of the agreement's data. |

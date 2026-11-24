@@ -74,7 +74,17 @@ export interface GatewayToolResult {
   isError?: boolean;
   /** On an error result from e-conomic's HTTP answer only: its status and request id (see GatewayFailure). */
   failure?: GatewayFailure;
+  /**
+   * On an error result only: the add-on module the agreement does not have, when e-conomic answered a request of the
+   * tool with an error and the agreement's modules (GET /self) do not list the module the request needs. A fixed id,
+   * so a host can answer in its own words without reading the text, and can tell it from a refused access and from
+   * a failure. `failure` still carries the status e-conomic answered with.
+   */
+  missingModule?: EconomicModuleId;
 }
+
+/** The add-on modules of e-conomic the gateway has tools for. */
+export type EconomicModuleId = 'project' | 'dimension' | 'subscription';
 
 /** Per-tenant credential passed with a call. */
 export interface EconomicGatewayCredentials {
@@ -211,6 +221,14 @@ export interface GatewayToolCatalogEntry {
   readonly broad: boolean;
   /** e-conomic addition: what a narrow read tool reads when the input names no service or resource. */
   readonly defaultRead?: EconomicResourceRef;
+  /**
+   * e-conomic addition: the add-on module the tool belongs to, when all of it does. An agreement without the module
+   * gets `missingModule` on the tool's error results. Absent for a tool that reads such a module only among other
+   * things (`search_entities`, `get_entity`) and for `upsert_employee`, whose employees e-conomic also gives without
+   * the Project module; their results carry `missingModule` all the same. `project_overview` has it although it
+   * also reads employees and employee groups.
+   */
+  readonly module?: EconomicModuleId;
   /**
    * e-conomic addition: true for the booking tools (irreversible in
    * e-conomic). They run only when the host policy sets allowBooking.
@@ -1148,21 +1166,97 @@ interface ToolSpec extends GatewayToolDefinition {
   /** Write tools: what the change does, for the host's log. */
   change?: EconomicChangeSpec;
   /**
-   * The e-conomic module the tool needs. When a request of the tool fails,
-   * the gateway reads the agreement's modules (GET /self) and answers plainly
-   * if the module is not enabled.
+   * Write tools: the e-conomic module the tool needs. When e-conomic answers
+   * a request of the tool with an error, the gateway reads the agreement's
+   * modules (GET /self) and answers plainly if the module is not enabled.
+   * Read tools get theirs from the target they read (moduleOfTarget).
    */
   module?: EconomicModule;
+  /**
+   * With `module`: the agreement's modules are read only when e-conomic
+   * refused the request (403), because the tool's resource is also there
+   * without the module (see PROJECT_RESOURCES_WITHOUT_MODULE).
+   */
+  moduleWhenRefused?: boolean;
 }
 
 interface EconomicModule {
-  /** Matches the module's name in /self (Danish or English). */
+  readonly id: EconomicModuleId;
+  /**
+   * The module's number in /self (`modules[].moduleNumber`, "The unique
+   * identifier of the module"): the same for every agreement, whatever
+   * language its name is in.
+   */
+  readonly moduleNumber: number;
+  /** Matches the module's name in /self (Danish or English), for an entry without the number. */
   readonly pattern: RegExp;
   readonly name: string;
 }
 
-const SUBSCRIPTION_MODULE: EconomicModule = { pattern: /subscription|abonnement/i, name: 'Subscription' };
-const DIMENSION_MODULE: EconomicModule = { pattern: /dimension/i, name: 'Dimension' };
+// Numbers and names as e-conomic's own demo agreement lists them in /self:
+// 4 "Projektstyring", 14 "Dimension (afdeling/kvantum)", 74 "Subscription and Direct Debit".
+const PROJECT_MODULE: EconomicModule = { id: 'project', moduleNumber: 4, pattern: /proje[ck]t/i, name: 'Project' };
+const SUBSCRIPTION_MODULE: EconomicModule = {
+  id: 'subscription',
+  moduleNumber: 74,
+  pattern: /subscription|abonnement/i,
+  name: 'Subscription',
+};
+const DIMENSION_MODULE: EconomicModule = { id: 'dimension', moduleNumber: 14, pattern: /dimension/i, name: 'Dimension' };
+
+/** The module every resource of a service belongs to. */
+const SERVICE_MODULES: Readonly<Record<string, EconomicModule>> = {
+  projects: PROJECT_MODULE,
+  dimensions: DIMENSION_MODULE,
+  subscriptions: SUBSCRIPTION_MODULE,
+};
+
+/** Classic REST resources that belong to a module (departments are the first dimension). */
+const REST_MODULES: Readonly<Record<string, EconomicModule>> = {
+  departments: DIMENSION_MODULE,
+  'departmental-distributions': DIMENSION_MODULE,
+};
+
+/**
+ * Resources of the projects service that e-conomic documents as open to an
+ * app with the Sales role too, not only the project role: employees are also
+ * used on sales documents, so an agreement without the Project module may
+ * have them. For these the agreement's modules are read only when e-conomic
+ * refused the request (403), so another error (a filter it does not accept,
+ * a number that does not exist) is never answered as a missing module.
+ */
+const PROJECT_RESOURCES_WITHOUT_MODULE: ReadonlySet<string> = new Set(['Employees', 'EmployeeGroups']);
+
+/** The module a request needs, and whether it is asked about only after a refusal (403). */
+interface ModuleNeed {
+  readonly module: EconomicModule;
+  readonly whenRefused: boolean;
+}
+
+/** The module a read target belongs to, if any. */
+function moduleOfTarget(target: EconomicResourceRef): ModuleNeed | undefined {
+  const module = target.serviceId === 'rest' ? REST_MODULES[target.resource] : SERVICE_MODULES[target.serviceId];
+  if (!module) return undefined;
+  return { module, whenRefused: module === PROJECT_MODULE && PROJECT_RESOURCES_WITHOUT_MODULE.has(target.resource) };
+}
+
+/**
+ * The module a tool belongs to, when all of it does: a write tool's own, or
+ * the one every target of a narrow read tool has. Not a tool whose resource
+ * is also there without the module (moduleWhenRefused): a host that goes by
+ * the catalog must not take it for unusable on an agreement without it.
+ */
+function moduleOfSpec(spec: ToolSpec): EconomicModule | undefined {
+  if (spec.module) return spec.moduleWhenRefused ? undefined : spec.module;
+  if (spec.broad || spec.reads.length === 0) return undefined;
+  const modules = new Set(spec.reads.map(target => moduleOfTarget(target)?.module));
+  return modules.size === 1 ? [...modules][0] : undefined;
+}
+
+/** Whether a failed request of the tool may be followed by a read of the agreement's modules. */
+function mayReadModules(spec: ToolSpec): boolean {
+  return spec.module !== undefined || spec.reads.some(target => moduleOfTarget(target) !== undefined);
+}
 
 function operation(
   access: 'read' | 'write',
@@ -1191,7 +1285,7 @@ function targetOperations(target: EconomicResourceRef): GatewayUpstreamOperation
 
 function upstreamOf(spec: ToolSpec): GatewayUpstreamOperation[] {
   // A tool that needs a module may read /self to tell the caller the module is off.
-  const moduleRead = spec.module ? [operation('read', 'GET', 'rest', 'self', '/self')] : [];
+  const moduleRead = mayReadModules(spec) ? [operation('read', 'GET', 'rest', 'self', '/self')] : [];
   return [...ownUpstream(spec), ...moduleRead];
 }
 
@@ -1228,10 +1322,9 @@ function ownUpstream(spec: ToolSpec): GatewayUpstreamOperation[] {
   ];
 }
 
-function narrowReadTool(name: string, title: string, description: string, module?: EconomicModule): ToolSpec {
+function narrowReadTool(name: string, title: string, description: string): ToolSpec {
   const reads = NARROW_READ_TARGETS[name] ?? [];
   return {
-    ...(module ? { module } : {}),
     name,
     title,
     description,
@@ -1245,8 +1338,9 @@ function narrowReadTool(name: string, title: string, description: string, module
 }
 
 function writeTool(
-  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads' | 'booking' | 'change' | 'module'> & {
+  spec: Omit<ToolSpec, 'riskLevel' | 'enabledByDefault' | 'broad' | 'reads' | 'booking' | 'change' | 'module' | 'moduleWhenRefused'> & {
     module?: EconomicModule;
+    moduleWhenRefused?: boolean;
     riskLevel?: GatewayRiskLevel;
     booking?: boolean;
     change: EconomicChangeSpec;
@@ -1388,13 +1482,11 @@ const TOOL_SPECS: ToolSpec[] = [
     'dimension_overview',
     'Get e-conomic dimensions',
     'Read dimensions (default), their values and distributions, and the dimension values set on draft entries, sales document lines, booked entries and booked invoice lines (filter on entry, journal, document or line number). Needs the dimension module.',
-    DIMENSION_MODULE,
   ),
   narrowReadTool(
     'subscription_overview',
     'Get e-conomic subscriptions',
     'Read subscriptions (default), subscribers (which customer has which subscription, from when, until when) or subscription lines. Needs the subscription module.',
-    SUBSCRIPTION_MODULE,
   ),
   narrowReadTool(
     'project_overview',
@@ -1583,6 +1675,7 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Create a project in the Projects add-on, or update an existing one by projectNumber (reads the current project and merges the provided fields; upserts via the collection PUT). ${WRITE_NOTE}`,
     inputSchema: upsertProjectInput,
     change: change('upsert', 'project', { projectNumber: 'recordNumber', customerNumber: 'recordNumber' }),
+    module: PROJECT_MODULE,
     upstream: [
       operation('read', 'GET', 'projects', 'Projects', '/Projects/{number}'),
       operation('write', 'POST', 'projects', 'Projects', '/Projects'),
@@ -1594,6 +1687,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Register e-conomic project time',
     description: `Register a project time entry (hours on a project + activity for an employee, on a date). Create only; delete_time_entry deletes one that is not approved. ${WRITE_NOTE}`,
     inputSchema: createTimeEntryInput,
+    module: PROJECT_MODULE,
     change: change('create', 'time-entry', {
       projectNumber: 'recordNumber',
       activityNumber: 'recordNumber',
@@ -1608,6 +1702,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Change e-conomic project time',
     description: `Change a time entry that is not approved yet: date, hours, activity, project or note (reads the entry and merges the given fields). ${WRITE_NOTE}`,
     inputSchema: updateTimeEntryInput,
+    module: PROJECT_MODULE,
     change: change('upsert', 'time-entry', {
       timeEntryNumber: 'recordNumber',
       projectNumber: 'recordNumber',
@@ -1625,6 +1720,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Register e-conomic mileage',
     description: `Register a trip (kilometres) on a project for an employee, on a date. ${WRITE_NOTE}`,
     inputSchema: createMileageEntryInput,
+    module: PROJECT_MODULE,
     // from and to are free text (addresses): never logged.
     change: change('create', 'mileage', { projectNumber: 'recordNumber', employeeNumber: 'recordNumber', date: 'date', distance: 'quantity' }),
     upstream: [operation('write', 'POST', 'projects', 'Mileages', '/Mileages')],
@@ -1634,6 +1730,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Approve e-conomic project time',
     description: `Approve time entries, so their cost is booked on the project. e-conomic has no way to undo an approval through its API. ${BOOKING_NOTE}`,
     inputSchema: approveTimeEntriesInput,
+    module: PROJECT_MODULE,
     booking: true,
     change: change('book', 'time-entry', { timeEntryNumbers: 'numberList' }),
     upstream: [operation('write', 'POST', 'projects', 'TimeEntries', '/TimeEntries/approve')],
@@ -1656,6 +1753,9 @@ const TOOL_SPECS: ToolSpec[] = [
     description: `Create a Projects add-on employee, or update an existing one by employeeNumber (collection upsert, read-merge-write). ${WRITE_NOTE}`,
     inputSchema: upsertEmployeeInput,
     change: change('upsert', 'project-employee', { employeeNumber: 'recordNumber' }),
+    // Employees are also there without the Project module: asked about only after a refusal.
+    module: PROJECT_MODULE,
+    moduleWhenRefused: true,
     upstream: [
       operation('read', 'GET', 'projects', 'Employees', '/Employees/{number}'),
       operation('write', 'POST', 'projects', 'Employees', '/Employees'),
@@ -1809,6 +1909,7 @@ const TOOL_SPECS: ToolSpec[] = [
     title: 'Delete e-conomic project time',
     description: `Delete a time entry that is neither approved nor reconciled (invoiced). An approved entry has its cost booked on the project and cannot be deleted. ${DELETE_NOTE}`,
     inputSchema: deleteTimeEntryInput,
+    module: PROJECT_MODULE,
     change: change('delete', 'time-entry', { timeEntryNumber: 'recordNumber' }),
     upstream: [
       operation('read', 'GET', 'projects', 'TimeEntries', '/TimeEntries/{number}'),
@@ -1849,6 +1950,7 @@ function deepFreeze<T>(value: T): T {
 export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreeze(
   TOOL_SPECS.map(spec => {
     const defaultRead = spec.broad ? undefined : NARROW_READ_TARGETS[spec.name]?.[0];
+    const module = moduleOfSpec(spec);
     const entry: GatewayToolCatalogEntry = {
       name: spec.name,
       title: spec.title,
@@ -1859,6 +1961,7 @@ export const economicToolCatalog: readonly GatewayToolCatalogEntry[] = deepFreez
       upstream: upstreamOf(spec),
       broad: spec.broad,
       ...(defaultRead ? { defaultRead: { ...defaultRead } } : {}),
+      ...(module ? { module: module.id } : {}),
       booking: spec.booking,
       ...(spec.change ? { change: { ...spec.change, logFields: spec.change.logFields.map(field => ({ ...field })) } } : {}),
     };
@@ -2404,15 +2507,33 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           callRedactor.add(grant);
           const client = new EconomicClient({ ...clientOptions, agreementGrantToken: grant, redactor: callRedactor });
 
+          // The module the request needs: the read target's, or the write tool's own.
+          const need: ModuleNeed | undefined = target
+            ? moduleOfTarget(target)
+            : spec.module
+              ? { module: spec.module, whenRefused: spec.moduleWhenRefused === true }
+              : undefined;
+          // After e-conomic answered a request with an error (thrown, or answered in our own words such as "Time
+          // entry 5 does not exist"): the plain answer when the agreement does not have the module. A refused access
+          // (401) always goes on as e-conomic's own error: a module answer must not hide it.
+          const moduleOff = async (failure: GatewayFailure | undefined): Promise<GatewayToolResult | undefined> => {
+            const status = failure?.httpStatus;
+            if (need === undefined || status === undefined || status === 401) return undefined;
+            // Too many requests, or a request e-conomic gave up waiting for: says nothing about a module, and
+            // another request would only add to the load.
+            if (status === 408 || status === 429) return undefined;
+            if (need.whenRefused && status !== 403) return undefined;
+            return (await moduleMissing(client, need.module)) ? moduleMissingResult(need.module, failure) : undefined;
+          };
+
           try {
-            return target
+            const answered = target
               ? await readResult(client, spec.name, target, args)
               : await writeResult(client, spec.name, args, writePolicy);
+            return (answered.isError ? await moduleOff(answered.failure) : undefined) ?? answered;
           } catch (error) {
-            // A refused access (401) always goes on as e-conomic's own error: a module answer must not hide it.
-            const refused = error instanceof EconomicHttpError && error.status === 401;
-            const missing = spec.module && !refused ? await moduleMissing(client, spec.module) : undefined;
-            if (missing) return errorResult(missing, failureMetadata(error));
+            const off = await moduleOff(failureMetadata(error));
+            if (off) return off;
             throw error;
           }
         })();
@@ -4134,21 +4255,33 @@ async function approveTimeEntries(
 }
 
 /**
- * After a failed request: the plain answer when the agreement does not have
- * the module the tool needs (from GET /self), else undefined. A failure to
- * read /self is not an answer either.
+ * After a failed request: true when the agreement does not have the module
+ * the request needs (from GET /self, by the module's number or its name).
+ * A failure to read /self, or an answer without a list of modules, says
+ * nothing: then e-conomic's own error stands.
  */
-async function moduleMissing(client: EconomicClient, module: EconomicModule): Promise<string | undefined> {
+async function moduleMissing(client: EconomicClient, module: EconomicModule): Promise<boolean> {
   try {
     const modules = asObject(await client.rest('/self')).modules;
-    if (!Array.isArray(modules)) return undefined;
-    const enabled = modules.some(item => module.pattern.test(String(asObject(item).name ?? '')));
-    return enabled
-      ? undefined
-      : `The ${module.name} module is not enabled for this agreement in e-conomic. It must be turned on in e-conomic before this can be used.`;
+    if (!Array.isArray(modules)) return false;
+    return !modules.some(item => {
+      const entry = asObject(item);
+      return entry.moduleNumber === module.moduleNumber || module.pattern.test(String(entry.name ?? ''));
+    });
   } catch {
-    return undefined;
+    return false;
   }
+}
+
+/** The plain answer for a module the agreement does not have, marked with the module's id for the host. */
+function moduleMissingResult(module: EconomicModule, failure?: GatewayFailure): GatewayToolResult {
+  return {
+    ...errorResult(
+      `The ${module.name} module is not enabled for this agreement in e-conomic. It must be turned on in e-conomic before this can be used.`,
+      failure,
+    ),
+    missingModule: module.id,
+  };
 }
 
 /**
