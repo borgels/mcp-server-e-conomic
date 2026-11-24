@@ -17,7 +17,7 @@ const DIMENSION = { moduleNumber: 14, name: 'Dimension (afdeling/kvantum)' };
 const SUBSCRIPTION = { moduleNumber: 74, name: 'Subscription and Direct Debit' };
 const OTHER = { moduleNumber: 3, name: 'Indscanning' };
 
-const PROJECT_OFF = 'The Project module is not enabled for this agreement in e-conomic. It must be turned on in e-conomic before this can be used.';
+const PROJECT_OFF ='The Project module is not enabled for this agreement in e-conomic. It must be turned on in e-conomic before this can be used.';
 
 /**
  * A stand-in for e-conomic: /self lists `modules` (or answers `self` itself), everything else answers `status`.
@@ -56,13 +56,41 @@ describe('an agreement without the Project module', () => {
     expect(paths).toEqual(['/projectsapi/v1.1.1/Projects/paged', '/self']);
   });
 
-  it('says so for every resource of the projects service but the employees, whatever the error', async () => {
-    for (const resource of ['Projects', 'ProjectGroups', 'TimeEntries', 'Mileages', 'Activities', 'Projects/allowed']) {
+  it('says so for every resource project_overview reads but the employees, whatever the error', async () => {
+    const resources = [
+      ...new Set(
+        economicToolCatalog
+          .find(tool => tool.name === 'project_overview')!
+          .upstream.filter(operation => operation.serviceId === 'projects')
+          .map(operation => operation.resource),
+      ),
+    ].filter(resource => !['Employees', 'EmployeeGroups'].includes(resource));
+    expect(resources.length).toBeGreaterThan(10);
+    for (const resource of resources) {
       for (const status of [400, 403, 404, 500]) {
         const { gateway } = agreement([OTHER], status);
         const result = await gateway.callTool('project_overview', { resource }, context);
         expect(result.missingModule, `${resource} ${status}`).toBe('project');
         expect(result.failure, `${resource} ${status}`).toEqual({ httpStatus: status });
+      }
+    }
+  });
+
+  it('asks nothing about modules when e-conomic is throttling or gave up waiting (429, 408)', async () => {
+    const calls: Array<[string, GatewayJsonObject]> = [
+      ['project_overview', {}],
+      ['dimension_overview', {}],
+      ['subscription_overview', {}],
+      ['upsert_project', { name: 'Tagrenovering', projectGroupNumber: 1 }],
+    ];
+    for (const status of [408, 429]) {
+      for (const [tool, input] of calls) {
+        const { gateway, paths } = agreement([], status);
+        const result = await gateway.callTool(tool, input, context);
+        expect(result.isError, `${tool} ${status}`).toBe(true);
+        expect(result.missingModule, `${tool} ${status}`).toBeUndefined();
+        expect(result.failure, `${tool} ${status}`).toEqual({ httpStatus: status });
+        expect(paths, `${tool} ${status}`).not.toContain('/self');
       }
     }
   });
@@ -152,6 +180,21 @@ describe('an agreement without the Project module', () => {
     const result = await invalid.gateway.callTool('upsert_employee', { name: 'Ny kollega' }, context);
     expect(result.missingModule).toBeUndefined();
     expect(invalid.paths).not.toContain('/self');
+    // An employee that is not there (404 on the read before the change) is answered as that, not as a module.
+    const unknown = agreement([OTHER], 404);
+    const missing = await unknown.gateway.callTool('upsert_employee', { employeeNumber: 9, name: 'Ny kollega' }, context);
+    expect(missing.isError).toBe(true);
+    expect(missing.missingModule).toBeUndefined();
+    expect(unknown.paths).not.toContain('/self');
+  });
+
+  it('says nothing about modules when the agreement lists none and the call needs none', async () => {
+    const { gateway, paths } = agreement([]);
+    const result = await gateway.callTool('customer_overview', {}, context);
+    expect(result.missingModule).toBeUndefined();
+    expect(paths).not.toContain('/self');
+    // An empty list is a list: the module is not there.
+    expect((await agreement([]).gateway.callTool('project_overview', {}, context)).missingModule).toBe('project');
   });
 });
 
@@ -190,6 +233,26 @@ describe('an agreement with the Project module', () => {
     expect(result.missingModule).toBeUndefined();
     expect(paths).toEqual(['/projectsapi/v1.1.1/Projects/paged']);
   });
+
+  it('asks nothing about modules after a change that went through', async () => {
+    const paths: string[] = [];
+    const gateway = createEconomicGateway({
+      appSecretToken: 'app-secret-for-tests',
+      policy: { enableWrites: true },
+      fetchImpl: (async (input: string | URL | Request) => {
+        paths.push(new URL(String(input)).pathname);
+        return Response.json({ number: 12 }, { status: 201 });
+      }) as typeof fetch,
+    });
+    const result = await gateway.callTool(
+      'create_time_entry',
+      { projectNumber: 1, activityNumber: 2, employeeNumber: 3, date: '2026-03-02', hours: 7.5 },
+      context,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(result.missingModule).toBeUndefined();
+    expect(paths).not.toContain('/self');
+  });
 });
 
 describe('what a module answer never hides', () => {
@@ -200,6 +263,14 @@ describe('what a module answer never hides', () => {
     expect(result.content[0]!.text).toContain('HTTP 401');
     expect(result.failure).toEqual({ httpStatus: 401 });
     expect(paths).toEqual(['/projectsapi/v1.1.1/Projects/paged']);
+
+    // The same for a change.
+    const write = agreement([OTHER], 401);
+    const refused = await write.gateway.callTool('upsert_project', { name: 'Tagrenovering', projectGroupNumber: 1 }, context);
+    expect(refused.isError).toBe(true);
+    expect(refused.missingModule).toBeUndefined();
+    expect(refused.failure).toEqual({ httpStatus: 401 });
+    expect(write.paths).not.toContain('/self');
   });
 
   it('e-conomic’s own error stands when the modules cannot be read or are not a list', async () => {
@@ -244,12 +315,13 @@ describe('what a module answer never hides', () => {
 });
 
 describe('the dimension and subscription modules', () => {
-  it('are marked the same way, by number or name', async () => {
+  it('are marked the same way, and recognised by number or by name', async () => {
     const calls: Array<[string, GatewayJsonObject, string]> = [
       ['dimension_overview', {}, 'dimension'],
       ['get_entity', { serviceId: 'dimensions', resource: 'dimensions', number: 1 }, 'dimension'],
       // The classic REST departments are the first dimension.
       ['get_entity', { serviceId: 'rest', resource: 'departments', number: 1 }, 'dimension'],
+      ['get_entity', { serviceId: 'rest', resource: 'departmental-distributions', number: 1 }, 'dimension'],
       ['set_entry_dimensions', { target: 'draftEntry', journalNumber: 3, entryNumber: 27, dimensionNumber: 1, dimensionKey: 2 }, 'dimension'],
       ['subscription_overview', {}, 'subscription'],
       ['get_entity', { serviceId: 'subscriptions', resource: 'Subscribers', number: 1 }, 'subscription'],
@@ -262,10 +334,22 @@ describe('the dimension and subscription modules', () => {
       expect(result.missingModule, `${tool} ${JSON.stringify(input)}`).toBe(module);
       expect(result.content[0]!.text, tool).toMatch(/^The (Dimension|Subscription) module is not enabled for this agreement in e-conomic\./);
 
-      const on = agreement([PROJECT, DIMENSION, SUBSCRIPTION]);
-      const kept = await on.gateway.callTool(tool, input, context);
-      expect(kept.isError, tool).toBe(true);
-      expect(kept.missingModule, `${tool} with the module on`).toBeUndefined();
+      // The module on: by number and name as e-conomic gives them, by the number alone (a name in another language),
+      // and by the name alone.
+      const listings = [
+        [PROJECT, DIMENSION, SUBSCRIPTION],
+        [{ moduleNumber: 14, name: 'Ulottuvuus' }, { moduleNumber: 74, name: 'Tilaus' }],
+        [{ name: DIMENSION.name }, { name: SUBSCRIPTION.name }],
+      ];
+      for (const modules of listings) {
+        const on = agreement(modules);
+        const kept = await on.gateway.callTool(tool, input, context);
+        expect(kept.isError, tool).toBe(true);
+        expect(kept.missingModule, `${tool} with ${JSON.stringify(modules)}`).toBeUndefined();
+      }
+      // Another module's number or name is not this one.
+      const wrong = module === 'dimension' ? [{ moduleNumber: 74, name: 'Tilaus' }] : [{ moduleNumber: 14, name: 'Ulottuvuus' }];
+      expect((await agreement(wrong).gateway.callTool(tool, input, context)).missingModule, `${tool} with the other module`).toBe(module);
     }
   });
 });
@@ -281,20 +365,24 @@ describe('the catalog', () => {
       create_mileage_entry: 'project',
       approve_time_entries: 'project',
       delete_time_entry: 'project',
-      upsert_employee: 'project',
       dimension_overview: 'dimension',
       set_entry_dimensions: 'dimension',
       subscription_overview: 'subscription',
       add_subscriber: 'subscription',
       end_subscriber: 'subscription',
     });
+    // Employees are also there without the Project module, so upsert_employee is not a tool of the module in the
+    // catalog, although a refusal (403) of it is marked.
+    expect(economicToolCatalog.find(tool => tool.name === 'upsert_employee')!.module).toBeUndefined();
   });
 
   it('declares the read of the agreement’s modules for every tool that may make it, once', () => {
     const self = (name: string) =>
       economicToolCatalog.find(tool => tool.name === name)!.upstream.filter(operation => operation.path === '/self');
     for (const tool of economicToolCatalog) {
-      const expected = tool.module !== undefined || ['search_entities', 'get_entity', 'check_connection', 'company_context'].includes(tool.name);
+      const expected =
+        tool.module !== undefined ||
+        ['search_entities', 'get_entity', 'check_connection', 'company_context', 'upsert_employee'].includes(tool.name);
       expect(self(tool.name), tool.name).toHaveLength(expected ? 1 : 0);
     }
   });

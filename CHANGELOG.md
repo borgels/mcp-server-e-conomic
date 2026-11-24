@@ -28,10 +28,12 @@ tool that reads or changes the module's data (#99).
 - The modules are read only when e-conomic answered with an HTTP error: no
   longer after a request that got no answer (a timeout), and now also when the
   tool answers the error in its own words ("Time entry 5 does not exist").
+  Not after a 408 or a 429, where another request only adds to the load.
   For employees and employee groups, which e-conomic also gives without the
-  Project module, only after a 403 (`upsert_employee` too). As before, a
-  refused access (401) is never turned into a module answer, and e-conomic's
-  own error stands when the modules cannot be read.
+  Project module, only after a 403 (`upsert_employee` too, which for the same
+  reason has no `module` in the catalog). As before, a refused access (401)
+  is never turned into a module answer, and e-conomic's own error stands
+  when the modules cannot be read.
 - `upstream` in the catalog declares the read of `/self` for every tool that
   may make it, now including the project tools, `search_entities` and
   `get_entity`.

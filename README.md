@@ -419,9 +419,10 @@ carries e-conomic's status. A module is recognised by its number in `/self`
 `module`, and `search_entities` and `get_entity` when they read a module's data
 (the classic REST `departments` and `departmental-distributions` count as
 dimensions). Employees and employee groups also exist without the Project
-module, so for them (and `upsert_employee`) the modules are read only after a
-403. A refused access (401) is never turned into a module answer, and when the
-modules cannot be read, e-conomic's own error stands.
+module, so for them (and `upsert_employee`, which therefore has no `module` in
+the catalog) the modules are read only after a 403. A refused access (401) is
+never turned into a module answer, the modules are not read after a 408 or a
+429, and when the modules cannot be read, e-conomic's own error stands.
 
 Read gateway tools. Each narrow tool reads only its listed targets; the first
 is the default. Anything else is refused before a request is sent.

@@ -224,7 +224,9 @@ export interface GatewayToolCatalogEntry {
   /**
    * e-conomic addition: the add-on module the tool belongs to, when all of it does. An agreement without the module
    * gets `missingModule` on the tool's error results. Absent for a tool that reads such a module only among other
-   * things (`search_entities`, `get_entity`); their results carry `missingModule` all the same.
+   * things (`search_entities`, `get_entity`) and for `upsert_employee`, whose employees e-conomic also gives without
+   * the Project module; their results carry `missingModule` all the same. `project_overview` has it although it
+   * also reads employees and employee groups.
    */
   readonly module?: EconomicModuleId;
   /**
@@ -1240,10 +1242,12 @@ function moduleOfTarget(target: EconomicResourceRef): ModuleNeed | undefined {
 
 /**
  * The module a tool belongs to, when all of it does: a write tool's own, or
- * the one every target of a narrow read tool has.
+ * the one every target of a narrow read tool has. Not a tool whose resource
+ * is also there without the module (moduleWhenRefused): a host that goes by
+ * the catalog must not take it for unusable on an agreement without it.
  */
 function moduleOfSpec(spec: ToolSpec): EconomicModule | undefined {
-  if (spec.module) return spec.module;
+  if (spec.module) return spec.moduleWhenRefused ? undefined : spec.module;
   if (spec.broad || spec.reads.length === 0) return undefined;
   const modules = new Set(spec.reads.map(target => moduleOfTarget(target)?.module));
   return modules.size === 1 ? [...modules][0] : undefined;
@@ -2515,6 +2519,9 @@ export function createEconomicGateway(options: EconomicGatewayOptions = {}) {
           const moduleOff = async (failure: GatewayFailure | undefined): Promise<GatewayToolResult | undefined> => {
             const status = failure?.httpStatus;
             if (need === undefined || status === undefined || status === 401) return undefined;
+            // Too many requests, or a request e-conomic gave up waiting for: says nothing about a module, and
+            // another request would only add to the load.
+            if (status === 408 || status === 429) return undefined;
             if (need.whenRefused && status !== 403) return undefined;
             return (await moduleMissing(client, need.module)) ? moduleMissingResult(need.module, failure) : undefined;
           };
