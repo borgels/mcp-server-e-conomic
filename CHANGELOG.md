@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.25.1
+
+The answer for a missing add-on module (0.25.0) was given in two cases where
+it must not be (#101). Both are fixed; a host that does not count a marked
+answer as a failure would otherwise lose the failure.
+
+- Only a refusal (HTTP 403) is asked about, as a positive list. In 0.25.0 the
+  agreement was read after any HTTP error but 401, 408 and 429, so an outage
+  at e-conomic (500, 502, 503, 504) on an agreement without the module was
+  answered as a missing module. Now every other status goes on as e-conomic's
+  own error, unmarked, and `/self` is not read: a 5xx, a 404 ("Time entry 5
+  does not exist" stays that), a 400, a 409. e-conomic's documentation names
+  no status for a missing module; it describes 403 as access denied "even
+  though you were authorized", and 403 is the status seen for it.
+- A refusal that the app's roles explain is no longer overruled by the module
+  answer. The same `/self` answer must show that the app's roles in the grant
+  (`application.requiredRoles`) include one that reaches what was asked for:
+  `SuperUser`, or `ProjectEmployee` for projects, or `Sales` for
+  subscriptions and for employees and employee groups (the roles e-conomic's
+  documentation names per resource; the dimensions service names different
+  roles per resource, so there only `SuperUser` counts). When the roles do
+  not reach the resource, or the answer does not say which roles the app has,
+  e-conomic's own error stands.
+- Employees and employee groups follow the same rule as everything else (a
+  403 was already the only status asked about for them); what differs is the
+  roles that reach them.
+
 ## 0.25.0
 
 An agreement without an add-on module gets a plain, marked answer from every

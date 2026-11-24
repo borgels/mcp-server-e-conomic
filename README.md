@@ -407,22 +407,35 @@ failures from it without reading their text. Never the response body (nor its
 `logId`), the vendor's error code or message.
 
 Add-on modules. Projects, dimensions and subscriptions are add-on modules that
-many agreements do not have. When e-conomic answers a request for a module's
-data with an error, the gateway reads the agreement's modules (`GET /self`,
-`modules`) and, if the module is not listed, answers
+many agreements do not have. When e-conomic refuses a request for a module's
+data (HTTP 403), the gateway reads the agreement (`GET /self`) and answers
 `The Project module is not enabled for this agreement in e-conomic. ...`
 with `missingModule: 'project' | 'dimension' | 'subscription'` on the error
-result. A host can answer in its own words from the marker, and can tell a
-missing module from a refused access and from a failure; `failure` still
-carries e-conomic's status. A module is recognised by its number in `/self`
-(4, 14 and 74) or by its name. This covers the tools whose catalog entry has
-`module`, and `search_entities` and `get_entity` when they read a module's data
-(the classic REST `departments` and `departmental-distributions` count as
-dimensions). Employees and employee groups also exist without the Project
-module, so for them (and `upsert_employee`, which therefore has no `module` in
-the catalog) the modules are read only after a 403. A refused access (401) is
-never turned into a module answer, the modules are not read after a 408 or a
-429, and when the modules cannot be read, e-conomic's own error stands.
+result, when that answer shows both of these:
+
+- the module is not in the agreement's `modules`, by its number (4, 14 and
+  74) or its name;
+- the app's roles in the grant (`application.requiredRoles`) include one that
+  reaches what was asked for, so the roles are not the reason for the
+  refusal: `SuperUser`, or `ProjectEmployee` for projects, or `Sales` for
+  subscriptions and for employees and employee groups. The dimensions service
+  names different roles per resource, so there only `SuperUser` counts.
+
+A host can answer in its own words from the marker, and can tell a missing
+module from a refused access and from a failure; `failure` still carries
+e-conomic's status. In every other case e-conomic's own error stands and
+nothing is marked: any status other than 403 (an outage with a 5xx, a record
+that does not exist, an input e-conomic does not accept, a refused access
+with a 401), roles that do not reach the resource, and a `/self` that cannot
+be read or does not say which roles and modules there are. e-conomic's
+documentation names no status for a missing module; it says a 403 "depends on
+the roles asked for when the grant was issued", and 403 is the status seen
+for a missing module, so that is the only one asked about. This covers the
+tools whose catalog entry has `module`, and `search_entities` and
+`get_entity` when they read a module's data (the classic REST `departments`
+and `departmental-distributions` count as dimensions). Employees and employee
+groups also exist without the Project module, so `upsert_employee` has no
+`module` in the catalog, although a refusal of it is marked.
 
 Read gateway tools. Each narrow tool reads only its listed targets; the first
 is the default. Anything else is refused before a request is sent.
