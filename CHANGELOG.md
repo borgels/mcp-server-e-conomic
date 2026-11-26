@@ -22,6 +22,12 @@ Additive for embedders.
   payment terms unless they are given; the old customer's recipient address
   and contact, delivery location, delivery address and customer contact
   reference are removed. The answer names both customers.
+- The exchange rate belongs to the currency. When the currency changes
+  (given, or from a new customer), `exchangeRate` must be given, or nothing is
+  changed: the draft's rate is never carried over to another currency.
+  e-conomic documents a daily rate only for a quote or order created without
+  one, not for a `PUT`. Without a change of currency the draft keeps its rate
+  unless `exchangeRate` is given.
 - Risk `write`, off by default. Log values: the quote or order number, the
   customer number when given, the dates and the line count.
 - Fence: a `PUT` under `/quotes` or `/orders` is refused except on one draft

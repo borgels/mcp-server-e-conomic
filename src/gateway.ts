@@ -411,7 +411,13 @@ function updateSalesDraftInput(noun: 'quote' | 'order', field: 'quoteNumber' | '
       },
       date: { ...date, description: `New ${noun} date (YYYY-MM-DD).` },
       dueDate: { ...date, description: 'New due date (YYYY-MM-DD).' },
-      currency: { type: 'string', description: 'New currency code.' },
+      currency: { type: 'string', description: 'New currency code. A new currency (given, or from a new customer) needs exchangeRate.' },
+      exchangeRate: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        description:
+          `What 100 units of the ${noun} currency cost in the agreement's base currency (100 when the ${noun} is in the base currency). Required when the currency changes; otherwise the draft keeps its rate unless this is given.`,
+      },
       paymentTermsNumber: { type: 'integer', minimum: 1, description: 'New payment terms.' },
       recipientName: { type: 'string', maxLength: 250, description: 'New recipient name.' },
       vatZoneNumber: { type: 'integer', minimum: 1, description: 'New VAT zone of the recipient.' },
@@ -4601,6 +4607,12 @@ function isoDateValue(value: GatewayJsonValue | undefined): string | undefined {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : undefined;
 }
 
+/** An exchange rate as e-conomic takes it: positive, at most six decimals. */
+function exchangeRateValue(value: GatewayJsonValue | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 999999999999) return undefined;
+  return Math.abs(value * 1e6 - Math.round(value * 1e6)) < 1e-3 ? value : undefined;
+}
+
 /** An amount with at most two decimals, not zero. */
 function amountValue(value: GatewayJsonValue | undefined): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return undefined;
@@ -5125,6 +5137,11 @@ async function updateSalesDraft(
     if (!isCurrencyCode(input.currency)) return errorResult('currency must be a currency code such as DKK or EUR.');
     currency = input.currency;
   }
+  let exchangeRate: number | undefined;
+  if (input.exchangeRate !== undefined) {
+    exchangeRate = exchangeRateValue(input.exchangeRate);
+    if (exchangeRate === undefined) return errorResult('exchangeRate must be a positive number with at most six decimals.');
+  }
   let paymentTermsNumber: number | undefined;
   if (input.paymentTermsNumber !== undefined) {
     paymentTermsNumber = positiveInteger(input.paymentTermsNumber);
@@ -5151,7 +5168,7 @@ async function updateSalesDraft(
     if ('error' in built) return errorResult(built.error);
     changes.lines = built.lines;
   }
-  const given = [customerNumber, currency, paymentTermsNumber, vatZoneNumber, recipientName.value, reference.value];
+  const given = [customerNumber, currency, exchangeRate, paymentTermsNumber, vatZoneNumber, recipientName.value, reference.value];
   if (Object.keys(changes).length === 0 && given.every(value => value === undefined)) {
     return errorResult('Give at least one field to change.');
   }
@@ -5218,7 +5235,15 @@ async function updateSalesDraft(
   }
   if (vatZoneNumber !== undefined) recipient.vatZone = { vatZoneNumber };
   body.recipient = recipient;
+  // The draft's rate belongs to its currency. A new currency needs its own rate: e-conomic documents a daily rate
+  // only for a quote or order created without one, not for a PUT, which replaces the whole document.
+  if (currency !== undefined && currency !== existing.currency && exchangeRate === undefined) {
+    return errorResult(
+      `The currency of the ${kind.noun} ${number} changes to ${currency}: give exchangeRate (what 100 ${currency} cost in the agreement's base currency, 100 for the base currency). Nothing was changed.`,
+    );
+  }
   if (currency !== undefined) body.currency = currency;
+  if (exchangeRate !== undefined) body.exchangeRate = exchangeRate;
   if (paymentTermsNumber !== undefined) body.paymentTerms = { paymentTermsNumber };
   // Notes given are merged into the draft's notes: a new heading keeps the text lines.
   if (changes.notes) body.notes = { ...asObject(writable.notes), ...asObject(changes.notes) } as GatewayJsonObject;

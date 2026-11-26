@@ -275,8 +275,8 @@ describe('declared upstream requests', () => {
     create_credit_note_draft: [{ bookedInvoiceNumber: 70001 }, { bookedInvoiceNumber: 70001, lineNumbers: [1], date: '2026-03-02' }],
     create_draft_quote: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
-    update_draft_quote: [{ quoteNumber: 3, reference: 'PO 12' }, { quoteNumber: 3, customerNumber: 2, lines: [{ productNumber: 'P1', quantity: 2 }] }],
-    update_draft_order: [{ orderNumber: 4, date: '2026-03-02' }, { orderNumber: 4, customerNumber: 2 }],
+    update_draft_quote: [{ quoteNumber: 3, reference: 'PO 12' }, { quoteNumber: 3, customerNumber: 2, exchangeRate: 100, lines: [{ productNumber: 'P1', quantity: 2 }] }],
+    update_draft_order: [{ orderNumber: 4, date: '2026-03-02' }, { orderNumber: 4, customerNumber: 2, exchangeRate: 100 }],
     upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
     upgrade_order: [{ orderNumber: 4 }],
     set_entry_dimensions: [

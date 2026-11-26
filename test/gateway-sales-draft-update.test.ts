@@ -239,6 +239,7 @@ describe('update_draft_quote and update_draft_order', () => {
       recipientName: 'Eksempel Kunde A/S, afdeling Nord',
       vatZoneNumber: 2,
       currency: 'EUR',
+      exchangeRate: 745.5,
       paymentTermsNumber: 3,
     }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
@@ -246,6 +247,7 @@ describe('update_draft_quote and update_draft_order', () => {
     expect(body.customer).toEqual({ customerNumber: 1001 });
     expect(body.recipient).toMatchObject({ name: 'Eksempel Kunde A/S, afdeling Nord', address: 'Eksempelvej 1', vatZone: { vatZoneNumber: 2 } });
     expect(body.currency).toBe('EUR');
+    expect(body.exchangeRate).toBe(745.5);
     expect(body.paymentTerms).toEqual({ paymentTermsNumber: 3 });
     expect(same.requests.some(request => request.path.startsWith('/customers/'))).toBe(false);
 
@@ -258,7 +260,7 @@ describe('update_draft_quote and update_draft_order', () => {
 
   it('moves the draft to another customer only when customerNumber says so, and leaves nothing of the old customer behind', async () => {
     const { gateway, requests } = economicWith();
-    const result = await gateway.callTool('update_draft_order', { orderNumber: 6, customerNumber: 2002 }, context);
+    const result = await gateway.callTool('update_draft_order', { orderNumber: 6, customerNumber: 2002, exchangeRate: 745.5 }, context);
     expect(result.isError, result.content[0]?.text).toBeUndefined();
     expect(result.content[0]?.text.split('\n\n')[0]).toBe('Changed draft order 6 and moved it from customer 1001 to customer 2002. Not sent.');
     expect(requests.some(request => request.method === 'GET' && request.path === '/customers/2002')).toBe(true);
@@ -266,6 +268,7 @@ describe('update_draft_quote and update_draft_order', () => {
     expect(body.customer).toEqual({ customerNumber: 2002 });
     expect(body.recipient).toEqual({ name: 'Anden Kunde ApS', vatZone: { vatZoneNumber: 2 } });
     expect(body.currency).toBe('EUR');
+    expect(body.exchangeRate).toBe(745.5);
     expect(body.paymentTerms).toEqual({ paymentTermsNumber: 3 });
     expect(body.deliveryLocation).toBeUndefined();
     expect(body.delivery).toBeUndefined();
@@ -277,6 +280,77 @@ describe('update_draft_quote and update_draft_order', () => {
     expect((await missing.gateway.callTool('update_draft_order', { orderNumber: 6, customerNumber: 2002 }, context)).content[0]?.text)
       .toBe('Customer 2002 could not be read from e-conomic. Nothing was changed.');
     expect(puts(missing.requests)).toEqual([]);
+  });
+
+  it('never carries the draft’s exchange rate over to another currency, for both tools', async () => {
+    const cases = [
+      ['update_draft_quote', { quoteNumber: 5 }, 'draft quote 5'],
+      ['update_draft_order', { orderNumber: 6 }, 'draft order 6'],
+    ] as const;
+    for (const [tool, id, noun] of cases) {
+      // A new currency given directly, or from a new customer with another currency, without a rate: refused, nothing put.
+      for (const change of [{ currency: 'EUR' }, { customerNumber: 2002 }] as GatewayJsonObject[]) {
+        const { gateway, requests } = economicWith();
+        const result = await gateway.callTool(tool, { ...id, ...change }, context);
+        expect(result.isError, `${tool} ${JSON.stringify(change)}`).toBe(true);
+        expect(result.content[0]?.text).toBe(
+          `The currency of the ${noun} changes to EUR: give exchangeRate (what 100 EUR cost in the agreement's base currency, 100 for the base currency). Nothing was changed.`,
+        );
+        expect(puts(requests)).toEqual([]);
+      }
+      // With a rate given, the new rate goes along, never the draft's 100.
+      for (const change of [{ currency: 'EUR', exchangeRate: 745.5 }, { customerNumber: 2002, exchangeRate: 745.5 }] as GatewayJsonObject[]) {
+        const { gateway, requests } = economicWith();
+        const result = await gateway.callTool(tool, { ...id, ...change }, context);
+        expect(result.isError, result.content[0]?.text).toBeUndefined();
+        expect(puts(requests)[0]!.body).toMatchObject({ currency: 'EUR', exchangeRate: 745.5 });
+      }
+      // Without a change of currency the draft keeps its rate: the same currency given, or no currency at all.
+      for (const change of [{ reference: 'R' }, { currency: 'DKK' }] as GatewayJsonObject[]) {
+        const { gateway, requests } = economicWith();
+        const result = await gateway.callTool(tool, { ...id, ...change }, context);
+        expect(result.isError, result.content[0]?.text).toBeUndefined();
+        expect(puts(requests)[0]!.body).toMatchObject({ currency: 'DKK', exchangeRate: 100 });
+      }
+      // A bad rate is refused before anything is read.
+      for (const exchangeRate of [0, -1, 1.1234567]) {
+        const { gateway, requests } = economicWith();
+        expect((await gateway.callTool(tool, { ...id, currency: 'EUR', exchangeRate }, context)).isError).toBe(true);
+        expect(requests).toEqual([]);
+      }
+    }
+  });
+
+  it('sends no PUT when the status cannot be read: refused, failed, timed out or unreadable', async () => {
+    const answers: Array<() => Response> = [
+      () => new Response('{}', { status: 403 }),
+      () => new Response('{}', { status: 500 }),
+      () => {
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      },
+      () => new Response('not json', { status: 200 }),
+      () => Response.json([]),
+      () => new Response('', { status: 200 }),
+    ];
+    for (const [tool, id, drafts, sent] of [
+      ['update_draft_quote', { quoteNumber: 5 }, '/quotes/drafts/5', '/quotes/sent/5'],
+      ['update_draft_order', { orderNumber: 6 }, '/orders/drafts/6', '/orders/sent/6'],
+    ] as const) {
+      // The failure on the draft itself, and on the check that it is not sent.
+      for (const failingPath of [drafts, sent]) {
+        for (const [index, answer] of answers.entries()) {
+          const { gateway, requests } = fakeEconomic((method, path) => {
+            if (method !== 'GET') return undefined;
+            if (path === failingPath) return answer();
+            if (path === drafts) return Response.json(draftOf(tool === 'update_draft_quote' ? 'quote' : 'order', id[Object.keys(id)[0] as keyof typeof id] as number));
+            return notFound();
+          });
+          const outcome = await gateway.callTool(tool, { ...id, reference: 'R' }, context).catch((error: unknown) => ({ thrown: error }));
+          if (!('thrown' in outcome)) expect(outcome.isError, `${tool} ${failingPath} answer ${index}`).toBe(true);
+          expect(puts(requests), `${tool} ${failingPath} answer ${index}`).toEqual([]);
+        }
+      }
+    }
   });
 
   it('logs the document number, the customer only when given, the dates and the line count', () => {
