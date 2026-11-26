@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.26.0
+
+Changing draft quotes and draft orders in the embedded gateway (#106).
+Additive for embedders.
+
+- Write tools `update_draft_quote` and `update_draft_order`: change the date,
+  due date, currency, payment terms, recipient name or VAT zone, reference or
+  notes of a draft quote or order, or replace all its lines (same line shape
+  as `create_draft_quote`). The document keeps its number. Read-merge-write
+  with REST `GET`/`PUT /quotes/drafts/{n}` and `/orders/drafts/{n}`: right
+  before the `PUT` the draft is read, must answer with its own number, and
+  must not be found under `/sent` or `/archived` (as the delete tools check);
+  otherwise nothing is changed. Only the schema's writable fields go back (no
+  links, amounts or margins); each line keeps its unit's name, which
+  e-conomic requires on a line with a unit. The layout is kept as read: it is
+  not in e-conomic's `PUT` schema for quotes and orders, and a `PUT` replaces
+  the whole document. Notes given are merged into the draft's notes.
+- The customer stays the draft's own unless `customerNumber` is given. A new
+  customer is read and sets the recipient (name, VAT zone), currency and
+  payment terms unless they are given; the old customer's recipient address
+  and contact, delivery location, delivery address and customer contact
+  reference are removed. The answer names both customers.
+- Risk `write`, off by default. Log values: the quote or order number, the
+  customer number when given, the dates and the line count.
+- Fence: a `PUT` under `/quotes` or `/orders` is refused except on one draft
+  (`/quotes/drafts/{n}`, `/orders/drafts/{n}`), and every `PATCH` there.
+- Not offered: changing the layout of a quote or order (not writable in
+  e-conomic's schema), sending, or changing a sent or archived document.
+
 ## 0.25.1
 
 The answer for a missing add-on module (0.25.0) was given in two cases where

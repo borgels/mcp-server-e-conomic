@@ -180,6 +180,8 @@ describe('no sending of quotes and orders, and deleting only drafts', () => {
       'DELETE /quotes/drafts/{number}',
       'POST /orders/drafts',
       'POST /quotes/drafts',
+      'PUT /orders/drafts/{number}',
+      'PUT /quotes/drafts/{number}',
     ]);
     const tools = economicToolCatalog.filter(tool => /quote|order/.test(tool.name));
     for (const tool of tools) {

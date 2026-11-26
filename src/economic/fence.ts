@@ -52,6 +52,20 @@ export const GATEWAY_FENCE: readonly FenceRule[] = Object.freeze([
     reason: 'deletion (only a draft journal entry, a draft invoice, quote or order, or a time entry can be deleted)',
   },
   {
+    // A quote or an order is changed only as a whole draft (REST PUT
+    // /quotes/drafts/{n}, /orders/drafts/{n}); the gateway's update tools read
+    // it right before and refuse one that is sent or archived. Nothing else
+    // under /quotes or /orders is ever replaced.
+    methods: ['PUT'],
+    pattern: /^\/(quotes|orders)(?!\/drafts\/\d+$)(\/|$)/,
+    reason: 'changing a quote or order that is not a draft (only a draft quote or order can be changed)',
+  },
+  {
+    methods: ['PATCH'],
+    pattern: /^\/(quotes|orders)(\/|$)/,
+    reason: 'changing a quote or order that is not a draft (only a draft quote or order can be changed, as a whole)',
+  },
+  {
     methods: '*',
     pattern: /(^|\/)(delete|deletebulk)(\/|$)/i,
     reason: 'bulk deletion',

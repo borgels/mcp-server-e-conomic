@@ -488,6 +488,7 @@ Write gateway tools, disabled by default:
 | `update_draft_invoice` | write | Changes a draft invoice: dates, terms, layout, reference, notes, or all its lines (read-merge-write; not booked, not sent) |
 | `create_credit_note_draft` | write | A draft invoice that credits a booked invoice (all lines or the chosen ones, at negative quantities); book it with `book_invoice` |
 | `create_draft_quote`, `create_draft_order` | write | Draft quote or draft order, built like a draft invoice (not sent) |
+| `update_draft_quote`, `update_draft_order` | write | Changes a draft quote or draft order that is neither sent nor archived: dates, currency, payment terms, recipient, reference, notes, or all its lines. Moves it to another customer only when `customerNumber` is given (read-merge-write; keeps its number, not sent) |
 | `upgrade_quote`, `upgrade_order` | write | Turns a draft quote into a draft order or draft invoice, or a draft order into a draft invoice, with e-conomic's upgrade template (not booked, not sent) |
 | `attach_voucher_file` | write | Attaches a PDF, JPEG or PNG (at most 9 MB, type checked by its first bytes) to a voucher by voucher number and accounting year (documentsapi). Fails when the voucher already has a document, unless `onConflict: merge`. The file is never logged |
 | `set_entry_dimensions` | write | Sets a dimension value on a draft journal entry or a draft sales document line (adds it or changes it); dimensions and values themselves are not created or deleted |
@@ -528,7 +529,9 @@ mistake: every `DELETE` except on the five draft paths in `GATEWAY_DELETABLE`
 any path with a `delete`/`deletebulk` segment, and
 writes to the company record (`/self`, including bank information, the user
 and settings), anything with `bank` in the path, users, app roles, agreements
-and settings, webhooks, the whole-journal booking paths (`/book`,
+and settings, webhooks, any `PUT` under `/quotes` or `/orders` but on one
+draft (`/quotes/drafts/{n}`, `/orders/drafts/{n}`) and any `PATCH` there,
+the whole-journal booking paths (`/book`,
 `bookWithDateInterval`, which book whatever the journal holds when e-conomic
 runs them; `book_journal` and `book_journal_entries` book checked entries
 through `bookdraftentries`),
