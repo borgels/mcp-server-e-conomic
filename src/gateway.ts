@@ -392,6 +392,59 @@ const createDraftInvoiceInput = salesDraftInput('Invoice');
 const createDraftQuoteInput = salesDraftInput('Quote');
 const createDraftOrderInput = salesDraftInput('Order');
 
+/** The input of the tools that change a draft quote or order: the fields of creation, each optional. */
+function updateSalesDraftInput(noun: 'quote' | 'order', field: 'quoteNumber' | 'orderNumber'): GatewayJsonObject {
+  const date = { type: 'string', pattern: String.raw`^\d{4}-\d{2}-\d{2}$` };
+  const draftNumber: GatewayJsonObject = {
+    [field]: { type: 'integer', minimum: 1, description: `The draft ${noun} to change (not sent, not archived).` },
+  };
+  return {
+    type: 'object',
+    required: [field],
+    properties: {
+      ...draftNumber,
+      customerNumber: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          `Move the draft ${noun} to another customer. Without it the draft keeps its customer. A new customer also sets the recipient (name, VAT zone), currency and payment terms from that customer unless they are given, and removes the old customer's delivery address and contact.`,
+      },
+      date: { ...date, description: `New ${noun} date (YYYY-MM-DD).` },
+      dueDate: { ...date, description: 'New due date (YYYY-MM-DD).' },
+      currency: { type: 'string', description: 'New currency code. A new currency (given, or from a new customer) needs exchangeRate.' },
+      exchangeRate: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        description:
+          `What 100 units of the ${noun} currency cost in the agreement's base currency (100 when the ${noun} is in the base currency). Required when the currency changes; otherwise the draft keeps its rate unless this is given.`,
+      },
+      paymentTermsNumber: { type: 'integer', minimum: 1, description: 'New payment terms.' },
+      recipientName: { type: 'string', maxLength: 250, description: 'New recipient name.' },
+      vatZoneNumber: { type: 'integer', minimum: 1, description: 'New VAT zone of the recipient.' },
+      reference: { type: 'string', maxLength: 250, description: `New free-text reference on the draft ${noun}.` },
+      notes: {
+        type: 'object',
+        properties: {
+          heading: { type: 'string', maxLength: 250 },
+          textLine1: { type: 'string', maxLength: 1000 },
+        },
+        additionalProperties: false,
+      },
+      lines: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 200,
+        description: `The new lines; they replace all lines of the draft ${noun}. Same shape as create_draft_${noun}.`,
+        items: createDraftQuoteInput.properties.lines.items,
+      },
+    },
+    additionalProperties: false,
+  } satisfies GatewayJsonObject;
+}
+
+const updateDraftQuoteInput = updateSalesDraftInput('quote', 'quoteNumber');
+const updateDraftOrderInput = updateSalesDraftInput('order', 'orderNumber');
+
 const updateDraftInvoiceInput = {
   type: 'object',
   required: ['draftInvoiceNumber'],
@@ -1591,6 +1644,34 @@ const TOOL_SPECS: ToolSpec[] = [
     ],
   }),
   writeTool({
+    name: 'update_draft_quote',
+    title: 'Change an e-conomic draft quote',
+    description: `Change a draft quote that has not been sent or archived: date, due date, currency, payment terms, recipient, reference, notes, all its lines, or the customer (only when customerNumber is given). Reads the draft and merges the change; the quote keeps its number and is not sent. ${WRITE_NOTE}`,
+    inputSchema: updateDraftQuoteInput,
+    change: change('upsert', 'draft-quote', { quoteNumber: 'recordNumber', customerNumber: 'recordNumber', date: 'date', dueDate: 'date' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'quotes/drafts', '/quotes/drafts/{number}'),
+      operation('read', 'GET', 'rest', 'quotes/sent', '/quotes/sent/{number}'),
+      operation('read', 'GET', 'rest', 'quotes/archived', '/quotes/archived/{number}'),
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('write', 'PUT', 'rest', 'quotes/drafts', '/quotes/drafts/{number}'),
+    ],
+  }),
+  writeTool({
+    name: 'update_draft_order',
+    title: 'Change an e-conomic draft order',
+    description: `Change a draft order that has not been sent or archived: date, due date, currency, payment terms, recipient, reference, notes, all its lines, or the customer (only when customerNumber is given). Reads the draft and merges the change; the order keeps its number and is not sent. ${WRITE_NOTE}`,
+    inputSchema: updateDraftOrderInput,
+    change: change('upsert', 'draft-order', { orderNumber: 'recordNumber', customerNumber: 'recordNumber', date: 'date', dueDate: 'date' }),
+    upstream: [
+      operation('read', 'GET', 'rest', 'orders/drafts', '/orders/drafts/{number}'),
+      operation('read', 'GET', 'rest', 'orders/sent', '/orders/sent/{number}'),
+      operation('read', 'GET', 'rest', 'orders/archived', '/orders/archived/{number}'),
+      operation('read', 'GET', 'rest', 'customers', '/customers/{number}'),
+      operation('write', 'PUT', 'rest', 'orders/drafts', '/orders/drafts/{number}'),
+    ],
+  }),
+  writeTool({
     name: 'upgrade_quote',
     title: 'Turn an e-conomic quote into an order or draft invoice',
     description: `Turn a draft quote into a draft order or a draft invoice, with e-conomic's own upgrade template. Nothing is booked or sent. ${WRITE_NOTE}`,
@@ -2267,7 +2348,7 @@ export function resolveEconomicChange(
     const value = logValue(spec, field, input[field.name]);
     if (value !== undefined) values[field.name] = value;
   }
-  const lines = SALES_DRAFTS[spec.name] || spec.name === 'update_draft_invoice'
+  const lines = SALES_DRAFTS[spec.name] || SALES_DRAFT_UPDATES[spec.name] || spec.name === 'update_draft_invoice'
     ? input.lines
     : spec.name === 'create_journal_entries'
       ? input.entries
@@ -2661,6 +2742,9 @@ async function writeResult(
       return upgradeSalesDocument(client, toolName, input, writePolicy);
     case 'update_draft_invoice':
       return updateDraftInvoice(client, input, writePolicy);
+    case 'update_draft_quote':
+    case 'update_draft_order':
+      return updateSalesDraft(client, toolName, input, writePolicy);
     case 'create_credit_note_draft':
       return createCreditNoteDraft(client, input, writePolicy);
     case 'attach_voucher_file':
@@ -4523,6 +4607,12 @@ function isoDateValue(value: GatewayJsonValue | undefined): string | undefined {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value ? value : undefined;
 }
 
+/** An exchange rate as e-conomic takes it: positive, at most six decimals. */
+function exchangeRateValue(value: GatewayJsonValue | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 999999999999) return undefined;
+  return Math.abs(value * 1e6 - Math.round(value * 1e6)) < 1e-3 ? value : undefined;
+}
+
 /** An amount with at most two decimals, not zero. */
 function amountValue(value: GatewayJsonValue | undefined): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value === 0) return undefined;
@@ -4872,6 +4962,7 @@ async function readForDelete(
   serviceId: string,
   pathTemplate: string,
   number: number,
+  outcome = 'Nothing was deleted.',
 ): Promise<DeleteRead> {
   let answer: unknown;
   try {
@@ -4881,7 +4972,7 @@ async function readForDelete(
     throw error;
   }
   if (!answer || typeof answer !== 'object' || Array.isArray(answer)) {
-    throw new Error(`e-conomic gave no readable status for ${pathTemplate.replace('{number}', String(number))}. Nothing was deleted.`);
+    throw new Error(`e-conomic gave no readable status for ${pathTemplate.replace('{number}', String(number))}. ${outcome}`);
   }
   return { record: answer as GatewayJsonObject };
 }
@@ -4989,6 +5080,186 @@ async function deleteSalesDraft(
 
   await callEndpoint(client, { serviceId: 'rest', method: 'DELETE', pathTemplate: `${kind.drafts}/{number}`, pathParams: { number } });
   return jsonResult(`Deleted ${kind.noun} ${number}.`, { deleted: true, [kind.field]: number });
+}
+
+/** The draft quotes and orders an update tool changes: the same paths and states as their delete tools. */
+const SALES_DRAFT_UPDATES: Record<string, (typeof SALES_DRAFT_DELETES)[string]> = {
+  update_draft_quote: SALES_DRAFT_DELETES.delete_draft_quote!,
+  update_draft_order: SALES_DRAFT_DELETES.delete_draft_order!,
+};
+
+/**
+ * The writable shape of a REST draft quote or order on PUT (quotes.drafts.quoteNumber.put,
+ * orders.drafts.orderNumber.put): that of a draft invoice without the recipient's CVR, which these schemas do not
+ * have, and with the unit's name on each line, which they require when a line has a unit. The layout is not in these
+ * schemas but is kept: a PUT replaces the whole document, and e-conomic nulls a field that is left out.
+ */
+const SALES_DRAFT_SHAPE: Shape = (() => {
+  const { cvr: _cvr, ...recipient } = DRAFT_INVOICE_SHAPE.recipient as Shape;
+  return {
+    ...DRAFT_INVOICE_SHAPE,
+    recipient,
+    lines: { ...DRAFT_LINE_SHAPE, unit: { unitNumber: true, name: true } },
+  };
+})();
+
+/**
+ * Changes a draft quote or order (REST read-merge-write: GET then PUT /{quotes|orders}/drafts/{n}). Right before the
+ * PUT it reads the draft and checks that it is neither sent nor archived, as the delete tools do. The customer is
+ * changed only when customerNumber is given; otherwise the draft's own customer goes back unchanged.
+ */
+async function updateSalesDraft(
+  client: EconomicClient,
+  toolName: string,
+  input: GatewayJsonObject,
+  policy: EconomicPolicy,
+): Promise<GatewayToolResult> {
+  const kind = SALES_DRAFT_UPDATES[toolName];
+  if (!kind) return errorResult(`Unsupported e-conomic gateway tool: ${toolName}`);
+  const number = positiveInteger(input[kind.field]);
+  if (number === undefined) return errorResult(`${toolName} needs ${kind.field} (a positive whole number).`);
+
+  const changes: GatewayJsonObject = {};
+  for (const field of ['date', 'dueDate'] as const) {
+    if (input[field] !== undefined) {
+      const value = isoDateValue(input[field]);
+      if (!value) return errorResult(`${field} must be a date (YYYY-MM-DD).`);
+      changes[field] = value;
+    }
+  }
+  let customerNumber: number | undefined;
+  if (input.customerNumber !== undefined) {
+    customerNumber = positiveInteger(input.customerNumber);
+    if (customerNumber === undefined) return errorResult('customerNumber must be a positive whole number.');
+  }
+  let currency: string | undefined;
+  if (input.currency !== undefined) {
+    if (!isCurrencyCode(input.currency)) return errorResult('currency must be a currency code such as DKK or EUR.');
+    currency = input.currency;
+  }
+  let exchangeRate: number | undefined;
+  if (input.exchangeRate !== undefined) {
+    exchangeRate = exchangeRateValue(input.exchangeRate);
+    if (exchangeRate === undefined) return errorResult('exchangeRate must be a positive number with at most six decimals.');
+  }
+  let paymentTermsNumber: number | undefined;
+  if (input.paymentTermsNumber !== undefined) {
+    paymentTermsNumber = positiveInteger(input.paymentTermsNumber);
+    if (paymentTermsNumber === undefined) return errorResult('paymentTermsNumber must be a positive whole number.');
+  }
+  let vatZoneNumber: number | undefined;
+  if (input.vatZoneNumber !== undefined) {
+    vatZoneNumber = positiveInteger(input.vatZoneNumber);
+    if (vatZoneNumber === undefined) return errorResult('vatZoneNumber must be a positive whole number.');
+  }
+  const recipientName = shortText(input.recipientName, 250);
+  if (!recipientName.ok) return errorResult('recipientName must be at most 250 characters.');
+  const reference = shortText(input.reference, 250);
+  if (!reference.ok) return errorResult('reference must be at most 250 characters.');
+  if (input.notes !== undefined) {
+    const notes = notesObject(input.notes);
+    if (!notes) return errorResult('notes needs heading or textLine1.');
+    changes.notes = notes;
+  }
+  if (input.lines !== undefined) {
+    const raw = Array.isArray(input.lines) ? input.lines : [];
+    if (raw.length === 0 || raw.length > 200) return errorResult('lines must hold 1-200 lines.');
+    const built = draftLines(raw);
+    if ('error' in built) return errorResult(built.error);
+    changes.lines = built.lines;
+  }
+  const given = [customerNumber, currency, exchangeRate, paymentTermsNumber, vatZoneNumber, recipientName.value, reference.value];
+  if (Object.keys(changes).length === 0 && given.every(value => value === undefined)) {
+    return errorResult('Give at least one field to change.');
+  }
+
+  const path = `${kind.drafts}/${number}`;
+  const early = writePolicyDenial(policy, { capability: toolName, method: 'PUT', path, body: {} });
+  if (early) return early;
+
+  const { record: existing, failure } = await readForDelete(client, 'rest', `${kind.drafts}/{number}`, number, 'Nothing was changed.');
+  if (!existing) {
+    return errorResult(`The ${kind.noun} ${number} does not exist (sent, archived, deleted, or never there). Nothing was changed.`, failure);
+  }
+  // The answer must name the draft asked for: anything else is no proof of its status.
+  if (existing[kind.field] !== number) {
+    return errorResult(`e-conomic did not answer with the ${kind.noun} ${number}. Nothing was changed.`);
+  }
+  for (const other of kind.notIn) {
+    if ((await readForDelete(client, 'rest', `${other.path}/{number}`, number, 'Nothing was changed.')).record) {
+      return errorResult(`The ${kind.noun} ${number} is ${other.state}. Nothing was changed.`);
+    }
+  }
+  const draftCustomer = positiveInteger(asObject(existing.customer).customerNumber as GatewayJsonValue | undefined);
+  if (draftCustomer === undefined) {
+    return errorResult(`e-conomic did not say which customer the ${kind.noun} ${number} is for. Nothing was changed.`);
+  }
+
+  const writable = (pickShape(existing, SALES_DRAFT_SHAPE) ?? {}) as GatewayJsonObject;
+  const body: GatewayJsonObject = { ...writable, ...changes };
+  // The customer is the draft's own unless the input names another one.
+  body.customer = { customerNumber: draftCustomer };
+  let recipient: GatewayJsonObject = { ...(asObject(writable.recipient) as GatewayJsonObject) };
+  const moved = customerNumber !== undefined && customerNumber !== draftCustomer;
+
+  if (moved) {
+    let customer: DraftCustomer;
+    try {
+      customer = (await client.rest(`/customers/${customerNumber}`)) as DraftCustomer;
+    } catch (error) {
+      if (error instanceof EconomicHttpError && error.status === 404) {
+        return errorResult(`Customer ${customerNumber} could not be read from e-conomic. Nothing was changed.`, failureMetadata(error));
+      }
+      throw error;
+    }
+    currency ??= customer.currency;
+    paymentTermsNumber ??= customer.paymentTerms?.paymentTermsNumber;
+    vatZoneNumber ??= customer.vatZone?.vatZoneNumber;
+    const name = recipientName.value ?? customer.name;
+    if (!currency || paymentTermsNumber === undefined || vatZoneNumber === undefined || !name) {
+      return errorResult(
+        "Could not resolve the new customer's currency, payment terms, VAT zone and name; provide them explicitly. Nothing was changed.",
+      );
+    }
+    body.customer = { customerNumber: customerNumber! };
+    // The old customer's recipient address and contact, delivery location and delivery address do not go along.
+    recipient = { name };
+    delete body.deliveryLocation;
+    delete body.delivery;
+    const references = { ...asObject(writable.references) };
+    delete references.customerContact;
+    if (Object.keys(references).length > 0) body.references = references as GatewayJsonObject;
+    else delete body.references;
+  } else if (recipientName.value !== undefined) {
+    recipient.name = recipientName.value;
+  }
+  if (vatZoneNumber !== undefined) recipient.vatZone = { vatZoneNumber };
+  body.recipient = recipient;
+  // The draft's rate belongs to its currency. A new currency needs its own rate: e-conomic documents a daily rate
+  // only for a quote or order created without one, not for a PUT, which replaces the whole document.
+  if (currency !== undefined && currency !== existing.currency && exchangeRate === undefined) {
+    return errorResult(
+      `The currency of the ${kind.noun} ${number} changes to ${currency}: give exchangeRate (what 100 ${currency} cost in the agreement's base currency, 100 for the base currency). Nothing was changed.`,
+    );
+  }
+  if (currency !== undefined) body.currency = currency;
+  if (exchangeRate !== undefined) body.exchangeRate = exchangeRate;
+  if (paymentTermsNumber !== undefined) body.paymentTerms = { paymentTermsNumber };
+  // Notes given are merged into the draft's notes: a new heading keeps the text lines.
+  if (changes.notes) body.notes = { ...asObject(writable.notes), ...asObject(changes.notes) } as GatewayJsonObject;
+  if (reference.value !== undefined) body.references = { ...asObject(body.references), other: reference.value } as GatewayJsonObject;
+
+  const denied = writePolicyDenial(policy, { capability: toolName, method: 'PUT', path, body, current: existing });
+  if (denied) return denied;
+  const updated = await callEndpoint(client, {
+    serviceId: 'rest',
+    method: 'PUT',
+    pathTemplate: `${kind.drafts}/{number}`,
+    pathParams: { number },
+    body,
+  });
+  const movedText = moved ? ` and moved it from customer ${draftCustomer} to customer ${customerNumber}` : '';
+  return jsonResult(`Changed ${kind.noun} ${number}${movedText}. Not sent.`, updated);
 }
 
 /** Deletes a time entry (projectsapi DELETE /TimeEntries/{n}) that is neither approved nor reconciled. */

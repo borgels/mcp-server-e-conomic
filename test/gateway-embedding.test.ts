@@ -246,7 +246,7 @@ describe('declared upstream requests', () => {
     }
     if (request.method === 'GET' && path.startsWith('/invoices/drafts/')) return Response.json({ draftInvoiceNumber: 7 });
     if (request.method === 'GET' && /\/draft-entries\/11$/.test(path)) return Response.json({ entryNumber: 11, journalNumber: 1, voucherNumber: 501 });
-    if (request.method === 'GET' && /^\/(quotes|orders)\/drafts\/\d+$/.test(path)) return Response.json({ quoteNumber: 3, orderNumber: 4 });
+    if (request.method === 'GET' && /^\/(quotes|orders)\/drafts\/\d+$/.test(path)) return Response.json({ quoteNumber: 3, orderNumber: 4, customer: { customerNumber: 1 } });
     if (request.method === 'GET' && /^\/(quotes|orders)\/(sent|archived)\/(3|4)$/.test(path)) return new Response('', { status: 404 });
     if (request.method === 'GET' && /\/TimeEntries\/\d+$/.test(path)) {
       return Response.json({ number: 5, projectNumber: 1, activityNumber: 1, employeeNumber: 1, isApproved: false, isReconciled: false });
@@ -275,6 +275,8 @@ describe('declared upstream requests', () => {
     create_credit_note_draft: [{ bookedInvoiceNumber: 70001 }, { bookedInvoiceNumber: 70001, lineNumbers: [1], date: '2026-03-02' }],
     create_draft_quote: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
     create_draft_order: [{ customerNumber: 1, lines: [{ productNumber: 'P1', quantity: 1 }] }],
+    update_draft_quote: [{ quoteNumber: 3, reference: 'PO 12' }, { quoteNumber: 3, customerNumber: 2, exchangeRate: 100, lines: [{ productNumber: 'P1', quantity: 2 }] }],
+    update_draft_order: [{ orderNumber: 4, date: '2026-03-02' }, { orderNumber: 4, customerNumber: 2, exchangeRate: 100 }],
     upgrade_quote: [{ quoteNumber: 3, to: 'order' }, { quoteNumber: 3, to: 'draftInvoice' }],
     upgrade_order: [{ orderNumber: 4 }],
     set_entry_dimensions: [

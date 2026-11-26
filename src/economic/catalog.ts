@@ -510,6 +510,8 @@ function buildEndpointOperations(): EndpointOperation[] {
     customEndpoint('rest', 'DELETE', '/quotes/drafts/{number}', 'Delete a draft quote.', 'draft'),
     customEndpoint('rest', 'DELETE', '/orders/drafts/{number}', 'Delete a draft order.', 'draft'),
     customEndpoint('rest', 'PUT', '/invoices/drafts/{number}', 'Update a draft sales invoice (full object).', 'draft'),
+    customEndpoint('rest', 'PUT', '/quotes/drafts/{number}', 'Update a draft quote (full object).', 'draft'),
+    customEndpoint('rest', 'PUT', '/orders/drafts/{number}', 'Update a draft order (full object).', 'draft'),
     // Quotes and orders: drafts are created and upgraded (quote -> order ->
     // draft invoice) by POSTing the upgrade template e-conomic returns. Sending
     // (/quotes/sent, /orders/sent) is not offered; a draft can be deleted (above).

@@ -306,6 +306,15 @@ export function economicGatewayContractFixture(
         structuredContent: { mode: 'contract', draftInvoiceNumber: numberOr(input.draftInvoiceNumber, 0) },
       };
 
+    case 'update_draft_quote':
+    case 'update_draft_order': {
+      const field = toolName === 'update_draft_quote' ? 'quoteNumber' : 'orderNumber';
+      return {
+        text: `Changed the contract draft ${toolName === 'update_draft_quote' ? 'quote' : 'order'}. Not sent.`,
+        structuredContent: { mode: 'contract', [field]: numberOr(input[field], 0) },
+      };
+    }
+
     case 'create_credit_note_draft':
       return {
         text: 'Created a contract credit note as a draft invoice.',
